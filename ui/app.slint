@@ -840,7 +840,7 @@ component Orb inherits Rectangle {
 // ============================================================
 
 export component AppWindow inherits Window {
-    title: "VOA";
+    title: "Aeri";
     // repaint-epoch 一变整个窗口就会重画（见 main.rs 的 hook_native_window）；它永远不会是 -1
     background: root.repaint-epoch == -1 ? Theme.inset : Theme.canvas;
     default-font-family: "Microsoft YaHei UI";
@@ -989,7 +989,7 @@ export component AppWindow inherits Window {
                 alignment: center;
                 spacing: 2px;
                 Text {
-                    text: "VOA";
+                    text: "Aeri";
                     font-size: 17px;
                     font-weight: 600;
                     letter-spacing: -0.2px;

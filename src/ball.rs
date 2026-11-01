@@ -124,7 +124,7 @@ pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEven
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             w!("VoiceAssistantBall"),
-            w!("VOA 悬浮球"),
+            w!("Aeri 悬浮球"),
             WS_POPUP,
             0,
             0,

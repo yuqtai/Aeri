@@ -145,7 +145,7 @@ impl Desktop {
 
     /// 运行一条 agent-desktop 命令，成功时返回 data，失败时返回给模型看的错误说明
     async fn run(&self, args: &[&str]) -> Result<Value, String> {
-        let exe = self.exe.as_ref().ok_or_else(|| format!("没有找到桌面控制组件 {EXE}，它应该放在 voa.exe 旁边，请重新安装"))?;
+        let exe = self.exe.as_ref().ok_or_else(|| format!("没有找到桌面控制组件 {EXE}，它应该放在 aeri.exe 旁边，请重新安装"))?;
         let mut cmd = Command::new(exe);
         cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         cmd.creation_flags_no_window();
@@ -224,7 +224,7 @@ impl Desktop {
     }
 }
 
-/// agent-desktop.exe 放在 voa.exe 旁边；开发时也可以装在 PATH 里
+/// agent-desktop.exe 放在 aeri.exe 旁边；开发时也可以装在 PATH 里
 fn locate() -> Option<PathBuf> {
     let beside = std::env::current_exe().ok()?.with_file_name(EXE);
     if beside.exists() {
@@ -237,7 +237,7 @@ fn own_exe() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "voa.exe".into())
+        .unwrap_or_else(|| "aeri.exe".into())
 }
 
 /// Edge 的标题里夹着零宽空格（Microsoft\u{200b} Edge）

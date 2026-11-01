@@ -1,5 +1,5 @@
 //! 读屏：用户正在看的内容（选中的文字、鼠标所指的那一块、整个可见区域）。
-//! 这是 VOA 自己的功能，agent-desktop 没有对应的命令，所以仍然直接调用 Windows UI Automation。
+//! 这是 Aeri 自己的功能，agent-desktop 没有对应的命令，所以仍然直接调用 Windows UI Automation。
 //! UIA 的 COM 对象不能跨线程，所以放在一个专用线程里，通过通道收发请求。
 
 use std::sync::mpsc;

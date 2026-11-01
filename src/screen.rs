@@ -81,7 +81,7 @@ fn describe(hwnd: HWND, me: u32) -> Option<Window> {
             return None;
         }
         let path = image_path(pid);
-        // 后台智能体通过 MCP 调用时，读屏的是另一个 voa 进程，主界面也要跳过
+        // 后台智能体通过 MCP 调用时，读屏的是另一个 aeri 进程，主界面也要跳过
         let own = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_lowercase());
         if own.is_some_and(|own| own == path.to_lowercase()) {
             return None;

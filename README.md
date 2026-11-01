@@ -1,4 +1,4 @@
-# VOA 语音助手
+# Aeri 语音助手
 
 **一个常驻一整天也感觉不到它存在的 Windows 语音助手。** 待机只占约 45 MB 内存、单核 0.2% 的 CPU；喊一声“你好电脑”，边说边回，几步能做完的事当场做完，费时的活交给后台智能体（默认 Codex，可选 Claude Code 或内置 DeepSeek），做完主动告诉你，期间照样能聊天、问进度或取消。
 
@@ -22,7 +22,7 @@
 
 ### 实测占用（发布版，待机监听）
 
-| 项目 | VOA（Rust） | 早期 Python 原型（已移除） |
+| 项目 | Aeri（Rust） | 早期 Python 原型（已移除） |
 |---|---|---|
 | 内存（私有） | 约 45 MB | 约 1.46 GB |
 | CPU | 稳定后单核约 0.2% | 安静时低，有人说话时每句都跑完整识别 |
@@ -60,7 +60,7 @@
    时间、音量、桌面控制、浏览器控制                                     │ 只有费时的才交出去（不阻塞对话）
                                                                       ▼
                                         Codex（codex exec）/ Claude Code（claude -p）/ 内置 DeepSeek
-                                        └─ 通过 MCP 使用本程序的工具（voa.exe --mcp）：
+                                        └─ 通过 MCP 使用本程序的工具（aeri.exe --mcp）：
                                            启动/关闭程序、agent-desktop 读控件/点击/填写/勾选/快捷键、读屏、浏览器控制
                                                                       │ 做完
                                                                       ▼
@@ -69,7 +69,7 @@
 
 播报期间：耳朵只跑唤醒词，说唤醒词就停下播报开始听（外放时不把麦克风发给实时模型，避免它听到自己）；戴耳机时可以打开“直接插话”，播报时麦克风一直开着。
 
-对话期间默认把其他程序的声音（视频、音乐）调到原来的 20%，结束后恢复，免得麦克风把电脑里的声音也当成用户在说话；VOA 自己的播报不受影响。期间手动调过音量的程序不会被改回去；VOA 中途退出时，下次启动会先把音量恢复。可以在设置里关掉。
+对话期间默认把其他程序的声音（视频、音乐）调到原来的 20%，结束后恢复，免得麦克风把电脑里的声音也当成用户在说话；Aeri 自己的播报不受影响。期间手动调过音量的程序不会被改回去；Aeri 中途退出时，下次启动会先把音量恢复。可以在设置里关掉。
 
 | 文件 | 作用 |
 |---|---|
@@ -118,10 +118,10 @@ key 用 Windows DPAPI 加密后存在配置文件里，只有当前 Windows 账�
    powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\build.ps1 -Release
    ```
 
-2. 编译好的程序在 `dist\` 里（exe、agent-desktop.exe、4 个 DLL 和 `models\` 都已放好），双击 `dist\voa.exe` 就能用，或者运行：
+2. 编译好的程序在 `dist\` 里（exe、agent-desktop.exe、4 个 DLL 和 `models\` 都已放好），双击 `dist\aeri.exe` 就能用，或者运行：
 
    ```powershell
-   D:\code\voice-assistant\dist\voa.exe
+   D:\code\voice-assistant\dist\aeri.exe
    ```
 
 3. 想开机自动启动：在设置页打开“开机自动启动”，点“保存并应用”。
@@ -134,7 +134,7 @@ key 用 Windows DPAPI 加密后存在配置文件里，只有当前 Windows 账�
 - 分发时把整个 `dist` 文件夹拷走即可。
 - 桌面控制组件 [agent-desktop](https://github.com/vercel-labs/agent-desktop)（Apache-2.0）不放在仓库里：第一次编译时 `build.ps1` 从它的 GitHub 发布页下载固定版本（v1.0.2，Windows x64），校验 SHA-256 后缓存在 `vendor\`，再复制到 exe 旁边。升级时改 `build.ps1` 里的版本号和校验值。
 - 浏览器控制需要 Node.js（第一次使用时通过 npx 下载 Playwright MCP）。
-- 测试唤醒词：`voa.exe --kws-test a.wav b.wav`。
+- 测试唤醒词：`aeri.exe --kws-test a.wav b.wav`。
 - 运行单元测试：`powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\build.ps1 -Test`。
 
 ## 设置
@@ -187,7 +187,7 @@ key 用 Windows DPAPI 加密后存在配置文件里，只有当前 Windows 账�
 
 ## 安装与更新
 
-首次运行 `powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\install.ps1 -Launch`，安装到当前用户的 `%LOCALAPPDATA%\Programs\VoiceAssistant`，不需要管理员权限。桌面和开始菜单会出现“VOA”，Windows“已安装的应用”中可以卸载。设置和 API Key 仍保存在原位置，更新及卸载均保留。
+首次运行 `powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\install.ps1 -Launch`，安装到当前用户的 `%LOCALAPPDATA%\Programs\VoiceAssistant`，不需要管理员权限。桌面和开始菜单会出现“Aeri”，Windows“已安装的应用”中可以卸载。设置和 API Key 仍保存在原位置，更新及卸载均保留。
 
 安装后，每次 `build.ps1 -Release` 会自动更新并启动安装版。更新时会停止旧版本，请先等正在执行的任务结束。也可以单独重新运行 `install.ps1` 更新已有发布文件。这是本机编译更新流程，尚未接入在线更新服务。
 

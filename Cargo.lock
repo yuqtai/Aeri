@@ -25,6 +25,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aeri"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "futures-util",
+ "pinyin",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "slint",
+ "slint-build",
+ "tokio",
+ "tokio-tungstenite",
+ "tray-icon",
+ "uiautomation",
+ "uuid",
+ "windows",
+]
+
+[[package]]
 name = "aes"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5922,29 +5945,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voa"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpal",
- "futures-util",
- "pinyin",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sherpa-onnx",
- "slint",
- "slint-build",
- "tokio",
- "tokio-tungstenite",
- "tray-icon",
- "uiautomation",
- "uuid",
- "windows",
-]
 
 [[package]]
 name = "vtable"

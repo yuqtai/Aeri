@@ -1,6 +1,6 @@
 //! 语音对话期间把其他程序的声音调低、结束后恢复，免得麦克风把电脑里放的视频、音乐也当成用户在说话。
-//! 调的是每个程序在“音量合成器”里的音量（VOA 自己的播报不动）。Windows 会记住这个音量，
-//! 所以调低时把原音量写到文件里：万一 VOA 中途退出，下次启动先恢复。
+//! 调的是每个程序在“音量合成器”里的音量（Aeri 自己的播报不动）。Windows 会记住这个音量，
+//! 所以调低时把原音量写到文件里：万一 Aeri 中途退出，下次启动先恢复。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -110,7 +110,7 @@ fn restore(ducked: &mut HashMap<String, Ducked>) {
     let _ = std::fs::remove_file(state_path());
 }
 
-/// 上次调低后没来得及恢复（VOA 被结束、崩溃）：按程序把音量恢复回去
+/// 上次调低后没来得及恢复（Aeri 被结束、崩溃）：按程序把音量恢复回去
 fn restore_leftovers() {
     let Ok(text) = std::fs::read_to_string(state_path()) else { return };
     let saved: Vec<(String, f32, f32)> = serde_json::from_str(&text).unwrap_or_default();
@@ -141,7 +141,7 @@ struct Session {
     app: String,
 }
 
-/// 所有播放设备上其他程序的音频会话（不含 VOA 自己和系统提示音）
+/// 所有播放设备上其他程序的音频会话（不含 Aeri 自己和系统提示音）
 fn sessions() -> Vec<Session> {
     let own = std::process::id();
     let mut out = Vec::new();

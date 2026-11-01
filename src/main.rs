@@ -163,7 +163,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 用录音文件测试唤醒词：voa.exe --kws-test a.wav b.wav ...
+/// 用录音文件测试唤醒词：aeri.exe --kws-test a.wav b.wav ...
 fn kws_test(files: &[String]) -> anyhow::Result<()> {
     let cfg = config::load();
     let (mut detector, problems) =
@@ -910,7 +910,7 @@ fn create_tray(window: &AppWindow, cmd_tx: UnboundedSender<Command>, icon: Vec<u
     }));
 
     Ok(TrayIconBuilder::new()
-        .with_tooltip("VOA 语音助手")
+        .with_tooltip("Aeri 语音助手")
         .with_icon(tray_icon::Icon::from_rgba(icon, 32, 32)?)
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)

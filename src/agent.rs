@@ -13,7 +13,7 @@ const BACKEND_MAX_STEPS: usize = 25;
 const FRONT_MAX_STEPS: usize = 12;
 
 /// 前台：负责对话，几步能做完的自己做（快），明显费时的才交给后台任务
-pub const FRONT_PROMPT: &str = "你是 VOA，运行在用户 Windows 电脑上的语音助手，负责和用户对话。用户用语音和你说话，你的回复会被直接朗读出来。
+pub const FRONT_PROMPT: &str = "你是 Aeri，运行在用户 Windows 电脑上的语音助手，负责和用户对话。用户用语音和你说话，你的回复会被直接朗读出来。
 
 回复要求：
 - 用简短、口语化的中文回答，通常一两句话。不要用 Markdown、列表、表情符号，也不要念出完整网址。
