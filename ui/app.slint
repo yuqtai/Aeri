@@ -841,8 +841,8 @@ component Orb inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "VOA";
-    icon: root.app-icon;
-    background: Theme.canvas;
+    // repaint-epoch 一变整个窗口就会重画（见 main.rs 的 hook_native_window）；它永远不会是 -1
+    background: root.repaint-epoch == -1 ? Theme.inset : Theme.canvas;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
     preferred-width: 460px;
@@ -850,7 +850,7 @@ export component AppWindow inherits Window {
     min-width: 380px;
     min-height: 560px;
 
-    in property <image> app-icon;
+    in property <int> repaint-epoch;
     // 状态
     in property <int> status-code;
     in property <string> partial;
@@ -885,6 +885,7 @@ export component AppWindow inherits Window {
     in-out property <float> sensitivity: 0.6;
     in-out property <float> kws-score: 1.5;
     in-out property <bool> follow-up;
+    in-out property <bool> duck-others;
     in-out property <bool> listen-on-start;
     in property <[string]> devices;
     in-out property <int> device-index;
@@ -1582,6 +1583,15 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             Toggle { checked <=> root.follow-up; }
+                        }
+                    }
+                    Divider { }
+                    SettingRow {
+                        title: "对话时调低其他声音";
+                        description: "说话和回答时把视频、音乐调小，结束后恢复，免得把电脑里的声音当成你说的话";
+                        VerticalLayout {
+                            alignment: center;
+                            Toggle { checked <=> root.duck-others; }
                         }
                     }
                 }

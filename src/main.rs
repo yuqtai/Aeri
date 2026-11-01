@@ -7,6 +7,7 @@ mod assistant;
 mod audio;
 mod ball;
 mod config;
+mod duck;
 mod fastpath;
 mod kws;
 mod llm;
@@ -25,7 +26,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -60,7 +61,6 @@ fn main() -> anyhow::Result<()> {
 
     let icon = icon_rgba();
     let window = AppWindow::new()?;
-    window.set_app_icon(slint::Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(include_bytes!("../assets/app-64.rgba"), 64, 64)));
     window.set_messages(ModelRc::from(Rc::new(VecModel::<ChatItem>::default())));
     let devices = Rc::new(RefCell::new(audio::input_device_names()));
     apply_config(&window, &cfg, &devices.borrow());
@@ -145,6 +145,7 @@ fn main() -> anyhow::Result<()> {
             if w.window().is_visible() {
                 w.set_memory(format!("内存 {:.0} MB", sys::private_memory_mb()).into());
                 sync_title_bar(&w);
+                hook_native_window(&w);
             }
         }
     });
@@ -327,6 +328,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_sensitivity(threshold_to_sensitivity(c.kws_threshold));
     w.set_kws_score(c.kws_score);
     w.set_follow_up(c.follow_up);
+    w.set_duck_others(c.duck_others);
     w.set_listen_on_start(c.listen_on_start);
     set_devices(w, devices, &c.input_device);
     w.set_desktop_control(c.desktop_control);
@@ -379,6 +381,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.kws_threshold = sensitivity_to_threshold(w.get_sensitivity());
     c.kws_score = (w.get_kws_score() * 10.0).round() / 10.0;
     c.follow_up = w.get_follow_up();
+    c.duck_others = w.get_duck_others();
     c.listen_on_start = w.get_listen_on_start();
     let idx = w.get_device_index();
     c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
@@ -678,6 +681,71 @@ fn sync_title_bar(w: &AppWindow) {
     }
 }
 
+thread_local! {
+    static HOOKED_WINDOW: RefCell<Option<(isize, slint::Weak<AppWindow>)>> = const { RefCell::new(None) };
+}
+
+/// 原生窗口创建后补两件 Slint 没管好的事（窗口还没真正创建时什么都不做，下次再试）：
+/// - 标题栏和任务栏图标：用 exe 里的品牌图标；
+/// - Windows 丢掉窗口内容要求重画时（锁屏、切换桌面、外部隐藏再显示等），Slint 只重画它认为变了的地方，
+///   其余部分会变成透明。这里接住带重画区域的 WM_PAINT，让整个窗口重画一遍。
+fn hook_native_window(w: &AppWindow) {
+    use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SendMessageW, WM_SETICON,
+    };
+    use windows::core::PCWSTR;
+
+    let Some(hwnd) = w.window().with_winit_window(|win| match win.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+        _ => None,
+    }).flatten() else { return };
+    if HOOKED_WINDOW.with_borrow(|h| h.as_ref().is_some_and(|(old, _)| *old == hwnd)) {
+        return;
+    }
+    HOOKED_WINDOW.set(Some((hwnd, w.as_weak())));
+    let hwnd = HWND(hwnd as *mut _);
+    unsafe {
+        let _ = SetWindowSubclass(hwnd, Some(repaint_on_invalidate), 1, 0);
+        // app.rc 里的 1 号图标资源，按系统要求的大小各取一份，比缩放 RGBA 清楚
+        let module = GetModuleHandleW(None).unwrap_or_default();
+        for (kind, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+            let size = GetSystemMetrics(metric);
+            if let Ok(icon) = LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) {
+                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(kind as usize)), Some(LPARAM(icon.0 as isize)));
+            }
+        }
+    }
+}
+
+unsafe extern "system" fn repaint_on_invalidate(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Graphics::Gdi::GetUpdateRect;
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::WM_PAINT;
+
+    // Slint 自己要求的重画没有重画区域；有区域说明是系统把内容丢了
+    if msg == WM_PAINT && unsafe { GetUpdateRect(hwnd, None, false) }.as_bool() {
+        // 窗口过程里不直接动界面，排队回到事件循环
+        let _ = slint::invoke_from_event_loop(|| {
+            if let Some(w) = HOOKED_WINDOW.with_borrow(|h| h.as_ref().and_then(|(_, weak)| weak.upgrade())) {
+                w.set_repaint_epoch(w.get_repaint_epoch().wrapping_add(1));
+            }
+        });
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
 /// 显示主界面（悬浮球随之隐藏）
 fn show_window(w: &AppWindow) {
     use slint::winit_030::WinitWindowAccessor;
@@ -687,6 +755,14 @@ fn show_window(w: &AppWindow) {
     w.window().with_winit_window(|win| win.focus_window());
     ball::set_visible(false);
     sync_title_bar(w);
+    hook_native_window(w);
+    // 启动时原生窗口要等事件循环跑起来才创建
+    let weak = w.as_weak();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = weak.upgrade() {
+            hook_native_window(&w);
+        }
+    });
 }
 
 /// 从悬浮球展开：主界面出现在悬浮球旁边（球在屏幕右半边就放左侧，反之放右侧），底边对齐

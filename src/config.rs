@@ -22,6 +22,8 @@ pub struct Config {
     pub show_window_on_start: bool,
     /// 回复后继续听几秒，不用再喊唤醒词
     pub follow_up: bool,
+    /// 对话时把其他程序的声音调低，免得麦克风把电脑里的声音也听进去
+    pub duck_others: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_url: String,
@@ -107,6 +109,7 @@ impl Default for Config {
             // 默认启动后只显示悬浮球，点开才出现主界面
             show_window_on_start: false,
             follow_up: true,
+            duck_others: true,
             asr_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
             asr_model: "fun-asr-realtime".into(),
             asr_api_key_protected: String::new(),

@@ -17,6 +17,7 @@ use crate::agent::{Agent, FRONT_PROMPT};
 use crate::asr::{self, AsrSettings};
 use crate::audio::{self, Ear, EarSettings, MODE_BARGE, MODE_CAPTURE, MODE_IDLE, MODE_MUTED, MODE_PAUSED};
 use crate::config::{self, Config};
+use crate::duck::Ducker;
 use crate::llm::Llm;
 use crate::player::Player;
 use crate::realtime::{self, RealtimeSettings, VOICE_PROMPT};
@@ -107,6 +108,7 @@ struct Assistant {
     stopped: bool,
     /// 上次打开麦克风失败是因为没有可用的麦克风（定时重试）
     mic_missing: bool,
+    ducker: Ducker,
 }
 
 pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: UnboundedSender<Command>, ui: UiSink) {
@@ -123,6 +125,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
         listening: cfg.listen_on_start,
         stopped: false,
         mic_missing: false,
+        ducker: Ducker::start(),
         agent: None,
         cfg,
         ui,
@@ -223,6 +226,7 @@ impl Assistant {
     }
 
     fn go_idle(&mut self) {
+        self.ducker.set(false);
         while self.audio_rx.try_recv().is_ok() {}
         self.set_mode(if self.listening { MODE_IDLE } else { MODE_PAUSED });
         self.emit(UiEvent::Partial(String::new()));
@@ -298,6 +302,8 @@ impl Assistant {
 
     /// 一次语音对话。notice：后台任务完成时要先告诉用户的内容
     async fn conversation(&mut self, notice: Option<String>) {
+        // 结束时 go_idle 会恢复
+        self.ducker.set(self.cfg.duck_others);
         if self.realtime_enabled() {
             match self.realtime_conversation(notice.as_deref()).await {
                 Ok(()) => {}
