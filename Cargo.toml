@@ -2,14 +2,15 @@
 name = "voa"
 version = "0.1.0"
 edition = "2024"
-description = "VOA，轻量 AI 语音助手：唤醒词 + 云端流式识别 + DeepSeek + 桌面/浏览器控制"
+description = "VOA，轻量 AI 语音助手：唤醒词 + 云端流式识别 + DeepSeek + 桌面控制（agent-desktop）/ 浏览器控制"
 
 [dependencies]
 # unstable-winit-030：拿到原生窗口，让标题栏颜色和界面背景一致
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "unstable-winit-030"] }
 tray-icon = "0.26"
 cpal = "0.18"
-uiautomation = "0.25"
+# 只用于读屏（screen_read）；桌面控制交给随程序附带的 agent-desktop.exe。pattern：读网页可见文字（TextPattern）
+uiautomation = { version = "0.25", features = ["pattern"] }
 # DLL 版：预编译的静态库需要 VS 17.10+ 的 MSVC，DLL 版不受编译器版本影响
 sherpa-onnx = { version = "2.0.1", default-features = false, features = ["shared"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }

@@ -12,6 +12,10 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+/// 设置了自己的大模型时，实时语音模型只负责听和说：判断、调工具都交给那个大模型，
+/// 想好的回复再交给它读出来
+pub const VOICE_PROMPT: &str = "你是语音播报员，只负责把文字读出来。用户消息里“【朗读】”后面的文字，用自然、口语的语气原样读出来，一字不改，不要回答、解释或补充任何内容。没有【朗读】标记的内容一律不要回应。";
+
 pub struct RealtimeSettings {
     pub url: String,
     pub model: String,
@@ -34,6 +38,8 @@ pub enum Event {
     /// 24k PCM16 语音
     Audio(Vec<u8>),
     FunctionCall { call_id: String, name: String, arguments: String },
+    /// 服务端开始生成一轮回复（包括说完话后它自动开始的那种）
+    ResponseCreated,
     /// 一轮回复结束：completed / cancelled / failed
     ResponseDone(String),
     Other,
@@ -60,22 +66,20 @@ impl Session {
             .iter()
             .map(|t| json!({"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}))
             .collect();
-        session
-            .send(json!({
-                "type": "session.update",
-                "session": {
-                    "modalities": ["audio", "text"],
-                    "voice": s.voice,
-                    "speech_rate": s.speech_rate,
-                    "instructions": s.instructions,
-                    "input_audio_format": "pcm",
-                    "output_audio_format": "pcm",
-                    "input_audio_transcription": {"language": "zh"},
-                    "tools": tools,
-                    "turn_detection": {"type": "smart_turn_v2"},
-                }
-            }))
-            .await?;
+        let mut config = json!({
+            "modalities": ["audio", "text"],
+            "voice": s.voice,
+            "speech_rate": s.speech_rate,
+            "instructions": s.instructions,
+            "input_audio_format": "pcm",
+            "output_audio_format": "pcm",
+            "input_audio_transcription": {"language": "zh"},
+            "turn_detection": {"type": "smart_turn_v2"},
+        });
+        if !tools.is_empty() {
+            config["tools"] = json!(tools);
+        }
+        session.send(json!({"type": "session.update", "session": config})).await?;
         // 等 session.updated；参数有错时服务端回 error
         loop {
             let msg = tokio::time::timeout(Duration::from_secs(8), session.ws.next()).await.context("实时语音服务无响应")?;
@@ -116,6 +120,11 @@ impl Session {
         self.create_response().await
     }
 
+    /// 只当嘴巴用时：把想好的回复交给它原样读出来（配合 VOICE_PROMPT）
+    pub async fn read_aloud(&mut self, text: &str) -> anyhow::Result<()> {
+        self.say(&format!("【朗读】{text}")).await
+    }
+
     pub async fn create_response(&mut self) -> anyhow::Result<()> {
         self.send(json!({"type": "response.create"})).await
     }
@@ -142,6 +151,7 @@ impl Session {
             "response.function_call_arguments.done" => {
                 Event::FunctionCall { call_id: s("call_id"), name: s("name"), arguments: s("arguments") }
             }
+            "response.created" => Event::ResponseCreated,
             "response.done" => Event::ResponseDone(v["response"]["status"].as_str().unwrap_or("completed").to_string()),
             "error" => {
                 let err = &v["error"];

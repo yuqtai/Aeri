@@ -14,6 +14,7 @@ mod mcp;
 mod player;
 mod realtime;
 mod resample;
+mod screen;
 mod sys;
 mod tasks;
 mod tools;

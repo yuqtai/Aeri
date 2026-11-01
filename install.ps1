@@ -6,12 +6,13 @@ $sourceRoot = [IO.Path]::GetFullPath($Source)
 $marker = Join-Path $installRoot 'installation.json'
 if ($sourceRoot -eq $installRoot) { throw '安装来源不能是安装目录本身。' }
 $sourceExe = Join-Path $sourceRoot 'voa.exe'
-if (!(Test-Path -LiteralPath $sourceExe) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'models\kws\tokens.txt'))) { throw '发布文件不完整，请先编译发布版。' }
+if (!(Test-Path -LiteralPath $sourceExe) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe')) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'models\kws\tokens.txt'))) { throw '发布文件不完整，请先编译发布版。' }
 if ((Test-Path -LiteralPath $installRoot) -and !(Test-Path -LiteralPath $marker)) { throw '安装目录已存在但不是本程序管理的安装，停止覆盖。' }
 $stage = Join-Path $env:TEMP ('VoiceAssistant-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     Copy-Item -LiteralPath $sourceExe -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe') -Destination $stage  # 桌面控制组件
     Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' | Copy-Item -Destination $stage
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'models') -Destination $stage -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uninstall.ps1') -Destination $stage

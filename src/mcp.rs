@@ -1,4 +1,4 @@
-//! `voa.exe --mcp`：把本程序的工具（启动/关闭程序、UI Automation 读控件、点击、输入、快捷键，
+//! `voa.exe --mcp`：把本程序的工具（启动/关闭程序、通过 agent-desktop 读控件、点击、填写、勾选、快捷键、读屏，
 //! 以及在独立 Edge 窗口里打开网页、点击、填写、读取页面的浏览器工具）以 MCP（标准输入输出 + JSON-RPC）
 //! 提供给 Codex / Claude Code 这些后台智能体。设置里关掉的桌面/浏览器控制，这里也不提供。
 //! 这个模式不开界面、不占麦克风，由智能体按需启动，任务结束时随它一起退出。
@@ -27,7 +27,7 @@ pub fn serve() -> anyhow::Result<()> {
                 "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "voice_desktop", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "操作用户 Windows 电脑的工具。桌面软件：先 desktop_focus 或 launch_app 把目标窗口切到前台，再 desktop_snapshot 拿控件编号，然后点击、输入、按快捷键。网页：用 browser_ 开头的工具，在独立的 Edge 窗口里打开网页、读页面结构（browser_snapshot）、点击、填写；这个窗口没有用户的登录状态。只是想让用户在自己的浏览器里看某个网站的搜索结果时，用 web_search 一步完成。"
+                "instructions": "操作用户 Windows 电脑的工具。桌面软件：先 desktop_snapshot 拿控件编号（窗口不用在前台），然后 desktop_click、desktop_set_value、desktop_select、desktop_check 操作，这些不抢焦点、会确认结果；界面变了要重新 desktop_snapshot。必须模拟键盘时先 desktop_focus 再用 desktop_type / desktop_keys。用户屏幕上正在看的内容用 screen_read 读，复制文字用 clipboard_write 直接写剪贴板。网页：用 browser_ 开头的工具，在独立的 Edge 窗口里打开网页、读页面结构（browser_snapshot）、点击、填写；这个窗口没有用户的登录状态。只是想让用户在自己的浏览器里看某个网站的搜索结果时，用 web_search 一步完成。"
             }),
             "ping" => json!({}),
             "tools/list" => json!({"tools": tools.definitions().iter().map(to_mcp_tool).collect::<Vec<_>>()}),

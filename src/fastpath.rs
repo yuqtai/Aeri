@@ -71,7 +71,9 @@ pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
     if let Some(c) = CLOSE.captures(&t).or_else(|| CLOSE_BA.captures(&t)) {
         let name = c[1].trim();
         // 只处理和进程名或开始菜单应用名完全一致的，其余（关闭蓝牙、关掉这个网页…）交给大模型
-        if !name.contains('的') {
+        // “关闭当前直播”“关掉这个网页”指的是屏幕上的东西，要结合前台窗口判断，也交给大模型
+        let deictic = ["当前", "这个", "这", "那个", "正在"].iter().any(|p| name.starts_with(p));
+        if !name.contains('的') && !deictic {
             if let Closed::Done(text) = process::close(name, apps, true) {
                 return Some(if text.starts_with("已关闭") { format!("已关闭{name}。") } else { format!("{text}。") });
             }
@@ -116,6 +118,13 @@ mod tests {
         assert_eq!(name("把网易云音乐关了").as_deref(), Some("网易云音乐"));
         assert_eq!(name("结束ChatGPT进程").as_deref(), Some("ChatGPT"));
         assert_eq!(name("打开微信"), None);
+    }
+
+    #[test]
+    fn deictic_close_goes_to_model() {
+        let apps = AppIndex::load_cached();
+        assert_eq!(try_handle("关闭当前直播", &apps), None);
+        assert_eq!(try_handle("把这个网页关掉", &apps), None);
     }
 
     #[test]

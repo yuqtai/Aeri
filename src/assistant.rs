@@ -9,8 +9,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::{Notify, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::agent::{Agent, FRONT_PROMPT};
 use crate::asr::{self, AsrSettings};
@@ -18,12 +19,12 @@ use crate::audio::{self, Ear, EarSettings, MODE_BARGE, MODE_CAPTURE, MODE_IDLE, 
 use crate::config::{self, Config};
 use crate::llm::Llm;
 use crate::player::Player;
-use crate::realtime::{self, RealtimeSettings};
+use crate::realtime::{self, RealtimeSettings, VOICE_PROMPT};
 use crate::tasks::{TaskDone, TaskManager, TaskSettings};
 use crate::tools::Tools;
 use crate::tools::apps::AppIndex;
 use crate::tts::Tts;
-use crate::{fastpath, sys};
+use crate::{fastpath, screen, sys};
 
 pub enum Command {
     /// 检测到唤醒词（来自耳朵线程）
@@ -404,8 +405,9 @@ impl Assistant {
                     ui(UiEvent::Chat(Role::Tool, text));
                 }
             };
+            let asked = with_screen(text);
             let result = tokio::select! {
-                r = agent.ask(text, on_tool) => Some(r),
+                r = agent.ask(&asked, on_tool) => Some(r),
                 _ = INTERRUPT.notified() => None,
             };
             match result {
@@ -470,31 +472,89 @@ impl Assistant {
             anyhow::bail!("麦克风不可用");
         }
         let api_key = config::asr_key(&self.cfg).ok_or_else(|| anyhow::anyhow!("实时语音需要阿里云百炼的 API Key"))?;
+        // 设置了自己的大模型（比如 DeepSeek）时，实时语音模型只负责听和说，判断、调工具都交给那个大模型；
+        // 没设置时才让实时语音模型自己当大脑
+        let local = self.agent.is_some();
         let settings = RealtimeSettings {
             url: self.cfg.realtime_url.clone(),
             model: self.cfg.realtime_model.clone(),
             voice: self.cfg.realtime_voice.clone(),
             api_key,
-            instructions: FRONT_PROMPT.to_string(),
-            tools: self.front_tools.definitions(),
+            // 唤醒时屏幕上在干什么；主界面在最前面时会跳过它，拿到用户刚才在看的窗口
+            instructions: if local { VOICE_PROMPT.to_string() } else { format!("{FRONT_PROMPT}\n\n{}", screen::hint()) },
+            tools: if local { Vec::new() } else { self.front_tools.definitions() },
             speech_rate: (1.0 + self.cfg.tts_rate as f32 * 0.1).clamp(0.5, 2.0),
         };
         self.emit(UiEvent::Status(Status::Thinking));
         let mut player = Player::open()?;
         let mut session = realtime::Session::connect(&settings).await?;
-        let result = self.realtime_loop(&mut session, &mut player, notice).await;
+        let mut thinking = Thinking::default();
+        let result = self.realtime_loop(&mut session, &mut player, notice, local, &mut thinking).await;
+        self.stop_thinking(&mut thinking).await;
         session.close().await;
         result
     }
 
-    async fn realtime_loop(&mut self, session: &mut realtime::Session, player: &mut Player, notice: Option<&str>) -> anyhow::Result<()> {
+    /// 让自己的大模型在后台想这句话（不挡住收音和打断），想完由实时语音模型读出来
+    fn think(&mut self, thinking: &mut Thinking, text: &str) {
+        let Some(mut agent) = self.agent.take() else { return };
+        let text = with_screen(text);
+        let ui = self.ui.clone();
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        let job = tokio::spawn(async move {
+            let on_tool = |name: &str, input: &Value| {
+                ui(UiEvent::Status(Status::Acting));
+                let text = describe_tool(name, input);
+                if !text.is_empty() {
+                    ui(UiEvent::Chat(Role::Tool, text));
+                }
+            };
+            let result = tokio::select! {
+                r = agent.ask(&text, on_tool) => Some(r),
+                _ = cancel_rx => {
+                    // 中途停下时对话历史可能不完整（有工具调用没有结果），丢掉以免下一轮出错
+                    agent.clear();
+                    None
+                }
+            };
+            (agent, result)
+        });
+        thinking.job = Some((job, cancel_tx));
+    }
+
+    /// 停下还没想完的，把大模型收回来
+    async fn stop_thinking(&mut self, thinking: &mut Thinking) {
+        if let Some((job, cancel)) = thinking.job.take() {
+            let _ = cancel.send(());
+            if let Ok((agent, _)) = job.await {
+                self.agent = Some(agent);
+            }
+        }
+        if self.agent.is_none() {
+            self.agent = self.build_agent();
+        }
+    }
+
+    async fn realtime_loop(
+        &mut self,
+        session: &mut realtime::Session,
+        player: &mut Player,
+        notice: Option<&str>,
+        local: bool,
+        thinking: &mut Thinking,
+    ) -> anyhow::Result<()> {
         let duplex = self.cfg.full_duplex;
         let barge = self.cfg.barge_in && self.listening;
         let notify = self.ear.as_ref().map(|e| e.barge.clone());
-        let mut responding = false; // 模型正在生成回复
+        let mut responding = false; // 模型正在生成（我们要的）回复
         let mut transcript = String::new();
         let mut calls: Vec<(String, String, String)> = Vec::new();
         let mut pending_notices: Vec<String> = Vec::new();
+        // 自己的大模型当大脑时：排队等着想的话、想好了排队等着读的回复、当前这轮回复是谁要的
+        let mut to_think: Vec<String> = Vec::new();
+        let mut to_speak: Vec<String> = Vec::new();
+        let mut speech = Speech::None;
+        let mut ours_requested = false;
         let mut resume_at: Option<Instant> = None; // 播完后什么时候恢复收音
         let mut user_speaking = false;
         // 回复有时比用户那句话的转写先到；先压着，等转写到了再按顺序显示
@@ -506,8 +566,13 @@ impl Assistant {
 
         if let Some(text) = notice {
             self.chat(Role::System, format!("（后台任务通知）{text}"));
-            session.say(&format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。")).await?;
-            responding = true;
+            let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
+            if local {
+                self.think(thinking, &text);
+            } else {
+                session.say(&text).await?;
+                responding = true;
+            }
             self.set_mode(MODE_MUTED);
         } else {
             while self.audio_rx.try_recv().is_ok() {}
@@ -534,7 +599,21 @@ impl Assistant {
                 }
                 event = session.next_event() => {
                     last_activity = Instant::now();
-                    match event? {
+                    let event = event?;
+                    let output = matches!(event, realtime::Event::Transcript(_) | realtime::Event::Audio(_) | realtime::Event::FunctionCall { .. });
+                    if local && output && speech != Speech::Ours {
+                        // 服务端没发 response.created 时，按第一段输出来分：是我们要读的就留下，否则取消
+                        if speech == Speech::None && std::mem::take(&mut ours_requested) {
+                            speech = Speech::Ours;
+                        } else {
+                            if speech == Speech::None {
+                                speech = Speech::Auto;
+                                session.cancel_response().await;
+                            }
+                            continue;
+                        }
+                    }
+                    match event {
                         realtime::Event::SpeechStarted => {
                             // 用户插话：服务端已经取消回复，本地也别再播了
                             user_speaking = true;
@@ -544,18 +623,35 @@ impl Assistant {
                         realtime::Event::SpeechStopped => {
                             user_speaking = false;
                             awaiting_user_text = true;
-                            responding = true;
+                            if !local {
+                                responding = true;
+                            }
                             self.emit(UiEvent::Status(Status::Thinking));
                         }
                         realtime::Event::UserPartial(text) => self.emit(UiEvent::Partial(text)),
                         realtime::Event::UserText(text) => {
                             self.emit(UiEvent::Partial(String::new()));
-                            if !text.trim().is_empty() {
-                                self.chat(Role::User, text);
-                            }
                             awaiting_user_text = false;
+                            if !text.trim().is_empty() {
+                                self.chat(Role::User, text.clone());
+                                if local {
+                                    // 正在想上一句时先排队，想完接着想这句
+                                    if thinking.job.is_some() {
+                                        to_think.push(text);
+                                    } else {
+                                        self.think(thinking, &text);
+                                    }
+                                }
+                            }
                             if let Some(reply) = held_reply.take() {
                                 self.chat(Role::Assistant, reply);
+                            }
+                        }
+                        realtime::Event::ResponseCreated if local => {
+                            // 服务端在用户说完话后会自己开始回答；只留我们要它读的那轮，其余的马上取消
+                            speech = if std::mem::take(&mut ours_requested) { Speech::Ours } else { Speech::Auto };
+                            if speech == Speech::Auto {
+                                session.cancel_response().await;
                             }
                         }
                         realtime::Event::Transcript(delta) => transcript.push_str(&delta),
@@ -571,6 +667,22 @@ impl Assistant {
                             resume_at = None;
                         }
                         realtime::Event::FunctionCall { call_id, name, arguments } => calls.push((call_id, name, arguments)),
+                        realtime::Event::ResponseDone(status) if local => {
+                            let was = std::mem::replace(&mut speech, Speech::None);
+                            transcript.clear(); // 显示的是大模型想好的原文，不用实时模型的转写
+                            if was == Speech::Ours {
+                                responding = false;
+                                if status == "failed" {
+                                    self.chat(Role::System, "实时语音这一轮播报失败了");
+                                }
+                            }
+                            if !responding && !to_speak.is_empty() {
+                                let reply = to_speak.remove(0);
+                                session.read_aloud(&reply).await?;
+                                ours_requested = true;
+                                responding = true;
+                            }
+                        }
                         realtime::Event::ResponseDone(status) => {
                             responding = false;
                             if !transcript.trim().is_empty() {
@@ -605,7 +717,41 @@ impl Assistant {
                                 responding = true;
                             }
                         }
-                        realtime::Event::Other => {}
+                        realtime::Event::ResponseCreated | realtime::Event::Other => {}
+                    }
+                }
+                finished = async { (&mut thinking.job.as_mut().unwrap().0).await }, if thinking.job.is_some() => {
+                    thinking.job = None;
+                    let reply = match finished {
+                        Ok((agent, result)) => {
+                            self.agent = Some(agent);
+                            match result {
+                                Some(Ok(reply)) => Some(reply),
+                                Some(Err(e)) => {
+                                    self.chat(Role::System, format!("{e:#}"));
+                                    Some(format!("这次没能确认完成：{e}。"))
+                                }
+                                None => None,
+                            }
+                        }
+                        Err(e) => {
+                            self.agent = self.build_agent();
+                            Some(format!("这次出错了：{e}。"))
+                        }
+                    };
+                    if let Some(reply) = reply {
+                        self.chat(Role::Assistant, reply.clone());
+                        if responding || speech != Speech::None {
+                            to_speak.push(reply);
+                        } else {
+                            session.read_aloud(&reply).await?;
+                            ours_requested = true;
+                            responding = true;
+                        }
+                    }
+                    if !to_think.is_empty() {
+                        let text = to_think.remove(0);
+                        self.think(thinking, &text);
                     }
                 }
                 done = self.done_rx.recv() => {
@@ -613,7 +759,13 @@ impl Assistant {
                         let text = if done.ok { format!("任务{}返回结果：{}", done.id, done.text) } else { format!("任务{}没做成：{}", done.id, done.text) };
                         self.chat(Role::System, format!("（后台任务通知）{text}"));
                         let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
-                        if responding || user_speaking {
+                        if local {
+                            if thinking.job.is_some() {
+                                to_think.push(text);
+                            } else {
+                                self.think(thinking, &text);
+                            }
+                        } else if responding || user_speaking {
                             pending_notices.push(text);
                         } else {
                             session.say(&text).await?;
@@ -637,6 +789,8 @@ impl Assistant {
                 }
                 _ = ticker.tick() => {
                     let playing = player.is_playing();
+                    // 自己的大模型还在想、或者还有回复没读：算作正在回复
+                    let responding = responding || thinking.job.is_some() || !to_think.is_empty() || !to_speak.is_empty();
                     if playing || responding {
                         last_activity = Instant::now();
                     }
@@ -666,6 +820,28 @@ impl Assistant {
         }
         Ok(())
     }
+}
+
+/// 带上用户说话时屏幕上在干什么，“关闭当前直播”“复制这条帖子”才知道指哪个
+fn with_screen(text: &str) -> String {
+    let hint = screen::hint();
+    if hint.is_empty() { text.to_string() } else { format!("{text}\n\n{hint}") }
+}
+
+/// 实时语音里正在后台想的大模型：任务拿着 Agent，想完连同结果一起还回来
+#[derive(Default)]
+struct Thinking {
+    job: Option<(JoinHandle<(Agent, Option<anyhow::Result<String>>)>, oneshot::Sender<()>)>,
+}
+
+/// 实时语音服务端当前这一轮回复是谁要的
+#[derive(Clone, Copy, PartialEq)]
+enum Speech {
+    None,
+    /// 我们让它读的
+    Ours,
+    /// 用户说完话后它自己开始的回答（大脑是自己的大模型时要取消）
+    Auto,
 }
 
 /// 工具调用在对话里显示成一句人话；返回空字符串表示不单独显示（后台任务自己会报告）
@@ -702,7 +878,18 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         "desktop_windows" => "查看打开的窗口".into(),
         "desktop_focus" => with("切换到窗口", arg("name")),
         "desktop_snapshot" => with("读取窗口内容", arg("window")),
+        "screen_read" => "看看屏幕上的内容".into(),
+        "clipboard_write" => "复制到剪贴板".into(),
+        "clipboard_read" => "读取剪贴板".into(),
         "desktop_click" => if input["double"].as_bool() == Some(true) { "双击".into() } else { "点击".into() },
+        "desktop_set_value" => with("填写", arg("value")),
+        "desktop_select" => with("选择", arg("option")),
+        "desktop_check" => match input["checked"].as_bool() {
+            Some(true) => "勾选".into(),
+            Some(false) => "取消勾选".into(),
+            None => "切换开关".into(),
+        },
+        "desktop_scroll" => "滚动".into(),
         "desktop_type" | "browser_type" => with("输入", arg("text")),
         "desktop_keys" | "browser_press_key" => with("按键", arg(if name == "desktop_keys" { "keys" } else { "key" })),
         "browser_navigate_back" => "网页后退".into(),

@@ -1,4 +1,4 @@
-﻿# 构建脚本：加载 VS 编译环境（让链接器找到 Windows SDK），编译后把模型复制到 exe 旁边。
+﻿# 构建脚本：加载 VS 编译环境（让链接器找到 Windows SDK），编译后把模型和桌面控制组件 agent-desktop.exe 复制到 exe 旁边。
 # 用法：  .\build.ps1            # 调试版
 #        .\build.ps1 -Release   # 发布版，并把能直接运行的整套文件放到 dist\（双击 dist\voa.exe 即可）
 param([switch]$Release, [switch]$Run, [switch]$Test)
@@ -26,8 +26,31 @@ if ($sdk -and $env:LIB -notmatch [regex]::Escape("$($sdk.Name)\um\x64")) {
     $env:PATH = "$env:PATH;$kits\bin\$($sdk.Name)\x64"
 }
 
+# 桌面控制组件：固定版本，第一次编译时从 GitHub 下载并校验，之后用 vendor\ 里的缓存
+$agentDesktopVersion = 'v1.0.2'
+$agentDesktopSha256 = '2186c76e7df197c0e67365e45d36d869f74714c56bb8a73817e2a66f3e18e222'
+function Get-AgentDesktop {
+    $dir = Join-Path $PSScriptRoot "vendor\agent-desktop\$agentDesktopVersion"
+    $exe = Join-Path $dir 'agent-desktop.exe'
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $name = "agent-desktop-$agentDesktopVersion-x86_64-pc-windows-msvc.tar.gz"
+    $archive = Join-Path $dir $name
+    Write-Host "下载桌面控制组件 agent-desktop $agentDesktopVersion ..."
+    Invoke-WebRequest "https://github.com/vercel-labs/agent-desktop/releases/download/$agentDesktopVersion/$name" -OutFile $archive -UseBasicParsing
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $agentDesktopSha256) {
+        Remove-Item -LiteralPath $archive
+        throw 'agent-desktop 下载文件校验失败'
+    }
+    tar -xzf $archive -C $dir agent-desktop.exe
+    if ($LASTEXITCODE -ne 0) { throw '解压 agent-desktop 失败' }
+    Remove-Item -LiteralPath $archive
+    return $exe
+}
+
 Push-Location $PSScriptRoot
 try {
+    $agentDesktop = Get-AgentDesktop
     [string[]]$profileArgs = @()
     if ($Release) { $profileArgs += '--release' }
     if ($Test) {
@@ -37,6 +60,7 @@ try {
     cargo build @profileArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $outDir = Join-Path $env:CARGO_TARGET_DIR ($(if ($Release) { 'release' } else { 'debug' }))
+    Copy-Item -LiteralPath $agentDesktop -Destination $outDir -Force
     # 只复制实际加载的模型文件（int8 编码器/连接器 + 解码器 + tokens），约 5MB
     $modelsOut = Join-Path $outDir 'models'
     if (Test-Path $modelsOut) { Remove-Item -Recurse -Force $modelsOut }
@@ -54,7 +78,7 @@ try {
             Start-Sleep -Milliseconds 500
             Write-Host "已关闭正在运行的旧版本"
         }
-        robocopy $outDir $dist voa.exe *.dll /NFL /NDL /NJH /NJS | Out-Null
+        robocopy $outDir $dist voa.exe agent-desktop.exe *.dll /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "复制到 dist 失败（robocopy $LASTEXITCODE）" }
         Remove-Item -LiteralPath (Join-Path $dist 'voice-assistant.exe') -ErrorAction SilentlyContinue  # 改名前的旧程序
         robocopy $modelsOut (Join-Path $dist 'models') /MIR /NFL /NDL /NJH /NJS | Out-Null

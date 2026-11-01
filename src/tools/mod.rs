@@ -1,12 +1,13 @@
-//! 工具注册表：本地工具 + 桌面控制 + 浏览器控制。
+//! 工具注册表：本地工具 + 桌面控制（agent-desktop）+ 读屏 + 浏览器控制。
 //! - 前台对话用全套工具再加上后台任务（开始 / 进度 / 取消）：几步能做完的自己做，耗时长的才交出去；
 //! - 内置后台助手和 MCP（给 Codex / Claude Code）用全套工具，不带后台任务工具。
-//! 前台和内置后台助手共用同一个桌面控制线程和浏览器会话。
+//! 前台和内置后台助手共用同一个桌面控制、读屏线程和浏览器会话。
 
 pub mod apps;
 pub mod browser;
 pub mod desktop;
 pub mod process;
+pub mod reader;
 
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ use crate::tasks::TaskManager;
 pub struct Tools {
     pub apps: Arc<apps::AppIndex>,
     desktop: Option<Arc<desktop::Desktop>>,
+    reader: Option<Arc<reader::Reader>>,
     browser: Option<Arc<browser::Browser>>,
     tasks: Option<Arc<TaskManager>>,
 }
@@ -28,6 +30,7 @@ impl Tools {
         Self {
             apps,
             desktop: cfg.desktop_control.then(|| Arc::new(desktop::Desktop::new())),
+            reader: cfg.desktop_control.then(|| Arc::new(reader::Reader::new())),
             browser: cfg.browser_control.then(|| browser::Browser::new(&cfg.playwright_mcp, cfg.browser_idle_minutes)),
             tasks: None,
         }
@@ -35,12 +38,18 @@ impl Tools {
 
     /// 只有本地工具（启动时占位用）
     pub fn local_only(apps: Arc<apps::AppIndex>) -> Self {
-        Self { apps, desktop: None, browser: None, tasks: None }
+        Self { apps, desktop: None, reader: None, browser: None, tasks: None }
     }
 
     /// 前台工具：同一套工具再加上后台任务
     pub fn with_tasks(&self, tasks: Arc<TaskManager>) -> Self {
-        Self { apps: self.apps.clone(), desktop: self.desktop.clone(), browser: self.browser.clone(), tasks: Some(tasks) }
+        Self {
+            apps: self.apps.clone(),
+            desktop: self.desktop.clone(),
+            reader: self.reader.clone(),
+            browser: self.browser.clone(),
+            tasks: Some(tasks),
+        }
     }
 
     /// MCP 模式给外部智能体用：全套工具（桌面 + 浏览器，按设置里的开关），但没有后台任务工具
@@ -56,6 +65,9 @@ impl Tools {
         }
         if self.desktop.is_some() {
             defs.extend(desktop::definitions());
+        }
+        if self.reader.is_some() {
+            defs.extend(reader::definitions());
         }
         if self.browser.is_some() {
             defs.extend(browser::definitions());
@@ -86,7 +98,12 @@ impl Tools {
                 .flatten()
                 .unwrap_or_else(|| ("进程工具执行失败".into(), true));
         }
-        if name.starts_with("desktop_") {
+        if name == "screen_read" {
+            if let Some(r) = &self.reader {
+                return r.call(input).await;
+            }
+        }
+        if name.starts_with("desktop_") || name.starts_with("clipboard_") {
             if let Some(d) = &self.desktop {
                 return d.call(name, input).await;
             }

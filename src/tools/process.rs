@@ -78,7 +78,7 @@ fn processes() -> Vec<Proc> {
     out
 }
 
-fn image_path(pid: u32) -> String {
+pub(crate) fn image_path(pid: u32) -> String {
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return String::new() };
         let mut buf = [0u16; 1024];

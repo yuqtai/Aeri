@@ -2,6 +2,9 @@
 target/
 dist/
 
+# 编译时下载的第三方组件（agent-desktop.exe，由 build.ps1 下载并校验）
+vendor/
+
 # 唤醒词模型（约 39 MB，按 README 下载）
 models/
 
