@@ -906,6 +906,7 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         "reminder_add" => with("设提醒", arg("text")),
         "reminder_list" => "查看提醒".into(),
         "reminder_cancel" => "取消提醒".into(),
+        "app_update" => if input["action"] == "install" { "更新 Aeri".into() } else { "检查更新".into() },
         "clipboard_write" => "复制到剪贴板".into(),
         "clipboard_read" => "读取剪贴板".into(),
         "desktop_click" => if input["double"].as_bool() == Some(true) { "双击".into() } else { "点击".into() },

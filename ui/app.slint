@@ -886,6 +886,12 @@ export component AppWindow inherits Window {
     in-out property <float> kws-score: 1.5;
     in-out property <bool> follow-up;
     in-out property <bool> duck-others;
+    // 软件更新：update-action 0 检查、1 有新版本可安装、2 正在进行
+    in-out property <bool> auto-update;
+    in property <string> app-version;
+    in property <string> update-status;
+    in property <int> update-action;
+    callback update-clicked();
     in-out property <bool> listen-on-start;
     in property <[string]> devices;
     in-out property <int> device-index;
@@ -1698,6 +1704,33 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             Toggle { checked <=> root.show-on-start; }
+                        }
+                    }
+                }
+
+                SectionLabel { text: "软件更新"; }
+                Card {
+                    SettingRow {
+                        title: "当前版本 " + root.app-version;
+                        description: root.update-status != "" ? root.update-status : "从 GitHub 下载新版本，校验后自动替换并重启，设置和 API Key 都会保留";
+                        VerticalLayout {
+                            alignment: center;
+                            Btn {
+                                width: 96px;
+                                text: root.update-action == 1 ? "更新" : root.update-action == 2 ? "请稍候…" : "检查更新";
+                                kind: root.update-action == 1 ? 0 : 1;
+                                enabled: root.update-action != 2;
+                                clicked => { root.update-clicked(); }
+                            }
+                        }
+                    }
+                    Divider { }
+                    SettingRow {
+                        title: "自动检查更新";
+                        description: "每天检查一次，有新版本时在对话里提醒，不会自己安装";
+                        VerticalLayout {
+                            alignment: center;
+                            Toggle { checked <=> root.auto-update; }
                         }
                     }
                 }

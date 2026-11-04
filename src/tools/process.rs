@@ -78,6 +78,13 @@ fn processes() -> Vec<Proc> {
     out
 }
 
+/// 程序文件在某个文件夹里的进程（更新时要先结束它们，才能替换文件）
+pub(crate) fn pids_in_dir(dir: &std::path::Path) -> Vec<u32> {
+    let dir = dir.to_string_lossy().to_lowercase();
+    let dir = dir.trim_end_matches('\\').to_string() + "\\";
+    processes().into_iter().filter(|p| p.path.to_lowercase().starts_with(&dir)).map(|p| p.pid).collect()
+}
+
 pub(crate) fn image_path(pid: u32) -> String {
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return String::new() };

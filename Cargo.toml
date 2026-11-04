@@ -1,6 +1,6 @@
 [package]
 name = "aeri"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Aeri，轻量 AI 语音助手：唤醒词 + 云端流式识别 + DeepSeek + 桌面控制（agent-desktop）/ 浏览器控制"
 
@@ -14,7 +14,7 @@ uiautomation = { version = "0.25", features = ["pattern"] }
 # DLL 版：预编译的静态库需要 VS 17.10+ 的 MSVC，DLL 版不受编译器版本影响
 sherpa-onnx = { version = "2.0.1", default-features = false, features = ["shared"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "system-proxy"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 pinyin = "0.11"
@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
+sha2 = "0.10"
 
 [dependencies.windows]
 version = "0.62"

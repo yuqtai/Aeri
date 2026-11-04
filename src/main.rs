@@ -21,6 +21,7 @@ mod sys;
 mod tasks;
 mod tools;
 mod tts;
+mod update;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -49,6 +50,12 @@ fn main() -> anyhow::Result<()> {
     }
     if args.get(1).map(String::as_str) == Some("--mcp") {
         return mcp::serve(); // 给 Codex / Claude Code 提供桌面工具，不开界面
+    }
+    if args.get(1).map(String::as_str) == Some("--update") {
+        return update::update_from_command_line(); // 命令行更新：检查、下载、替换，正在运行的 Aeri 会被重启
+    }
+    if args.get(1).map(String::as_str) == Some("--apply-update") {
+        return update::apply(&args[2..]); // 新版本替换安装目录里的文件，然后启动新版
     }
     if !sys::single_instance() {
         return Ok(()); // 已经在运行了
@@ -87,6 +94,7 @@ fn main() -> anyhow::Result<()> {
 
     wire_chat(&window, &cmd_tx);
     wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
+    wire_update(&window, runtime.handle().clone(), cfg.auto_update);
     mark_settings_clean(&window);
     let _tray = create_tray(&window, cmd_tx.clone(), icon)?;
 
@@ -330,6 +338,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_kws_score(c.kws_score);
     w.set_follow_up(c.follow_up);
     w.set_duck_others(c.duck_others);
+    w.set_auto_update(c.auto_update);
     w.set_listen_on_start(c.listen_on_start);
     set_devices(w, devices, &c.input_device);
     w.set_desktop_control(c.desktop_control);
@@ -383,6 +392,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.kws_score = (w.get_kws_score() * 10.0).round() / 10.0;
     c.follow_up = w.get_follow_up();
     c.duck_others = w.get_duck_others();
+    c.auto_update = w.get_auto_update();
     c.listen_on_start = w.get_listen_on_start();
     let idx = w.get_device_index();
     c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
@@ -476,6 +486,97 @@ fn validate(c: &Config) -> Option<String> {
         return Some("后台智能体的工作目录不存在".into());
     }
     None
+}
+
+// ---------- 软件更新 ----------
+
+const UPDATE_CHECK: i32 = 0;
+const UPDATE_INSTALL: i32 = 1;
+const UPDATE_BUSY: i32 = 2;
+
+fn set_update(weak: &slint::Weak<AppWindow>, action: i32, status: String) {
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = weak.upgrade() {
+            w.set_update_action(action);
+            w.set_update_status(status.into());
+        }
+    });
+}
+
+fn found_text(rel: &update::Release) -> String {
+    let summary = update::notes_summary(&rel.notes);
+    let size = if rel.size > 0 { format!("（{:.1} MB）", rel.size as f64 / 1048576.0) } else { String::new() };
+    if summary.is_empty() { format!("有新版本 v{}{size}", rel.version) } else { format!("有新版本 v{}{size}：
+{summary}", rel.version) }
+}
+
+/// 检查更新；manual 为 false 时是自动检查，没有新版本或出错都不打扰
+async fn run_check(weak: slint::Weak<AppWindow>, manual: bool) {
+    match update::check().await {
+        Ok(Some(rel)) => {
+            set_update(&weak, UPDATE_INSTALL, found_text(&rel));
+            let text = format!("发现新版本 v{}，可以在设置页底部点“更新”，或者直接对我说“更新软件”。", rel.version);
+            update::set_latest(Some(rel));
+            let weak2 = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak2.upgrade() {
+                    push_chat(&w, 3, text, None);
+                }
+            });
+        }
+        Ok(None) => set_update(&weak, UPDATE_CHECK, format!("已经是最新版本（v{}）", update::CURRENT)),
+        Err(e) if manual => set_update(&weak, UPDATE_CHECK, format!("检查失败：{e:#}")),
+        Err(_) => set_update(&weak, UPDATE_CHECK, String::new()),
+    }
+}
+
+fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
+    window.set_app_version(format!("v{}", update::CURRENT).into());
+    if let Some(text) = update::take_result() {
+        push_chat(window, 3, text, None);
+    }
+    let weak = window.as_weak();
+    let rt2 = rt.clone();
+    window.on_update_clicked(move || {
+        let rt = &rt2;
+        let Some(w) = weak.upgrade() else { return };
+        let weak = weak.clone();
+        match w.get_update_action() {
+            UPDATE_CHECK => {
+                w.set_update_action(UPDATE_BUSY);
+                w.set_update_status("正在检查…".into());
+                rt.spawn(run_check(weak, true));
+            }
+            UPDATE_INSTALL => {
+                let Some(rel) = update::latest() else { return };
+                w.set_update_action(UPDATE_BUSY);
+                w.set_update_status("正在下载…".into());
+                rt.spawn(async move {
+                    let progress_weak = weak.clone();
+                    let version = rel.version.clone();
+                    let r = update::download(&rel, move |p| set_update(&progress_weak, UPDATE_BUSY, format!("正在下载 v{version}：{p}%"))).await;
+                    match r.and_then(|dir| update::launch_apply(&dir)) {
+                        Ok(()) => {
+                            set_update(&weak, UPDATE_BUSY, "下载完成，正在重启以完成更新…".into());
+                            tokio::time::sleep(Duration::from_millis(800)).await;
+                            let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); });
+                        }
+                        Err(e) => set_update(&weak, UPDATE_INSTALL, format!("更新失败：{e:#}")),
+                    }
+                });
+            }
+            _ => {}
+        }
+    });
+    if auto && update::due() {
+        let weak = window.as_weak();
+        rt.spawn(async move {
+            // 启动后先等一会儿，不和开机时的其他事抢网络
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            run_check(weak, false).await;
+        });
+    }
 }
 
 fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices: Rc<RefCell<Vec<String>>>, rt: Handle) {

@@ -87,6 +87,7 @@
 | `src/llm.rs` / `src/agent.rs` | DeepSeek（Anthropic 兼容接口）和工具调用循环，分前台（对话）和后台（内置执行者）两种 |
 | `src/fastpath.rs` | 不经过大模型的常用命令（打开/关闭程序、“打开抖音搜索 X”这类网站搜索、时间、音量） |
 | `src/tools/` | 本地工具、文件操作（`files.rs`）、系统工具（`system.rs`：音量、系统开关、截图、电源、窗口、系统状态、计算、剪贴板历史）、关闭程序（含后台进程）、桌面控制和剪贴板（`desktop.rs`，调用 agent-desktop）、读屏（`reader.rs`，直接用 UI Automation）、按需启动的浏览器控制 |
+| `src/update.rs` | 软件更新：检查 GitHub Release、下载校验、替换文件（失败回滚）并重启 |
 | `src/reminders.rs` | 提醒和倒计时，存在 `reminders.json`，重启后还在，到点由助手主动说出来 |
 | `src/screen.rs` | 屏幕上下文：用户正在看的窗口（标题、程序、是否全屏），每句话都带给大模型；也负责按标题快速找窗口 |
 | `src/tts.rs` | SAPI 播报，可中途打断 |
@@ -196,6 +197,11 @@ key 用 Windows DPAPI 加密后存在配置文件里，只有当前 Windows 账�
 
 安装后，每次 `build.ps1 -Release` 会自动更新并启动安装版。更新时会停止旧版本，请先等正在执行的任务结束。也可以单独重新运行 `install.ps1` 更新已有发布文件。这是本机编译更新流程，尚未接入在线更新服务。
 
+
+**软件内更新**：设置页底部“软件更新”可以检查并一键更新；默认每天自动检查一次，有新版本时在对话里提醒（不会自己安装），也可以直接说“更新软件”。也可以在命令行运行 `aeri.exe --update`。更新流程：从 GitHub Release 下载 `Aeri-vX.Y.Z-windows-x64.zip`，按 GitHub 给出的 SHA-256 校验，解压到 `%TEMP%\aeri-update`，由新版本的 `aeri.exe --apply-update` 等旧程序退出后替换安装目录里的文件并重新启动；替换失败会恢复原来的文件。设置、API Key、提醒在 `%APPDATA%\VoiceAssistant`，不受影响。
+
+**发版**：改好 `Cargo.toml` 里的版本号并提交后运行 `.\scripts
+elease.ps1 -Notes 说明.md`，会编译、打包、生成校验文件、推送标签并创建 GitHub Release。自动更新依赖附件的文件名，不要改。
 ## 应用图标
 
 品牌源文件为 `assets/app.svg`，多尺寸 Windows 图标为 `assets/app.ico`；窗口、托盘与 exe 共用同一图形。运行 `python scripts/generate_icon.py`（需要 Pillow）重新生成 PNG、ICO 和嵌入的 RGBA 数据，再运行 `build.ps1 -Release` 更新安装版。

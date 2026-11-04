@@ -24,6 +24,8 @@ pub struct Config {
     pub follow_up: bool,
     /// 对话时把其他程序的声音调低，免得麦克风把电脑里的声音也听进去
     pub duck_others: bool,
+    /// 每天自动检查一次 GitHub 上有没有新版本
+    pub auto_update: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_url: String,
@@ -110,6 +112,7 @@ impl Default for Config {
             show_window_on_start: false,
             follow_up: true,
             duck_others: true,
+            auto_update: true,
             asr_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
             asr_model: "fun-asr-realtime".into(),
             asr_api_key_protected: String::new(),
