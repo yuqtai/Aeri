@@ -9,6 +9,8 @@ pub async fn run(script: &str, env: &[(&str, String)], timeout: Duration) -> Res
     let script = format!("$ErrorActionPreference='Stop'\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n{script}");
     let mut cmd = tokio::process::Command::new("powershell.exe");
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script]).creation_flags_no_window();
+    // 从 PowerShell 7 里启动时会继承它的模块路径，系统自带的 5.1 加载不了 Get-Acl 之类的命令
+    cmd.env_remove("PSModulePath");
     for (k, v) in env {
         cmd.env(k, v);
     }

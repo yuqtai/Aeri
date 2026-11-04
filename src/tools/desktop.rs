@@ -143,8 +143,20 @@ impl Desktop {
         }
     }
 
-    /// 运行一条 agent-desktop 命令，成功时返回 data，失败时返回给模型看的错误说明
+    /// 运行一条 agent-desktop 命令，成功时返回 data，失败时返回给模型看的错误说明。
+    /// 数据文件夹的权限被别的程序改过（比如 Codex 沙箱给自己加了修改权限）时，
+    /// agent-desktop 会拒绝工作；这时把多余的权限删掉再试一次。
     async fn run(&self, args: &[&str]) -> Result<Value, String> {
+        match self.run_once(args).await {
+            Err(e) if e == DACL_ERROR => {
+                repair_data_dir_acl().await.map_err(|e| format!("桌面控制组件的数据文件夹权限不对，自动修复失败：{e}"))?;
+                self.run_once(args).await.map_err(|e| if e == DACL_ERROR { "桌面控制组件的数据文件夹权限不对，修复后仍然不行".to_string() } else { e })
+            }
+            r => r,
+        }
+    }
+
+    async fn run_once(&self, args: &[&str]) -> Result<Value, String> {
         let exe = self.exe.as_ref().ok_or_else(|| format!("没有找到桌面控制组件 {EXE}，它应该放在 aeri.exe 旁边，请重新安装"))?;
         let mut cmd = Command::new(exe);
         cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
@@ -156,6 +168,9 @@ impl Desktop {
         let reply: Value = serde_json::from_slice(&out.stdout).map_err(|_| "桌面控制组件没有返回结果".to_string())?;
         if reply["ok"].as_bool() == Some(true) {
             return Ok(reply["data"].clone());
+        }
+        if reply["error"]["message"].as_str().is_some_and(|m| m.contains("DACL")) {
+            return Err(DACL_ERROR.into());
         }
         Err(describe_error(&reply["error"]))
     }
@@ -222,6 +237,28 @@ impl Desktop {
         let snap = self.snapshot.lock().unwrap().clone().ok_or("还没有读取过窗口，请先调用 desktop_snapshot")?;
         Ok(format!("@{snap}:e{n}"))
     }
+}
+
+const DACL_ERROR: &str = "agent-desktop: DACL";
+
+/// 只保留当前用户、SYSTEM、管理员组对 %USERPROFILE%\.agent-desktop 的权限（它要求快照文件只有自己能改）
+const REPAIR_ACL: &str = r#"$d=Join-Path $env:USERPROFILE '.agent-desktop'
+if(-not (Test-Path -LiteralPath $d)){ 'OK'; exit }
+$keep=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')
+$n=0
+foreach($item in @(Get-Item -LiteralPath $d -Force) + @(Get-ChildItem -LiteralPath $d -Recurse -Force)){
+  $acl=$item.GetAccessControl('Access'); $changed=$false
+  foreach($r in @($acl.Access)){
+    if($r.IsInherited){ continue }
+    $sid=try{ $r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }catch{ $r.IdentityReference.Value }
+    if($keep -notcontains $sid){ [void]$acl.RemoveAccessRuleSpecific($r); $changed=$true; $n++ }
+  }
+  if($changed){ $item.SetAccessControl($acl) }
+}
+"OK $n""#;
+
+async fn repair_data_dir_acl() -> Result<(), String> {
+    super::ps::run(REPAIR_ACL, &[], Duration::from_secs(20)).await.map(|_| ())
 }
 
 /// agent-desktop.exe 放在 aeri.exe 旁边；开发时也可以装在 PATH 里
