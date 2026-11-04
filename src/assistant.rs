@@ -21,6 +21,7 @@ use crate::duck::Ducker;
 use crate::llm::Llm;
 use crate::player::Player;
 use crate::realtime::{self, RealtimeSettings, VOICE_PROMPT};
+use crate::reminders::Reminders;
 use crate::tasks::{TaskDone, TaskManager, TaskSettings};
 use crate::tools::Tools;
 use crate::tools::apps::AppIndex;
@@ -94,6 +95,7 @@ struct Assistant {
     cmd_tx: UnboundedSender<Command>,
     apps: Arc<AppIndex>,
     tasks: Arc<TaskManager>,
+    reminders: Arc<Reminders>,
     done_rx: UnboundedReceiver<TaskDone>,
     /// 前台工具：快速本地工具 + 后台任务
     front_tools: Arc<Tools>,
@@ -119,6 +121,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
     }
     let (audio_tx, audio_rx) = unbounded_channel();
     let (done_tx, done_rx) = unbounded_channel();
+    let reminders = Reminders::new(done_tx.clone());
     let tasks = TaskManager::new(done_tx, ui.clone());
     let mut a = Assistant {
         front_tools: Arc::new(Tools::local_only(apps.clone())), // 马上由 apply_config 换成正式的
@@ -132,6 +135,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
         cmd_tx,
         apps,
         tasks,
+        reminders,
         done_rx,
         tts: Tts::new(),
         ear: None,
@@ -236,7 +240,7 @@ impl Assistant {
     /// 根据配置重建工具、前台助手和后台任务设置
     fn apply_config(&mut self) {
         let full_tools = Arc::new(Tools::new(&self.cfg, self.apps.clone()));
-        self.front_tools = Arc::new(full_tools.with_tasks(self.tasks.clone()));
+        self.front_tools = Arc::new(full_tools.with_tasks(self.tasks.clone(), self.reminders.clone()));
         self.tasks.update_settings(TaskSettings::from_config(&self.cfg, full_tools));
         self.agent = self.build_agent();
     }
@@ -333,7 +337,7 @@ impl Assistant {
 
     /// 后台任务做完了：主动告诉用户
     async fn announce(&mut self, done: TaskDone) {
-        let text = if done.ok { format!("任务{}返回结果：{}", done.id, done.text) } else { format!("任务{}没做成：{}", done.id, done.text) };
+        let text = done.message();
         self.conversation(Some(text)).await;
     }
 
@@ -571,7 +575,7 @@ impl Assistant {
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
 
         if let Some(text) = notice {
-            self.chat(Role::System, format!("（后台任务通知）{text}"));
+            self.chat(Role::System, format!("（通知）{text}"));
             let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
             if local {
                 self.think(thinking, &text);
@@ -762,8 +766,8 @@ impl Assistant {
                 }
                 done = self.done_rx.recv() => {
                     if let Some(done) = done {
-                        let text = if done.ok { format!("任务{}返回结果：{}", done.id, done.text) } else { format!("任务{}没做成：{}", done.id, done.text) };
-                        self.chat(Role::System, format!("（后台任务通知）{text}"));
+                        let text = done.message();
+                        self.chat(Role::System, format!("（{}）{text}", if done.reminder { "提醒" } else { "后台任务通知" }));
                         let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
                         if local {
                             if thinking.job.is_some() {
@@ -885,6 +889,23 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         "desktop_focus" => with("切换到窗口", arg("name")),
         "desktop_snapshot" => with("读取窗口内容", arg("window")),
         "screen_read" => "看看屏幕上的内容".into(),
+        "file_rename" => with("改名为", arg("new_name")),
+        "file_find" => with("查找文件", arg("keyword")),
+        "file_open" => with("打开文件", arg("path")),
+        "file_move" => with(if input["copy"].as_bool() == Some(true) { "复制到" } else { "移动到" }, arg("to")),
+        "file_delete" => with("删除到回收站", arg("path")),
+        "file_info" => with("查看文件信息", arg("path")),
+        "volume_set" => if input["mute"].as_bool() == Some(true) { "静音".into() } else { with("音量设为", input["percent"].as_u64().map(|p| format!("{p}%")).unwrap_or_default()) },
+        "system_setting" => with("系统设置", arg("setting")),
+        "screenshot" => "截图".into(),
+        "power" => with("电源", arg("action")),
+        "window_arrange" => with("排列窗口", arg("action")),
+        "system_info" => "查看电脑状态".into(),
+        "calc" => with("计算", arg("expression")),
+        "clipboard_history" => "查看剪贴板历史".into(),
+        "reminder_add" => with("设提醒", arg("text")),
+        "reminder_list" => "查看提醒".into(),
+        "reminder_cancel" => "取消提醒".into(),
         "clipboard_write" => "复制到剪贴板".into(),
         "clipboard_read" => "读取剪贴板".into(),
         "desktop_click" => if input["double"].as_bool() == Some(true) { "双击".into() } else { "点击".into() },

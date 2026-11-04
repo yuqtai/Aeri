@@ -27,7 +27,7 @@ pub fn serve() -> anyhow::Result<()> {
                 "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "voice_desktop", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "操作用户 Windows 电脑的工具。桌面软件：先 desktop_snapshot 拿控件编号（窗口不用在前台），然后 desktop_click、desktop_set_value、desktop_select、desktop_check 操作，这些不抢焦点、会确认结果；界面变了要重新 desktop_snapshot。必须模拟键盘时先 desktop_focus 再用 desktop_type / desktop_keys。用户屏幕上正在看的内容用 screen_read 读，复制文字用 clipboard_write 直接写剪贴板。网页：用 browser_ 开头的工具，在独立的 Edge 窗口里打开网页、读页面结构（browser_snapshot）、点击、填写；这个窗口没有用户的登录状态。只是想让用户在自己的浏览器里看某个网站的搜索结果时，用 web_search 一步完成。"
+                "instructions": "操作用户 Windows 电脑的工具。桌面软件：先 desktop_snapshot 拿控件编号（窗口不用在前台），然后 desktop_click、desktop_set_value、desktop_select、desktop_check 操作，这些不抢焦点、会确认结果；界面变了要重新 desktop_snapshot。必须模拟键盘时先 desktop_focus 再用 desktop_type / desktop_keys。用户屏幕上正在看的内容用 screen_read 读，复制文字用 clipboard_write 直接写剪贴板。文件操作用 file_ 开头的工具（改名、查找、打开、移动复制、删除进回收站、查看信息；不填路径就用资源管理器里选中的）。系统：volume_set、system_setting、screenshot、power、window_arrange、system_info、calc、clipboard_history。网页：用 browser_ 开头的工具，在独立的 Edge 窗口里打开网页、读页面结构（browser_snapshot）、点击、填写；这个窗口没有用户的登录状态。只是想让用户在自己的浏览器里看某个网站的搜索结果时，用 web_search 一步完成。"
             }),
             "ping" => json!({}),
             "tools/list" => json!({"tools": tools.definitions().iter().map(to_mcp_tool).collect::<Vec<_>>()}),

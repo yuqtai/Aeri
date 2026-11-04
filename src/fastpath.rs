@@ -8,6 +8,7 @@ use regex::Regex;
 use crate::sys::{self, MediaKey};
 use crate::tools::apps::{self, AppIndex, Match};
 use crate::tools::process::{self, Closed};
+use crate::tools::system;
 
 static OPEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:打开|启动|运行|开一下|开)(?:一下)?(.+?)(?:一下|吧)?$").unwrap());
 // “打开抖音搜索无畏契约直播”“在B站上搜一下原神”“淘宝搜机械键盘”
@@ -22,7 +23,31 @@ static CLOSE_BA: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SEARCH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:搜索|搜一下|搜一搜|百度一下|百度|必应一下)(?:一下)?(.+)$").unwrap());
+// “音量调到 30”“声音调成百分之五十”“把音量设为 80%”
+static VOLUME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:把)?(?:音量|声音)(?:调到|调成|设为|设成|设置为|设置成|开到)(?:百分之)?(\d{1,3}|[零一二两三四五六七八九十百]+)%?$").unwrap()
+});
 static TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:现在)?(?:几点了?|什么时间|几号|今天几号|今天星期几|星期几)$").unwrap());
+
+/// “30”“三十”“一百”“五十五” → 数字
+fn parse_number(s: &str) -> Option<u32> {
+    if let Ok(n) = s.parse() {
+        return Some(n);
+    }
+    let digit = |c: char| "零一二三四五六七八九".find(c).map(|i| (i / 3) as u32).or((c == '两').then_some(2));
+    if s == "一百" || s == "百" {
+        return Some(100);
+    }
+    let chars: Vec<char> = s.chars().collect();
+    match chars.as_slice() {
+        ['十'] => Some(10),
+        [d] => digit(*d),
+        ['十', d] => Some(10 + digit(*d)?),
+        [d, '十'] => Some(digit(*d)? * 10),
+        [a, '十', b] => Some(digit(*a)? * 10 + digit(*b)?),
+        _ => None,
+    }
+}
 
 fn normalize(text: &str) -> String {
     let mut t = text.trim().trim_matches(|c: char| "。.！!？?，, 、~".contains(c)).to_string();
@@ -53,6 +78,26 @@ pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
         "上一首" | "上一曲" => Some((MediaKey::Previous, 1, "上一首。")),
         _ => None,
     };
+    if let Some(c) = VOLUME.captures(&t) {
+        if let Some(p) = parse_number(&c[1]).filter(|p| *p <= 100) {
+            if system::set_volume(Some(p), None).is_ok() {
+                return Some(format!("音量已调到{p}。"));
+            }
+        }
+    }
+
+    match t.as_str() {
+        "锁屏" | "锁定电脑" | "锁定屏幕" | "锁一下屏幕" => {
+            let _ = unsafe { windows::Win32::System::Shutdown::LockWorkStation() };
+            return Some("已锁屏。".into());
+        }
+        "显示桌面" | "回到桌面" | "最小化所有窗口" => {
+            system::show_desktop();
+            return Some("好的。".into());
+        }
+        _ => {}
+    }
+
     if let Some((key, times, reply)) = media {
         sys::press_media_key(key, times);
         return Some(reply.into());
@@ -106,6 +151,19 @@ pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_phrases() {
+        for (t, n) in [("音量调到30", "30"), ("把音量调到百分之五十", "五十"), ("声音调成80%", "80")] {
+            assert_eq!(&VOLUME.captures(t).unwrap()[1], n);
+        }
+        assert_eq!(parse_number("五十"), Some(50));
+        assert_eq!(parse_number("三十五"), Some(35));
+        assert_eq!(parse_number("十五"), Some(15));
+        assert_eq!(parse_number("一百"), Some(100));
+        assert_eq!(parse_number("两"), Some(2));
+        assert!(!VOLUME.is_match("音量调大"));
+    }
 
     #[test]
     fn close_phrases() {

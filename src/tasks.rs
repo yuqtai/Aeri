@@ -56,6 +56,21 @@ pub struct TaskDone {
     pub id: u32,
     pub ok: bool,
     pub text: String,
+    /// 到点的提醒（不是后台任务）
+    pub reminder: bool,
+}
+
+impl TaskDone {
+    /// 交给助手播报的通知文字
+    pub fn message(&self) -> String {
+        if self.reminder {
+            format!("提醒{}到点了：{}", self.id, self.text)
+        } else if self.ok {
+            format!("任务{}返回结果：{}", self.id, self.text)
+        } else {
+            format!("任务{}没做成：{}", self.id, self.text)
+        }
+    }
 }
 
 /// 启动任务时需要的设置，保存设置后由调度中心更新
@@ -255,7 +270,7 @@ impl TaskManager {
         t.progress = text.chars().take(80).collect();
         t.result = text.clone();
         (self.ui)(UiEvent::TaskRunning(false));
-        let _ = self.done_tx.send(TaskDone { id, ok, text });
+        let _ = self.done_tx.send(TaskDone { id, ok, text, reminder: false });
     }
 
     async fn run_builtin(&self, id: u32, s: &TaskSettings, prompt: &str) -> anyhow::Result<String> {

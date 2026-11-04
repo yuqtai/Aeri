@@ -122,6 +122,11 @@ pub fn front_window() -> Option<(HWND, String)> {
     visible_windows(1).into_iter().next().map(|w| (w.hwnd, w.title))
 }
 
+/// 用户能看到的顶层窗口句柄，按从上到下的顺序（跳过助手自己的窗口）
+pub fn window_order() -> Vec<isize> {
+    visible_windows(usize::MAX).into_iter().map(|w| w.hwnd.0 as isize).collect()
+}
+
 /// 标题包含 name 的窗口（不区分大小写），按从上到下找第一个；直接枚举窗口，几毫秒就完成
 pub fn find_window(name: &str) -> Option<(HWND, String)> {
     let needle = name.to_lowercase();

@@ -1,6 +1,6 @@
 [package]
 name = "aeri"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Aeri，轻量 AI 语音助手：唤醒词 + 云端流式识别 + DeepSeek + 桌面控制（agent-desktop）/ 浏览器控制"
 
@@ -41,6 +41,14 @@ features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_System_Time",
     "Win32_Media_Speech",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",

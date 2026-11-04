@@ -14,6 +14,7 @@ mod llm;
 mod mcp;
 mod player;
 mod realtime;
+mod reminders;
 mod resample;
 mod screen;
 mod sys;

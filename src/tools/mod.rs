@@ -1,4 +1,4 @@
-//! 工具注册表：本地工具 + 桌面控制（agent-desktop）+ 读屏 + 浏览器控制。
+//! 工具注册表：本地工具 + 文件 + 系统 + 提醒 + 桌面控制（agent-desktop）+ 读屏 + 浏览器控制。
 //! - 前台对话用全套工具再加上后台任务（开始 / 进度 / 取消）：几步能做完的自己做，耗时长的才交出去；
 //! - 内置后台助手和 MCP（给 Codex / Claude Code）用全套工具，不带后台任务工具。
 //! 前台和内置后台助手共用同一个桌面控制、读屏线程和浏览器会话。
@@ -6,14 +6,18 @@
 pub mod apps;
 pub mod browser;
 pub mod desktop;
+pub mod files;
 pub mod process;
+pub mod ps;
 pub mod reader;
+pub mod system;
 
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use crate::config::Config;
+use crate::reminders::{self, Reminders};
 use crate::tasks::TaskManager;
 
 pub struct Tools {
@@ -22,33 +26,37 @@ pub struct Tools {
     reader: Option<Arc<reader::Reader>>,
     browser: Option<Arc<browser::Browser>>,
     tasks: Option<Arc<TaskManager>>,
+    reminders: Option<Arc<Reminders>>,
 }
 
 impl Tools {
     /// 全套工具
     pub fn new(cfg: &Config, apps: Arc<apps::AppIndex>) -> Self {
+        system::start_clipboard_watch();
         Self {
             apps,
             desktop: cfg.desktop_control.then(|| Arc::new(desktop::Desktop::new())),
             reader: cfg.desktop_control.then(|| Arc::new(reader::Reader::new())),
             browser: cfg.browser_control.then(|| browser::Browser::new(&cfg.playwright_mcp, cfg.browser_idle_minutes)),
             tasks: None,
+            reminders: None,
         }
     }
 
     /// 只有本地工具（启动时占位用）
     pub fn local_only(apps: Arc<apps::AppIndex>) -> Self {
-        Self { apps, desktop: None, reader: None, browser: None, tasks: None }
+        Self { apps, desktop: None, reader: None, browser: None, tasks: None, reminders: None }
     }
 
-    /// 前台工具：同一套工具再加上后台任务
-    pub fn with_tasks(&self, tasks: Arc<TaskManager>) -> Self {
+    /// 前台工具：同一套工具再加上后台任务和提醒
+    pub fn with_tasks(&self, tasks: Arc<TaskManager>, reminders: Arc<Reminders>) -> Self {
         Self {
             apps: self.apps.clone(),
             desktop: self.desktop.clone(),
             reader: self.reader.clone(),
             browser: self.browser.clone(),
             tasks: Some(tasks),
+            reminders: Some(reminders),
         }
     }
 
@@ -60,8 +68,13 @@ impl Tools {
     pub fn definitions(&self) -> Vec<Value> {
         let mut defs = apps::definitions();
         defs.extend(process::definitions());
+        defs.extend(files::definitions());
+        defs.extend(system::definitions());
         if self.tasks.is_some() {
             defs.extend(task_definitions());
+        }
+        if self.reminders.is_some() {
+            defs.extend(reminders::definitions());
         }
         if self.desktop.is_some() {
             defs.extend(desktop::definitions());
@@ -97,6 +110,17 @@ impl Tools {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| ("进程工具执行失败".into(), true));
+        }
+        if let Some(out) = files::call(name, input).await {
+            return out;
+        }
+        if let Some(out) = system::call(name, input).await {
+            return out;
+        }
+        if let Some(r) = &self.reminders {
+            if let Some(out) = r.call(name, input) {
+                return out;
+            }
         }
         if name == "screen_read" {
             if let Some(r) = &self.reader {
