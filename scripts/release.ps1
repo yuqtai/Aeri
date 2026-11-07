@@ -24,5 +24,5 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 "$hash  $zipName" | Set-Content -Encoding ascii "$zip.sha256"
 git -C $root tag -a $tag -m "Aeri $tag"
 git -C $root push origin HEAD:main $tag
-gh release create $tag $zip "$zip.sha256" -R taiwei18/voice-assistant --title "Aeri $tag" --notes-file $Notes
+gh release create $tag $zip "$zip.sha256" -R jianbohuang821-a11y/Aeri --title "Aeri $tag" --notes-file $Notes
 "已发布 $tag：$zipName（SHA-256 $hash）"

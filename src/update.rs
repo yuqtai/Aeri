@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{self, NoWindow};
 
-pub const REPO: &str = "taiwei18/voice-assistant";
+pub const REPO: &str = "jianbohuang821-a11y/Aeri";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// 自动检查的间隔
 const CHECK_EVERY: u64 = 24 * 3600;
