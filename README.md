@@ -2,6 +2,21 @@
 
 **一个常驻一整天也感觉不到它存在的 Windows 语音助手。** 待机只占约 60 MB 内存，整机 CPU 不到 0.2%；喊一声“你好电脑”，几步能做完的事当场做完，费时的活交给后台智能体（默认 Codex，可选 Claude Code 或内置 DeepSeek），做完主动告诉你，期间照样能聊天、问进度或取消。
 
+## 使用截图
+
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/shutdown-confirm.png" alt="定时关机：先确认，再交给后台，随时取消"></td>
+<td width="33%"><img src="docs/screenshots/screen-read.png" alt="看屏幕：总结视频、复制文案、查看后台任务"></td>
+<td width="33%"><img src="docs/screenshots/video-switch.png" alt="连续语音控制：一句话切下一条视频"></td>
+</tr>
+<tr>
+<td valign="top"><b>危险操作先确认，说一句就能撤回</b><br>“30 分钟后关机”：Aeri 先提醒思源笔记里还有没保存的内容，你说“确实”后交给后台设置定时关机，做完主动汇报；改主意说一句“取消吧”，马上撤销。</td>
+<td valign="top"><b>看懂你正在看的东西</b><br>“这条视频在讲什么”：直接读屏幕，讲出视频内容和评论区在聊什么；“把文案复制给我”就放进剪贴板。还能帮你瞄一眼别的窗口，比如判断 Claude 的任务是不是还卡着。</td>
+<td valign="top"><b>手不用离开碗筷</b><br>刷视频时说“切换下一条”“再切”，Aeri 直接按键翻页，不用每次都看屏幕，一句一个动作。</td>
+</tr>
+</table>
+
 ## 特点
 
 ### 轻：常驻不拖累电脑
@@ -51,21 +66,6 @@
 | 软件内更新（下载 22 MB、校验、替换、重启） | 约 9 秒 |
 
 > 对话进行中、后台任务运行时占用会高一些：Codex / Claude Code 只在有任务时启动，做完就退出；浏览器控制第一次使用要启动 Edge，会慢几秒。
-
-## 使用截图
-
-<table>
-<tr>
-<td width="33%"><img src="docs/screenshots/shutdown-confirm.png" alt="定时关机：先确认，再交给后台，随时取消"></td>
-<td width="33%"><img src="docs/screenshots/screen-read.png" alt="看屏幕：总结视频、复制文案、查看后台任务"></td>
-<td width="33%"><img src="docs/screenshots/video-switch.png" alt="连续语音控制：一句话切下一条视频"></td>
-</tr>
-<tr>
-<td valign="top"><b>危险操作先确认，说一句就能撤回</b><br>“30 分钟后关机”：Aeri 先提醒思源笔记里还有没保存的内容，你说“确实”后交给后台设置定时关机，做完主动汇报；改主意说一句“取消吧”，马上撤销。</td>
-<td valign="top"><b>看懂你正在看的东西</b><br>“这条视频在讲什么”：直接读屏幕，讲出视频内容和评论区在聊什么；“把文案复制给我”就放进剪贴板。还能帮你瞄一眼别的窗口，比如判断 Claude 的任务是不是还卡着。</td>
-<td valign="top"><b>手不用离开碗筷</b><br>刷视频时说“切换下一条”“再切”，Aeri 直接按键翻页，不用每次都看屏幕，一句一个动作。</td>
-</tr>
-</table>
 
 ## 界面
 
