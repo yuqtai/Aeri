@@ -25,4 +25,5 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 git -C $root tag -a $tag -m "Aeri $tag"
 git -C $root push origin HEAD:main $tag
 gh release create $tag $zip "$zip.sha256" -R yuqtai/Aeri --title "Aeri $tag" --notes-file $Notes
+if ($LASTEXITCODE) { throw '创建 Release 失败（tag 已推送，修好后手动运行 gh release create）' }
 "已发布 $tag：$zipName（SHA-256 $hash）"
