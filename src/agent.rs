@@ -36,6 +36,7 @@ pub const FRONT_PROMPT: &str = "你是 Aeri，运行在用户 Windows 电脑上�
 - 用户说“这个、当前、这条、这段、正在看的”时，指的是他正在看的窗口里的内容。系统会告诉你前台窗口是哪个；需要知道里面具体是什么，先 screen_read 看清楚再动手，不要凭猜测操作，也不要反问是哪个。
 - 先想清楚用户要的结果，再选最直接得到这个结果的办法：能直接产出结果的（把挑好的文字写进剪贴板、直接回答、调用专门的工具）就不要模拟键盘鼠标；只有必须在软件里操作时才点击、按键，而且只作用在用户指的那一部分上，不要扩大范围（比如关掉整个程序、全选整页）。
 - 交给后台任务时，把用户指的是哪个窗口、哪段内容写进任务说明里。
+- 看清一次就动手：窗口内容读过、截过图就够了，不要反复切换、读取、截图同一个窗口来确认。要往软件里写东西，用 desktop_snapshot 找到编辑区，再 desktop_set_value 或 desktop_click 后 desktop_type 写进去。
 
 - 如实说明能力限制和失败原因；交给后台前确认它有完成任务需要的工具。
 - 操作后检查实际结果；未完成或只完成一部分要明确说明，不得把尝试执行说成完成。
@@ -115,7 +116,9 @@ impl Agent {
     }
 
     async fn run_loop(&mut self, on_tool: &mut impl FnMut(&str, &Value)) -> anyhow::Result<String> {
-        for _ in 0..self.max_steps {
+        let mut seen: Vec<String> = Vec::new();
+        // 最后多给一步：只许总结，不许再调工具
+        for step in 0..=self.max_steps {
             let resp = self.llm.create(self.system, &self.tool_defs, &self.messages).await?;
             let content = resp["content"].clone();
             let stop = resp["stop_reason"].as_str().unwrap_or("").to_string();
@@ -136,15 +139,65 @@ impl Agent {
                 }
                 return Ok(reply.trim().to_string());
             }
+            if step == self.max_steps {
+                break;
+            }
             let mut results = Vec::new();
+            let mut repeated = Vec::new();
             for u in &uses {
                 let name = u["name"].as_str().unwrap_or("");
+                let sig = format!("{name}{}", u["input"]);
+                if seen.contains(&sig) {
+                    repeated.push(name.to_string());
+                } else {
+                    seen.push(sig);
+                }
                 on_tool(name, &u["input"]);
                 let (output, is_error) = self.tools.call(name, &u["input"]).await;
                 results.push(json!({"type": "tool_result", "tool_use_id": u["id"], "content": output, "is_error": is_error}));
             }
+            if let Some(note) = progress_note(&repeated, self.max_steps - step - 1, self.has_tool("start_task")) {
+                results.push(json!({"type": "text", "text": note}));
+            }
             self.messages.push(json!({"role": "user", "content": results}));
         }
         anyhow::bail!("操作已达到步骤上限，任务尚未确认完成。请检查当前结果后继续，避免重复执行。")
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        self.tool_defs.iter().any(|d| d["name"] == name)
+    }
+}
+
+/// 执行过程中的提醒：重复做同一件事、步数快用完时，提示换办法或交给后台，而不是一直试到上限
+fn progress_note(repeated: &[String], left: usize, can_delegate: bool) -> Option<String> {
+    let mut notes = Vec::new();
+    if !repeated.is_empty() {
+        notes.push(format!(
+            "【提醒】{} 刚才已经用同样的参数调用过，结果不会变。不要再切窗口、读屏、截图来回确认，换一个能直接推进任务的办法。",
+            repeated.join("、")
+        ));
+    }
+    if left == 0 {
+        notes.push("【提醒】步骤已经用完，不能再调用工具。用一两句话如实告诉用户做到了哪一步、卡在哪里。".to_string());
+    } else if left <= 3 {
+        let way = if can_delegate { "用 start_task 交给后台（写清要做什么、用户指的是什么内容、你已经试过什么），" } else { "" };
+        notes.push(format!("【提醒】只剩 {left} 步。如果接下来做不完，{way}或者直接告诉用户卡在哪里，不要再重复尝试。"));
+    }
+    (!notes.is_empty()).then(|| notes.join("
+"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::progress_note;
+
+    #[test]
+    fn notes() {
+        assert!(progress_note(&[], 8, true).is_none());
+        assert!(progress_note(&["screen_read".into()], 8, true).unwrap().contains("screen_read"));
+        assert!(progress_note(&[], 2, true).unwrap().contains("start_task"));
+        assert!(!progress_note(&[], 2, false).unwrap().contains("start_task"));
+        assert!(progress_note(&[], 0, true).unwrap().contains("不能再调用工具"));
     }
 }
