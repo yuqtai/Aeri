@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 电脑在局域网里，地址事先不知道，只能放开明文连接；App 只连自己找到/配对过的电脑 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

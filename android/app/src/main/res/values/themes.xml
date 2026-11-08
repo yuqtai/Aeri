@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 界面全部由 Compose 绘制；这里只决定启动瞬间的底色和状态栏 -->
+    <style name="Theme.Aeri" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/canvas</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+    <color name="canvas">#F4F5F7</color>
+    <color name="icon_background">#101E27</color>
+</resources>
