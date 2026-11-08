@@ -26,6 +26,8 @@ pub struct Config {
     pub duck_others: bool,
     /// 每天自动检查一次 GitHub 上有没有新版本
     pub auto_update: bool,
+    /// 对话和任务记录存到硬盘（保留 30 天）
+    pub save_history: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_url: String,
@@ -118,6 +120,7 @@ impl Default for Config {
             follow_up: true,
             duck_others: true,
             auto_update: true,
+            save_history: true,
             asr_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
             asr_model: "fun-asr-realtime".into(),
             asr_api_key_protected: String::new(),

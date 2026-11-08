@@ -1202,6 +1202,7 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         "clipboard_history" => "查看剪贴板历史".into(),
         "reminder_add" => with("设提醒", arg("text")),
         "reminder_list" => "查看提醒".into(),
+        "history_search" => match input["query"].as_str().or(input["date"].as_str()) { Some(q) => with("查历史记录", q.to_string()), None => "查历史记录".into() },
         "reminder_cancel" => "取消提醒".into(),
         "app_update" => if input["action"] == "install" { "更新 Aeri".into() } else { "检查更新".into() },
         "clipboard_write" => "复制到剪贴板".into(),

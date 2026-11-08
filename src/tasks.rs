@@ -45,10 +45,29 @@ struct TaskInfo {
     state: State,
     progress: String,
     started: Instant,
+    executor: &'static str,
     /// 外部进程的 pid，取消时连同子进程一起结束
     pid: Option<u32>,
     /// 内置智能体跑在异步任务里，取消时直接中止
     handle: Option<tokio::task::AbortHandle>,
+}
+
+/// 任务结束（完成、失败、取消）时写进历史记录
+fn record(t: &TaskInfo) {
+    let state = match t.state {
+        State::Done => "done",
+        State::Failed => "failed",
+        State::Cancelled => "cancelled",
+        State::Running => "running",
+    };
+    crate::history::record_task(crate::history::TaskRecord {
+        id: t.id,
+        executor: t.executor.to_string(),
+        state: state.into(),
+        secs: t.started.elapsed().as_secs(),
+        description: t.description.clone(),
+        result: t.result.clone(),
+    });
 }
 
 /// 任务结束后发给调度中心
@@ -146,6 +165,7 @@ impl TaskManager {
                 state: State::Running,
                 progress: "正在启动".into(),
                 started: Instant::now(),
+                executor: name,
                 pid: None,
                 handle: None,
             });
@@ -224,6 +244,7 @@ impl TaskManager {
         if let Some(h) = t.handle.take() {
             h.abort();
         }
+        record(t);
         (self.ui)(UiEvent::Chat(Role::Tool, format!("任务 #{} 已取消", t.id)));
         (self.ui)(UiEvent::TaskRunning(false)); // 同一时间只跑一个任务
         (format!("已取消任务 {}", t.id), false)
@@ -269,6 +290,7 @@ impl TaskManager {
         t.state = if ok { State::Done } else { State::Failed };
         t.progress = text.chars().take(80).collect();
         t.result = text.clone();
+        record(t);
         (self.ui)(UiEvent::TaskRunning(false));
         let _ = self.done_tx.send(TaskDone { id, ok, text, reminder: false });
     }
@@ -484,7 +506,7 @@ mod tests {
         });
         manager.tasks.lock().unwrap().push(TaskInfo {
             id: 1, title: "原任务".into(), description: "整理报告".into(), result: String::new(),
-            state: State::Running, progress: "正在处理".into(), started: Instant::now(), pid: None, handle: None,
+            state: State::Running, progress: "正在处理".into(), started: Instant::now(), executor: "内置助手", pid: None, handle: None,
         });
         assert!(manager.start("另一个任务").1);
         assert!(manager.resume(Some(1), "修改第二项").1);

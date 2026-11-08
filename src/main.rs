@@ -16,6 +16,7 @@ mod player;
 mod realtime;
 mod reminders;
 mod remote;
+mod history;
 mod resample;
 mod screen;
 mod sys;
@@ -74,11 +75,15 @@ fn main() -> anyhow::Result<()> {
     let devices = Rc::new(RefCell::new(audio::input_device_names()));
     apply_config(&window, &cfg, &devices.borrow());
     window.set_listening_enabled(cfg.listen_on_start);
+    history::set_enabled(cfg.save_history);
+    history::prune();
+    restore_history(&window);
 
     // 后台事件 -> 界面（必须回到界面线程更新）
     let weak = window.as_weak();
     let ui: assistant::UiSink = Arc::new(move |ev| {
         remote::observe(&ev); // 抄送给连着的手机
+        history::observe(&ev);
         let weak = weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(w) = weak.upgrade() {
@@ -99,6 +104,7 @@ fn main() -> anyhow::Result<()> {
     wire_chat(&window, &cmd_tx);
     wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
     wire_update(&window, runtime.handle().clone(), cfg.auto_update);
+    wire_history(&window);
     mark_settings_clean(&window);
     let _tray = create_tray(&window, cmd_tx.clone(), icon)?;
 
@@ -275,6 +281,7 @@ fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
         // 入队时就显示，不能等当前语音会话返回才确认发送。
         if tx.send(Command::TextSubmitted { text: text.clone(), generation }).is_ok() {
             remote::note_chat(assistant::Role::User, &text);
+            history::record_chat(assistant::Role::User, &text);
             push_chat(&w, assistant::Role::User as i32, text, None);
             w.set_pending_texts(w.get_pending_texts() + 1);
         } else {
@@ -371,6 +378,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_follow_up(c.follow_up);
     w.set_duck_others(c.duck_others);
     w.set_auto_update(c.auto_update);
+    w.set_save_history(c.save_history);
     w.set_listen_on_start(c.listen_on_start);
     set_devices(w, devices, &c.input_device);
     w.set_desktop_control(c.desktop_control);
@@ -428,6 +436,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.follow_up = w.get_follow_up();
     c.duck_others = w.get_duck_others();
     c.auto_update = w.get_auto_update();
+    c.save_history = w.get_save_history();
     c.listen_on_start = w.get_listen_on_start();
     let idx = w.get_device_index();
     c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
@@ -625,6 +634,43 @@ async fn run_check(weak: slint::Weak<AppWindow>, manual: bool) {
     }
 }
 
+/// 启动时把最近的对话显示回来，后面加一条分隔
+fn restore_history(window: &AppWindow) {
+    let items = history::recent_chat(40);
+    let Some((day, _)) = items.last().cloned() else { return };
+    let model = window.get_messages();
+    let Some(vm) = model.as_any().downcast_ref::<VecModel<ChatItem>>() else { return };
+    for (_, e) in items {
+        vm.push(ChatItem { role: e.role, text: e.text.into() });
+    }
+    vm.push(ChatItem { role: assistant::Role::System as i32, text: format!("以上是之前的对话（{}）", &day[5..]).into() });
+    let weak = window.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(300), move || {
+        if let Some(w) = weak.upgrade() {
+            w.invoke_scroll_to_bottom();
+        }
+    });
+}
+
+fn wire_history(window: &AppWindow) {
+    let weak = window.as_weak();
+    window.on_history_open(move || {
+        let Some(w) = weak.upgrade() else { return };
+        match history::open_viewer() {
+            Ok(()) => w.set_history_status("已在浏览器中打开".into()),
+            Err(e) => w.set_history_status(format!("打开失败：{e}").into()),
+        }
+    });
+    let weak = window.as_weak();
+    window.on_history_clear(move || {
+        let Some(w) = weak.upgrade() else { return };
+        match history::clear() {
+            Ok(()) => w.set_history_status("已清空全部历史记录".into()),
+            Err(e) => w.set_history_status(format!("清空失败：{e}").into()),
+        }
+    });
+}
+
 fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
     window.set_app_version(format!("v{}", update::CURRENT).into());
     if let Some(text) = update::take_result() {
@@ -712,6 +758,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 mark_settings_clean(&w);
                 set_note(&w, kind, note);
                 remote::apply(c.remote_enabled, c.remote_port);
+                history::set_enabled(c.save_history);
                 let _ = tx.send(Command::Reload(c));
             }
             Err(e) => set_note(&w, NOTE_ERROR, format!("保存失败：{e}")),

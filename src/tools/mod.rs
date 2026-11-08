@@ -75,6 +75,7 @@ impl Tools {
         }
         if self.reminders.is_some() {
             defs.extend(reminders::definitions());
+            defs.extend(crate::history::definitions());
             defs.push(crate::update::definition());
         }
         if self.desktop.is_some() {
@@ -120,6 +121,9 @@ impl Tools {
         }
         if let Some(r) = &self.reminders {
             if let Some(out) = r.call(name, input) {
+                return out;
+            }
+            if let Some(out) = crate::history::call(name, input) {
                 return out;
             }
             if name == "app_update" {
