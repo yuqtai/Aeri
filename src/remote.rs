@@ -178,8 +178,65 @@ fn welcome() -> (String, broadcast::Receiver<Arc<str>>) {
         "task_running": m.task_running,
         "partial": m.partial,
         "history": history,
+        // 电脑上带的手机 App 是第几版：手机比它旧就提示更新
+        "app": bundled_app().map(|a| json!({"version_code": a.version_code, "version_name": a.version_name, "size": a.size})),
     });
     (msg.to_string(), rx)
+}
+
+// ---------- 手机 App 更新 ----------
+//
+// 发布版把 APK 和它的版本信息放在 exe 旁边的 android\（build.ps1 生成，电脑更新时一起换新）。
+// 手机连上时在 welcome 里看到版本号，比自己新就提示；点更新后发 get_app，电脑按顺序回
+// app_begin（大小、SHA-256）→ 若干二进制块 → app_end，手机核对后交给系统安装。
+
+/// 每块多大
+const APP_CHUNK: usize = 256 * 1024;
+
+#[derive(Deserialize)]
+struct BundledApp {
+    version_code: u64,
+    version_name: String,
+    size: u64,
+    sha256: String,
+    #[serde(skip)]
+    path: PathBuf,
+}
+
+fn app_dir() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("aeri-app-test-{}", std::process::id()));
+    }
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("android"))).unwrap_or_default()
+}
+
+/// 电脑上带的手机 App；没有（比如调试版没编译 App）或文件对不上时返回 None
+fn bundled_app() -> Option<BundledApp> {
+    let dir = app_dir();
+    let text = std::fs::read_to_string(dir.join("Aeri.json")).ok()?;
+    let mut app: BundledApp = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    app.path = dir.join("Aeri.apk");
+    let size = std::fs::metadata(&app.path).ok()?.len();
+    (size == app.size && app.sha256.len() == 64).then_some(app)
+}
+
+type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
+
+/// 把手机 App 传给手机
+async fn send_app(sink: &mut WsSink) -> anyhow::Result<()> {
+    let Some(app) = bundled_app() else {
+        sink.send(Message::text(json!({"t": "app_error", "reason": "missing"}).to_string())).await?;
+        return Ok(());
+    };
+    let path = app.path.clone();
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await??;
+    let begin = json!({"t": "app_begin", "size": bytes.len(), "sha256": app.sha256, "version_name": app.version_name});
+    sink.send(Message::text(begin.to_string())).await?;
+    for chunk in bytes.chunks(APP_CHUNK) {
+        sink.send(Message::Binary(chunk.to_vec().into())).await?;
+    }
+    sink.send(Message::text(json!({"t": "app_end"}).to_string())).await?;
+    Ok(())
 }
 
 fn current_status() -> i32 {
@@ -598,7 +655,9 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
             msg = source.next() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                        handle_message(&v, &mut ptt);
+                        if handle_message(&v, &mut ptt) == Some(Reply::SendApp) {
+                            send_app(&mut sink).await?;
+                        }
                     }
                 }
                 Some(Ok(Message::Binary(pcm))) => {
@@ -615,8 +674,15 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
     }
 }
 
-fn handle_message(v: &Value, ptt: &mut PttGuard) {
+/// 要回给这台手机的东西（其余命令不用回，结果通过事件同步）
+#[derive(PartialEq, Debug)]
+enum Reply {
+    SendApp,
+}
+
+fn handle_message(v: &Value, ptt: &mut PttGuard) -> Option<Reply> {
     match v["t"].as_str().unwrap_or("") {
+        "get_app" => return Some(Reply::SendApp),
         "text" => {
             let text = v["text"].as_str().unwrap_or("").trim();
             if !text.is_empty() {
@@ -644,13 +710,14 @@ fn handle_message(v: &Value, ptt: &mut PttGuard) {
                 "play_pause" => MediaKey::PlayPause,
                 "next" => MediaKey::Next,
                 "previous" => MediaKey::Previous,
-                _ => return,
+                _ => return None,
             };
             let times = v["times"].as_u64().unwrap_or(1).clamp(1, 10) as u32;
             tokio::task::spawn_blocking(move || sys::press_media_key(key, times));
         }
         _ => {}
     }
+    None
 }
 
 fn pcm16_to_f32(bytes: &[u8]) -> Vec<f32> {
@@ -739,6 +806,16 @@ mod tests {
         let _serial = audio::PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use tokio_tungstenite::connect_async;
 
+        // 电脑上带的手机 App（假的，比一块大一点，验证分块）
+        let apk: Vec<u8> = (0..APP_CHUNK + 1000).map(|i| (i * 31 % 251) as u8).collect();
+        let dir = app_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Aeri.apk"), &apk).unwrap();
+        let fake_sha = "ab".repeat(32);
+        let manifest = json!({"version_code": 305, "version_name": "0.3.5", "size": apk.len(), "sha256": fake_sha});
+        // 带 BOM 也要能读（Windows PowerShell 5 写的文件）
+        std::fs::write(dir.join("Aeri.json"), format!("\u{feff}{manifest}")).unwrap();
+
         let (cmd_tx, mut cmd_rx) = unbounded_channel();
         let (listen_tx, mut listen_rx) = unbounded_channel();
         init(
@@ -825,10 +902,41 @@ mod tests {
         ws.send(send(json!({"t": "hello", "token": "x".repeat(64)}))).await.unwrap();
         assert_eq!(next_json(&mut ws).await["reason"], "unpaired");
 
-        // 用令牌登录
+        // 用令牌登录；快照里带着电脑上的 App 版本
         let (mut ws, _) = connect_async(url.as_str()).await.unwrap();
         ws.send(send(json!({"t": "hello", "token": token}))).await.unwrap();
-        assert_eq!(next_json(&mut ws).await["t"], "welcome");
+        let welcome = next_json(&mut ws).await;
+        assert_eq!(welcome["t"], "welcome");
+        assert_eq!(welcome["app"], json!({"version_code": 305, "version_name": "0.3.5", "size": apk.len()}));
+
+        // 手机要 App：开头说明大小和校验值，然后按顺序分块，最后结束
+        ws.send(send(json!({"t": "get_app"}))).await.unwrap();
+        let begin = next_json(&mut ws).await;
+        assert_eq!((begin["t"].as_str(), begin["size"].as_u64()), (Some("app_begin"), Some(apk.len() as u64)));
+        assert_eq!(begin["sha256"], fake_sha.as_str());
+        let mut got = Vec::new();
+        let mut chunks = 0;
+        loop {
+            match tokio::time::timeout(wait, ws.next()).await.unwrap() {
+                Some(Ok(Message::Binary(b))) => {
+                    got.extend_from_slice(&b);
+                    chunks += 1;
+                }
+                Some(Ok(Message::Text(t))) => {
+                    assert_eq!(serde_json::from_str::<Value>(t.as_str()).unwrap()["t"], "app_end");
+                    break;
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                other => panic!("意外的消息：{other:?}"),
+            }
+        }
+        assert_eq!(chunks, 2);
+        assert!(got == apk, "收到的 App 和原文件不一样");
+        // App 和版本信息对不上（比如只换了 APK 没换版本信息）：不提示更新
+        std::fs::write(dir.join("Aeri.apk"), b"short").unwrap();
+        assert!(bundled_app().is_none());
+        ws.send(send(json!({"t": "get_app"}))).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["t"], "app_error");
 
         // 电脑上的事件实时转发；同一任务的进展带着编号
         observe(&UiEvent::Status(Status::Thinking));
@@ -895,6 +1003,7 @@ mod tests {
 
         apply(false, port);
         let _ = std::fs::remove_file(store_path());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

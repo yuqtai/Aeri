@@ -15,6 +15,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe') -Destination $stage  # 桌面控制组件
     Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' | Copy-Item -Destination $stage
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'models') -Destination $stage -Recurse
+    # 手机 App 安装包：电脑把它传给配对过的手机更新
+    $androidSrc = Join-Path $sourceRoot 'android'
+    if (Test-Path -LiteralPath $androidSrc) { Copy-Item -LiteralPath $androidSrc -Destination $stage -Recurse }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uninstall.ps1') -Destination $stage
     if ((Get-FileHash -LiteralPath $sourceExe).Hash -ne (Get-FileHash -LiteralPath (Join-Path $stage 'aeri.exe')).Hash) { throw '安装文件校验失败。' }
     $exe = Join-Path $installRoot 'aeri.exe'

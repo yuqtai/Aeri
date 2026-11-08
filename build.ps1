@@ -1,7 +1,8 @@
 ﻿# 构建脚本：加载 VS 编译环境（让链接器找到 Windows SDK），编译后把模型和桌面控制组件 agent-desktop.exe 复制到 exe 旁边。
 # 用法：  .\build.ps1            # 调试版
 #        .\build.ps1 -Release   # 发布版，并把能直接运行的整套文件放到 dist\（双击 dist\aeri.exe 即可）
-param([switch]$Release, [switch]$Run, [switch]$Test)
+#        .\build.ps1 -Android   # 调试版也顺带编译手机 App（发布版总会编译）
+param([switch]$Release, [switch]$Run, [switch]$Test, [switch]$Android)
 
 $ErrorActionPreference = 'Stop'
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
@@ -48,6 +49,39 @@ function Get-AgentDesktop {
     return $exe
 }
 
+# 手机 App：版本号和电脑版一致（取 Cargo.toml），编译后连同版本信息放到 $dest\（exe 旁边的 android\），
+# 电脑会把它传给配对过的手机更新。没有安卓 SDK 或 JDK 时跳过，不影响电脑版
+function Build-AndroidApp([string]$dest) {
+    $androidDir = Join-Path $PSScriptRoot 'android'
+    $hasSdk = $env:ANDROID_HOME -or $env:ANDROID_SDK_ROOT -or (Test-Path (Join-Path $androidDir 'local.properties'))
+    if (-not $hasSdk -or -not (Get-Command java -ErrorAction SilentlyContinue)) {
+        Write-Warning '没有找到安卓 SDK 或 JDK，跳过手机 App（手机上就收不到 App 更新）'
+        return
+    }
+    Push-Location $androidDir
+    try {
+        & .\gradlew.bat assembleRelease -q --console=plain
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($code -ne 0) { throw '编译手机 App 失败' }
+    $apk = Join-Path $androidDir 'app\build\outputs\apk\release\app-release.apk'
+    New-Item -ItemType Directory -Force $dest | Out-Null
+    Copy-Item -LiteralPath $apk -Destination (Join-Path $dest 'Aeri.apk') -Force
+    $version = (Select-String -Path (Join-Path $PSScriptRoot 'Cargo.toml') -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $parts = @($version.Split('.') | ForEach-Object { [int]($_ -replace '\D.*$', '') })
+    $info = [ordered]@{
+        version_code = $parts[0] * 10000 + $parts[1] * 100 + $parts[2]  # 和 android\app\build.gradle.kts 的算法一致
+        version_name = $version
+        size = (Get-Item -LiteralPath $apk).Length
+        sha256 = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLower()
+    }
+    # 不带 BOM 的 UTF-8，电脑端直接按 JSON 读
+    [IO.File]::WriteAllText((Join-Path $dest 'Aeri.json'), ($info | ConvertTo-Json))
+    Write-Host "手机 App v$version 已放到 $dest"
+}
+
 Push-Location $PSScriptRoot
 try {
     $agentDesktop = Get-AgentDesktop
@@ -68,6 +102,7 @@ try {
         /XF *chunk-8* en.phone encoder-epoch-13-avg-2-chunk-16-left-64.onnx joiner-epoch-13-avg-2-chunk-16-left-64.onnx | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "复制模型失败（robocopy $LASTEXITCODE）" }
     $global:LASTEXITCODE = 0  # robocopy 用 1 表示“已复制”，不是错误
+    if ($Release -or $Android) { Build-AndroidApp (Join-Path $outDir 'android') }
     $exe = Join-Path $outDir 'aeri.exe'
     if ($Release) {
         # 发布版放到固定的 dist\：开机自启登记的就是这里的路径，以后重新编译也不会变
@@ -83,6 +118,11 @@ try {
         'voice-assistant.exe', 'voa.exe' | ForEach-Object { Remove-Item -LiteralPath (Join-Path $dist $_) -ErrorAction SilentlyContinue }  # 改名前的旧程序
         robocopy $modelsOut (Join-Path $dist 'models') /MIR /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "复制模型到 dist 失败（robocopy $LASTEXITCODE）" }
+        $androidOut = Join-Path $outDir 'android'
+        if (Test-Path $androidOut) {
+            robocopy $androidOut (Join-Path $dist 'android') /MIR /NFL /NDL /NJH /NJS | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "复制手机 App 到 dist 失败（robocopy $LASTEXITCODE）" }
+        }
         $global:LASTEXITCODE = 0
         $exe = Join-Path $dist 'aeri.exe'
         # Once installed, every release build also updates the installed application.

@@ -1,6 +1,7 @@
 ﻿# 发版：编译发布版 → 打包 zip → 生成 SHA-256 → 推送标签 → 在 GitHub 创建 Release 并上传。
 # 用法：.\scripts\release.ps1 -Notes 说明.md          （版本号取 Cargo.toml）
 # 自动更新靠 Release 里的 Aeri-vX.Y.Z-windows-x64.zip 和它的校验值，文件名不要改。
+# 手机 App 在 zip 里的 android\（电脑更新后会传给手机），另外单独上传一份 Aeri-vX.Y.Z-android.apk 方便第一次安装。
 param([Parameter(Mandatory)][string]$Notes, [switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
@@ -24,6 +25,15 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 "$hash  $zipName" | Set-Content -Encoding ascii "$zip.sha256"
 git -C $root tag -a $tag -m "Aeri $tag"
 git -C $root push origin HEAD:main $tag
-gh release create $tag $zip "$zip.sha256" -R yuqtai/Aeri --title "Aeri $tag" --notes-file $Notes
+$assets = @($zip, "$zip.sha256")
+$apk = Join-Path $dist 'android\Aeri.apk'
+if (Test-Path $apk) {
+    $apkOut = Join-Path $out "Aeri-$tag-android.apk"
+    Copy-Item $apk $apkOut
+    $assets += $apkOut
+} else {
+    Write-Warning '这次没有手机 App 安装包：手机上收不到 App 更新'
+}
+gh release create $tag @assets -R yuqtai/Aeri --title "Aeri $tag" --notes-file $Notes
 if ($LASTEXITCODE) { throw '创建 Release 失败（tag 已推送，修好后手动运行 gh release create）' }
 "已发布 $tag：$zipName（SHA-256 $hash）"

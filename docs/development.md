@@ -88,6 +88,10 @@ cd D:\code\voice-assistant\android; .\gradlew.bat assembleRelease
 
 生成的 APK 在 `android\app\build\outputs\apk\release\app-release.apk`。
 
+- `build.ps1 -Release` 会顺带编译手机 App，放到 `dist\android\Aeri.apk`，并写一份版本信息 `Aeri.json`（版本号、大小、SHA-256）；电脑把它传给配对过的手机更新（见 [android/PROTOCOL.md](../android/PROTOCOL.md) 的“App 更新”）。调试版要带上 App 时加 `-Android`。没有安卓 SDK 或 JDK 时只给警告、跳过 App。
+- App 的版本号取自 `Cargo.toml`，不用单独改；`release.ps1` 发版时把 App 打进 zip，另外单独上传一份 `Aeri-vX.Y.Z-android.apk` 方便第一次安装。
+- App 用本机的安卓调试证书签名（`%USERPROFILE%\.android\debug.keystore`）。**换电脑发版前把它拷过去**：签名不一样时手机上没法直接更新，只能先卸载再装（配对要重做）。
+
 ## 安装与更新
 
 首次运行 `powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\install.ps1 -Launch`，安装到当前用户的 `%LOCALAPPDATA%\Programs\VoiceAssistant`，不需要管理员权限。桌面和开始菜单会出现“Aeri”，Windows“已安装的应用”中可以卸载。设置和 API Key 仍保存在原位置，更新及卸载均保留。

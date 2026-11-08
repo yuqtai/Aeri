@@ -3,6 +3,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// 版本号和电脑版一致：取仓库根目录 Cargo.toml 里的 version（测试时可用 -PaeriVersion=x.y.z 覆盖）。
+// versionCode = 主版本 * 10000 + 次版本 * 100 + 修订号，和 build.ps1 写进 Aeri.json 的算法一致
+val aeriVersion: String = (project.findProperty("aeriVersion") as String?)
+    ?: rootDir.parentFile.resolve("Cargo.toml").readLines()
+        .first { it.startsWith("version = ") }
+        .substringAfter('"').substringBefore('"')
+val aeriVersionCode: Int = aeriVersion.split('.').map { part -> part.takeWhile(Char::isDigit).toInt() }
+    .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
+
 android {
     namespace = "com.aeri.remote"
     compileSdk = 36
@@ -11,8 +20,8 @@ android {
         applicationId = "com.aeri.remote"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = aeriVersionCode
+        versionName = aeriVersion
     }
 
     buildTypes {

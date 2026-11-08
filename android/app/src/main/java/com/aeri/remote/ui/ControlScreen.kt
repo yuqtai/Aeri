@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -75,6 +76,7 @@ fun ControlScreen(vm: MainViewModel, ui: UiState, modifier: Modifier = Modifier)
     Column(modifier.fillMaxSize()) {
         TopBar(vm, ui)
         StatusRow(vm, ui)
+        if (ui.appUpdate != null && ui.link == Link.Online) UpdateBanner(vm, ui)
         ChatList(vm, ui, Modifier.weight(1f))
         MediaRow(vm, ui)
         BottomBar(vm, ui)
@@ -115,6 +117,11 @@ private fun TopBar(vm: MainViewModel, ui: UiState) {
                     menu = false
                     confirmUnpair = true
                 })
+                DropdownMenuItem(
+                    text = { Text("App 版本 v${ui.appVersion}", color = pal.ink3) },
+                    onClick = {},
+                    enabled = false,
+                )
             }
         }
     }
@@ -174,6 +181,49 @@ private fun StatusRow(vm: MainViewModel, ui: UiState) {
                 Icon(AeriIcons.stop, null, Modifier.size(16.dp), tint = pal.ink)
                 Text("停止", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = pal.ink)
             }
+        }
+    }
+}
+
+// ---------- 新版 App：电脑上带的比手机上的新 ----------
+
+@Composable
+private fun UpdateBanner(vm: MainViewModel, ui: UiState) {
+    val update = ui.appUpdate ?: return
+    val progress = ui.appDownload
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(pal.signalSoft)
+            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("电脑上有新版 App：v${update.versionName}", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = pal.signalInk)
+            Text(
+                if (progress == null) {
+                    "%.1f MB，从电脑直接传过来，不走外网".format(update.size / 1048576.0)
+                } else {
+                    "正在从电脑下载… ${(progress * 100).toInt()}%"
+                },
+                fontSize = 12.sp,
+                color = pal.ink3,
+            )
+        }
+        if (progress == null) {
+            Btn("更新", { vm.startAppUpdate() }, kind = 0, height = 36.dp)
+        } else {
+            CircularProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.size(26.dp),
+                color = pal.signal,
+                strokeWidth = 3.dp,
+                trackColor = pal.inset,
+            )
+            Spacer(Modifier.width(4.dp))
         }
     }
 }

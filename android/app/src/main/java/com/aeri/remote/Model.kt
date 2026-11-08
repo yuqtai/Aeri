@@ -17,6 +17,9 @@ data class Chat(val role: Int, val text: String, val task: Int? = null)
 
 enum class Link { Offline, Connecting, Online }
 
+/** 电脑上带的、比手机上新的 App 版本 */
+data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long)
+
 /** 和电脑上的状态码一致 */
 object Status {
     const val IDLE = 0

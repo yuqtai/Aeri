@@ -1,8 +1,12 @@
 package com.aeri.remote
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -19,8 +23,12 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
@@ -38,6 +46,12 @@ data class UiState(
     val talking: Boolean = false,
     /** 连续连不上的次数 */
     val failures: Int = 0,
+    /** 手机上装的 App 版本 */
+    val appVersion: String = "",
+    /** 电脑上有更新的 App 时不为空 */
+    val appUpdate: AppUpdate? = null,
+    /** 正在从电脑下载新版 App：进度 0..1；没在下载时为空 */
+    val appDownload: Float? = null,
 )
 
 data class PairUi(
@@ -53,13 +67,24 @@ data class PairUi(
  * 界面在前台时保持连接，断了自动重连；连续连不上时先在局域网里按编号重新找电脑（IP 可能变了）。
  */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    /** 手机上装的 App 的版本号（和电脑版一致，见 build.gradle.kts） */
+    private val installedCode: Long
+    private val installedName: String
+
+    init {
+        val info = app.packageManager.getPackageInfo(app.packageName, 0)
+        @Suppress("DEPRECATION")
+        installedCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        installedName = info.versionName.orEmpty()
+    }
+
     private val http = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
-    private val _ui = MutableStateFlow(UiState(saved = Store.load(app)))
+    private val _ui = MutableStateFlow(UiState(saved = Store.load(app), appVersion = installedName))
     val ui: StateFlow<UiState> = _ui
     private val _pair = MutableStateFlow(PairUi())
     val pair: StateFlow<PairUi> = _pair
@@ -70,7 +95,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var socket: WebSocket? = null
 
-    /** 每开一个新连接加一；旧连接迟到的回调一律作废 */
+    /** 每开一个新连接加一；旧连接迟到的回调一律作废（收消息的线程也会读） */
+    @Volatile
     private var generation = 0
     private var foreground = false
     private var retry: Job? = null
@@ -114,7 +140,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
-                onMain { if (gen == generation) handle(msg) }
+                if (gen != generation) return
+                when (msg.optString("t")) {
+                    // 下载新版 App 的消息就在收消息的线程里按顺序处理，和二进制块不会乱序
+                    "app_begin", "app_end", "app_error" -> appMessage(msg)
+                    else -> onMain { if (gen == generation) handle(msg) }
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                if (gen == generation) appChunk(bytes)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -151,6 +186,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         retry?.cancel()
         retry = null
         generation++
+        abortDownload(null)
         socket?.close(1000, null)
         socket = null
         _ui.update { it.copy(link = Link.Offline) }
@@ -160,6 +196,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun lost() {
         socket = null
         dropTalking()
+        abortDownload("连接断了，新版 App 没下完，连上后再点一次“更新”")
         val target = pairing
         if (target != null) {
             pairing = null
@@ -225,7 +262,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _pair.update { it.copy(busy = false, error = error) }
                 } else {
                     Store.clear(getApplication())
-                    _ui.value = UiState()
+                    _ui.value = UiState(appVersion = installedName)
                     notice("电脑上取消了配对，请重新配对")
                     search()
                 }
@@ -237,6 +274,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     for (i in 0 until (history?.length() ?: 0)) add(parseChat(history!!.getJSONObject(i)))
                 }
                 val status = msg.optInt("status")
+                // 电脑上带的 App 比手机上的新：提示更新
+                val update = msg.optJSONObject("app")?.let {
+                    AppUpdate(it.optLong("version_code"), it.optString("version_name"), it.optLong("size"))
+                }?.takeIf { it.versionCode > installedCode }
                 val old = _ui.value.saved
                 val renamed = old?.copy(name = msg.optString("pc", old.name))
                 if (renamed != null && renamed != old) Store.save(getApplication(), renamed)
@@ -250,6 +291,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         partial = msg.optString("partial"),
                         taskRunning = msg.optBoolean("task_running"),
                         chats = chats,
+                        appUpdate = update,
                     )
                 }
             }
@@ -324,7 +366,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         stopTalking(cancel = true)
         disconnect()
         Store.clear(getApplication())
-        _ui.value = UiState()
+        _ui.value = UiState(appVersion = installedName)
         _pair.value = PairUi()
         search()
     }
@@ -414,6 +456,131 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!_ui.value.talking) return
         _ui.update { it.copy(talking = false) }
         viewModelScope.launch(Dispatchers.IO) { mic.stop() }
+    }
+
+    // ---------- App 更新：从电脑下载新版，核对后交给系统安装 ----------
+
+    /** 正在下载的安装包（收消息的线程写，界面线程只在开始和取消时碰） */
+    private class Download(val file: File, val size: Long, val sha256: String) {
+        private val out = FileOutputStream(file)
+        private val digest = MessageDigest.getInstance("SHA-256")
+        var received = 0L
+        var reported = 0f
+
+        fun write(bytes: ByteString): Boolean = runCatching {
+            val b = bytes.toByteArray()
+            out.write(b)
+            digest.update(b)
+            received += b.size
+            received <= size
+        }.getOrDefault(false)
+
+        /** 写完并核对大小和 SHA-256 */
+        fun finish(): Boolean {
+            runCatching { out.close() }
+            val hex = digest.digest().joinToString("") { "%02x".format(it) }
+            return received == size && hex == sha256
+        }
+
+        fun abort() {
+            runCatching { out.close() }
+            file.delete()
+        }
+    }
+
+    @Volatile
+    private var download: Download? = null
+
+    /** 点了“更新”：先确认允许安装应用，再请电脑传过来 */
+    fun startAppUpdate() {
+        val app = getApplication<Application>()
+        if (_ui.value.appDownload != null) return
+        if (!app.packageManager.canRequestPackageInstalls()) {
+            notice("请允许 Aeri 安装应用，然后回到这里再点一次“更新”")
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${app.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { app.startActivity(intent) }
+            return
+        }
+        if (send(JSONObject().put("t", "get_app"))) _ui.update { it.copy(appDownload = 0f) }
+    }
+
+    private fun appMessage(msg: JSONObject) {
+        when (msg.optString("t")) {
+            "app_begin" -> {
+                download?.abort()
+                val dir = File(getApplication<Application>().cacheDir, "updates").apply { mkdirs() }
+                val started = runCatching {
+                    Download(File(dir, "Aeri.apk"), msg.optLong("size"), msg.optString("sha256").lowercase())
+                }.getOrNull()
+                download = started
+                onMain {
+                    if (started == null) failDownload("手机上没法保存安装包") else _ui.update { it.copy(appDownload = 0f) }
+                }
+            }
+
+            "app_end" -> {
+                val d = download ?: return
+                download = null
+                val ok = d.finish()
+                if (!ok) d.file.delete()
+                onMain {
+                    if (ok) {
+                        _ui.update { it.copy(appDownload = null) }
+                        install(d.file)
+                    } else {
+                        failDownload("安装包校验没通过，请再试一次")
+                    }
+                }
+            }
+
+            "app_error" -> {
+                download?.abort()
+                download = null
+                onMain { failDownload("电脑上没有找到手机 App 安装包") }
+            }
+        }
+    }
+
+    private fun appChunk(bytes: ByteString) {
+        val d = download ?: return
+        if (!d.write(bytes)) {
+            download = null
+            d.abort()
+            onMain { failDownload("下载出错了，请再试一次") }
+            return
+        }
+        val progress = d.received.toFloat() / d.size.coerceAtLeast(1)
+        if (progress - d.reported >= 0.02f || d.received >= d.size) {
+            d.reported = progress
+            onMain { _ui.update { if (it.appDownload != null) it.copy(appDownload = progress) else it } }
+        }
+    }
+
+    private fun failDownload(text: String) {
+        _ui.update { it.copy(appDownload = null) }
+        notice(text)
+    }
+
+    /** 连接断了或离开界面：丢掉没下完的 */
+    private fun abortDownload(reason: String?) {
+        val d = download
+        download = null
+        d?.abort()
+        if (_ui.value.appDownload != null) {
+            _ui.update { it.copy(appDownload = null) }
+            if (reason != null) notice(reason)
+        }
+    }
+
+    /** 打开系统安装界面（安卓要求你在那里点“安装”确认） */
+    private fun install(file: File) {
+        val app = getApplication<Application>()
+        val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { app.startActivity(intent) }.onFailure { notice("打不开系统安装界面：${it.message}") }
     }
 
     override fun onCleared() {
