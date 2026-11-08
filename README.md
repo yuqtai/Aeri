@@ -8,6 +8,7 @@
 <p align="center">
   <a href="https://github.com/yuqtai/Aeri/releases/latest"><img src="https://img.shields.io/github/v/release/yuqtai/Aeri?style=flat-square&color=4F46E5" alt="Release"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/%E6%89%8B%E6%9C%BA-Android%208%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="手机：Android 8+">
   <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust" alt="Rust">
 </p>
 
@@ -56,7 +57,7 @@
 |---|---|
 | 待机内存 | 约 **60 MB** |
 | 待机 CPU | 整机 **不到 0.2%** |
-| 下载包 | **22 MB**，解压即用，不要管理员权限 |
+| 下载包 | **24 MB**（含手机 App），解压即用，不要管理员权限 |
 | 常用操作 | 不到 **1 毫秒**（不算网络和大模型思考） |
 | 软件内更新 | 约 **9 秒** |
 
@@ -75,7 +76,13 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | 理解你的话、决定做什么 |
 | 阿里云百炼 | [百炼控制台](https://bailian.console.aliyun.com/) | 听和说 |
 
-之后有新版本，设置页里点一下就能更新。
+想用手机操控（可选）：
+
+1. 电脑上打开 设置 → 手机控制 → “允许手机控制”，点“保存并应用”（Windows 防火墙询问时允许“专用网络”）
+2. 安卓手机装 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 里的 `Aeri-vX.Y.Z-android.apk`，和电脑连同一个 Wi-Fi，打开后会自动找到电脑
+3. 电脑上点“配对新手机”，把 6 位配对码填进手机
+
+之后有新版本，设置页里点一下就能更新；手机 App 跟着电脑一起更新，手机上点一下就装好，不用再去下载。
 
 ## 更多文档
 
