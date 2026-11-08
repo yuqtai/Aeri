@@ -15,26 +15,48 @@ use crate::assistant::Command;
 use crate::kws::WakeDetector;
 use crate::resample::Resampler;
 
-/// 待机：检测唤醒词
-pub const MODE_IDLE: u8 = 0;
-/// 录音：音频转发给识别
-pub const MODE_CAPTURE: u8 = 1;
-/// 静音：思考/播报期间，丢弃音频
-pub const MODE_MUTED: u8 = 2;
-/// 用户暂停了语音唤醒
-pub const MODE_PAUSED: u8 = 3;
-/// 播报中：只听唤醒词，听到就打断播报并开始录音
-pub const MODE_BARGE: u8 = 4;
-
-/// 当前模式。全局只有一份：电脑麦克风（耳朵线程）和手机麦克风都看它，没有电脑麦克风时手机也能说话
-static MODE: AtomicU8 = AtomicU8::new(MODE_PAUSED);
-
-pub fn mode() -> u8 {
-    MODE.load(Ordering::SeqCst)
+/// 麦克风这一刻在做什么。全局只有一份：电脑麦克风（耳朵线程）和手机麦克风都看它，没有电脑麦克风时手机也能说话
+///
+/// 转换（谁来切）：
+/// - Idle → Capture：耳朵线程听到唤醒词；或调度中心开始一轮（点光球、手机按住说话、追问）
+/// - Capture → Muted：说完了，开始思考 / 执行
+/// - Muted → Barge：开始播报，且开着“说唤醒词打断”；Barge → Capture：播报时听到唤醒词
+/// - 任何 → Idle / Paused：这一轮结束，按“语音唤醒”开关回到待机或暂停
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Mode {
+    /// 待机：检测唤醒词
+    Idle = 0,
+    /// 录音：音频转发给识别
+    Capture = 1,
+    /// 静音：思考 / 播报期间，丢弃音频
+    Muted = 2,
+    /// 用户暂停了语音唤醒
+    Paused = 3,
+    /// 播报中：只听唤醒词，听到就打断播报并开始录音
+    Barge = 4,
 }
 
-pub fn set_mode(mode: u8) {
-    MODE.store(mode, Ordering::SeqCst);
+impl Mode {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Idle,
+            1 => Self::Capture,
+            2 => Self::Muted,
+            4 => Self::Barge,
+            _ => Self::Paused,
+        }
+    }
+}
+
+static MODE: AtomicU8 = AtomicU8::new(Mode::Paused as u8);
+
+pub fn mode() -> Mode {
+    Mode::from_u8(MODE.load(Ordering::SeqCst))
+}
+
+pub fn set_mode(mode: Mode) {
+    MODE.store(mode as u8, Ordering::SeqCst);
 }
 
 // ---------- 手机麦克风 ----------
@@ -47,17 +69,26 @@ pub fn set_mode(mode: u8) {
 /// 松开说话后补多少静音（16k 采样，1.5 秒）
 const PHONE_RELEASE_SILENCE: usize = 16000 * 3 / 2;
 
+/// “听手机”这一轮进行到哪一步。和手指按没按着（held）是两回事：
+/// 手指可能在一轮开始前就松开（存着的声音照样要听完），也可能一轮出错结束了还按着。
+///
+/// None ──按着时 phone_wants_turn──▶ Requested ──phone_begin_turn──▶ Running ──phone_end_turn──▶ None（已松开）
+///                                                                                  └─────────▶ Served（还按着）
+/// Served：这次按下已经听过一轮，按着不放也不再自动开始（免得出错后反复重试）；下次按下回到 None
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhoneTurn {
+    None,
+    /// 已经请调度中心开始，还没开始
+    Requested,
+    /// 调度中心正在听手机
+    Running,
+    Served,
+}
+
 struct PhoneMic {
     /// 手机正按着说话键
     held: bool,
-    /// 这一轮用手机麦克风（电脑麦克风的声音不送去识别）
-    active: bool,
-    /// 已经请调度中心开始一轮“听手机”，还没开始
-    requested: bool,
-    /// 调度中心正在进行“听手机”的这一轮
-    turn: bool,
-    /// 这次按下已经开始过一轮：这一轮结束（哪怕是出错）后不再自动开始，免得按着不放时反复出错
-    served: bool,
+    turn: PhoneTurn,
     /// 还没开始收音时收到的声音
     pending: PreRoll,
     out: Option<UnboundedSender<Vec<f32>>>,
@@ -65,10 +96,7 @@ struct PhoneMic {
 
 static PHONE: Mutex<PhoneMic> = Mutex::new(PhoneMic {
     held: false,
-    active: false,
-    requested: false,
-    turn: false,
-    served: false,
+    turn: PhoneTurn::None,
     pending: PreRoll::new(PREROLL_MAX_SAMPLES),
     out: None,
 });
@@ -88,15 +116,17 @@ pub fn set_phone_output(tx: UnboundedSender<Vec<f32>>) {
 
 /// 这一轮用的是手机麦克风：电脑麦克风的声音不送去识别
 pub fn phone_active() -> bool {
-    phone().active
+    let p = phone();
+    p.held || matches!(p.turn, PhoneTurn::Requested | PhoneTurn::Running)
 }
 
 /// 手机按下说话键
 pub fn phone_press() {
     let mut p = phone();
     p.held = true;
-    p.active = true;
-    p.served = false;
+    if p.turn == PhoneTurn::Served {
+        p.turn = PhoneTurn::None;
+    }
     p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
 }
 
@@ -123,17 +153,19 @@ pub fn phone_release() {
 pub fn phone_cancel() -> bool {
     let mut p = phone();
     p.held = false;
-    p.requested = false;
+    if p.turn == PhoneTurn::Requested {
+        p.turn = PhoneTurn::None;
+    }
     p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
-    p.turn
+    p.turn == PhoneTurn::Running
 }
 
 /// 手机正按着说话键、还没请调度中心开始听：记下“已请求”并返回 true（调用方去发命令）。
 /// 同一次按下只会返回一次 true
 pub fn phone_wants_turn() -> bool {
     let mut p = phone();
-    if p.held && !p.requested && !p.turn && !p.served {
-        p.requested = true;
+    if p.held && p.turn == PhoneTurn::None {
+        p.turn = PhoneTurn::Requested;
         true
     } else {
         false
@@ -144,37 +176,37 @@ pub fn phone_wants_turn() -> bool {
 /// 手机已经取消了（没按着、也没存下声音）时返回 false，不用开始
 pub fn phone_begin_turn() -> bool {
     let mut p = phone();
-    p.requested = false;
     if !p.held && p.pending.samples() == 0 {
+        p.turn = PhoneTurn::None;
         return false;
     }
-    p.turn = true;
-    p.served = true;
-    p.active = true;
+    p.turn = PhoneTurn::Running;
     let pending = std::mem::replace(&mut p.pending, PreRoll::new(PREROLL_MAX_SAMPLES));
     if let Some(out) = &p.out {
         for chunk in pending.into_chunks() {
             let _ = out.send(chunk);
         }
     }
-    set_mode(MODE_CAPTURE);
+    set_mode(Mode::Capture);
     true
 }
 
 /// 回到待机：这一轮结束。手机还按着时保留状态（马上会开始下一轮）
 pub fn phone_end_turn() {
     let mut p = phone();
-    p.turn = false;
-    if !p.held {
-        p.active = false;
-        p.requested = false;
+    if p.held {
+        if p.turn == PhoneTurn::Running {
+            p.turn = PhoneTurn::Served;
+        }
+    } else {
+        p.turn = PhoneTurn::None;
         p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
     }
 }
 
 impl PhoneMic {
     fn feed(&mut self, samples: Vec<f32>) {
-        if mode() == MODE_CAPTURE {
+        if mode() == Mode::Capture {
             if let Some(out) = &self.out {
                 let _ = out.send(samples);
             }
@@ -397,7 +429,7 @@ impl Drop for Ear {
 /// 启动耳朵线程。成功时返回（句柄，设备名，唤醒词问题说明）。
 pub fn start_ear(
     settings: EarSettings,
-    initial_mode: u8,
+    initial_mode: Mode,
     events: UnboundedSender<Command>,
     audio_out: UnboundedSender<Vec<f32>>,
 ) -> anyhow::Result<(Ear, String, Vec<String>)> {
@@ -431,7 +463,7 @@ pub fn start_ear(
 
             let mut resampler = Resampler::new(rate);
             let mut gate = EnergyGate::new();
-            let mut last_mode = u8::MAX;
+            let mut last_mode: Option<Mode> = None;
             // 正常的麦克风即使安静也会持续回调；几秒没有数据说明设备被拔掉或出错了
             let mut last_audio = Instant::now();
             let mut last_device_check = Instant::now();
@@ -453,8 +485,8 @@ pub fn start_ear(
                 last_audio = Instant::now();
                 let samples = resampler.process(&chunk);
                 let current = mode();
-                if current == MODE_IDLE || current == MODE_BARGE {
-                    if last_mode != current {
+                if current == Mode::Idle || current == Mode::Barge {
+                    if last_mode != Some(current) {
                         detector.reset();
                         gate = EnergyGate::new();
                     }
@@ -462,8 +494,8 @@ pub fn start_ear(
                     for piece in gate.process(&samples, &mut detector) {
                         if let Some(word) = detector.accept(&piece) {
                             // 立刻切到录音，唤醒词之后的话一个字都不丢
-                            set_mode(MODE_CAPTURE);
-                            if current == MODE_BARGE {
+                            set_mode(Mode::Capture);
+                            if current == Mode::Barge {
                                 barge2.notify_one();
                             } else {
                                 let _ = events.send(Command::Wake(word));
@@ -471,11 +503,11 @@ pub fn start_ear(
                             break;
                         }
                     }
-                } else if current == MODE_CAPTURE && !samples.is_empty() && !phone_active() {
+                } else if current == Mode::Capture && !samples.is_empty() && !phone_active() {
                     // 这一轮用手机麦克风时，电脑麦克风的声音不送去识别
                     let _ = audio_out.send(samples);
                 }
-                last_mode = current;
+                last_mode = Some(current);
             }
         })?;
 
@@ -510,7 +542,25 @@ mod tests {
         assert!(!phone_cancel(), "还没开始的一轮不用停");
         assert!(!phone_begin_turn(), "取消后不用开始");
         phone_end_turn();
-        set_mode(MODE_PAUSED);
+        set_mode(Mode::Paused);
+    }
+
+    /// 一轮还没开始就松开了：存着的声音照样要听完，这期间仍算“在用手机麦克风”
+    #[test]
+    fn phone_release_before_turn_still_runs_it() {
+        let _serial = PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_mode(Mode::Muted);
+        phone_press();
+        assert!(phone_wants_turn());
+        phone_audio(vec![0.1; 100]);
+        phone_release();
+        assert!(phone_active(), "请求了还没开始，电脑麦克风先别抢");
+        assert!(phone_begin_turn(), "有存着的声音，要开始");
+        assert_eq!(mode(), Mode::Capture);
+        phone_end_turn();
+        assert!(!phone_active());
+        assert!(!phone_wants_turn(), "手指没按着，不会再请求");
+        set_mode(Mode::Paused);
     }
 
     #[test]

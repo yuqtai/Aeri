@@ -72,6 +72,15 @@ impl Drop for Canvas {
     }
 }
 
+/// 左键：松开 → 按下（还没动，松开算单击）→ 拖动（移动超过 4 像素，松开算挪位置）
+#[derive(Clone, Copy)]
+enum Pointer {
+    Up,
+    /// 按下时的光标位置和窗口左上角
+    Pressed { at: POINT, x0: i32, y0: i32 },
+    Dragging { at: POINT, x0: i32, y0: i32 },
+}
+
 struct Ball {
     hwnd: HWND,
     scale: f32,
@@ -86,9 +95,7 @@ struct Ball {
     /// 实际是否显示：想显示，且前台没有全屏程序
     shown: bool,
     enabled: bool,
-    /// 按下时的光标位置和窗口位置
-    down: Option<(POINT, i32, i32)>,
-    dragging: bool,
+    pointer: Pointer,
     timer_on: bool,
     started: Instant,
     canvas: Option<Canvas>,
@@ -147,8 +154,7 @@ pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEven
                 visible: false,
                 shown: false,
                 enabled,
-                down: None,
-                dragging: false,
+                pointer: Pointer::Up,
                 timer_on: false,
                 started: Instant::now(),
                 canvas: None,
@@ -588,10 +594,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = GetCursorPos(&mut pt);
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
-                with_ball(|b| {
-                    b.down = Some((pt, wr.left, wr.top));
-                    b.dragging = false;
-                });
+                with_ball(|b| b.pointer = Pointer::Pressed { at: pt, x0: wr.left, y0: wr.top });
                 SetCapture(hwnd);
                 LRESULT(0)
             }
@@ -607,40 +610,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = TrackMouseEvent(&mut tme);
                     redraw();
                 }
-                if let Some(Some((down, x0, y0, dragging))) = with_ball(|b| b.down.map(|(p, x, y)| (p, x, y, b.dragging))) {
+                let pointer = with_ball(|b| b.pointer).unwrap_or(Pointer::Up);
+                if let Pointer::Pressed { at, x0, y0 } | Pointer::Dragging { at, x0, y0 } = pointer {
                     let mut pt = POINT::default();
                     let _ = GetCursorPos(&mut pt);
-                    let (dx, dy) = (pt.x - down.x, pt.y - down.y);
-                    if dragging || dx.abs() > 4 || dy.abs() > 4 {
-                        with_ball(|b| b.dragging = true);
+                    let (dx, dy) = (pt.x - at.x, pt.y - at.y);
+                    if matches!(pointer, Pointer::Dragging { .. }) || dx.abs() > 4 || dy.abs() > 4 {
+                        with_ball(|b| b.pointer = Pointer::Dragging { at, x0, y0 });
                         let _ = SetWindowPos(hwnd, None, x0 + dx, y0 + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                     }
                 }
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                let state = with_ball(|b| {
-                    let s = (b.down.is_some(), b.dragging);
-                    b.down = None;
-                    b.dragging = false;
-                    s
-                });
+                let pointer = with_ball(|b| std::mem::replace(&mut b.pointer, Pointer::Up)).unwrap_or(Pointer::Up);
                 let _ = ReleaseCapture();
-                match state {
-                    Some((true, true)) => {
+                match pointer {
+                    Pointer::Dragging { .. } => {
                         let (x, y) = snap(hwnd);
                         emit(BallEvent::Moved(x, y));
                     }
-                    Some((true, false)) => emit(BallEvent::Open),
-                    _ => {}
+                    Pointer::Pressed { .. } => emit(BallEvent::Open),
+                    Pointer::Up => {}
                 }
                 LRESULT(0)
             }
             WM_CAPTURECHANGED => {
-                with_ball(|b| {
-                    b.down = None;
-                    b.dragging = false;
-                });
+                with_ball(|b| b.pointer = Pointer::Up);
                 LRESULT(0)
             }
             WM_MOUSELEAVE => {

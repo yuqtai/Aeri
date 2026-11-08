@@ -419,15 +419,31 @@ struct Running {
     task: JoinHandle<()>,
 }
 
+/// 服务的状态：Off ─apply(开)→ Starting ─端口打开→ Listening
+///                                    └─打不开→ Failed(原因)
+/// 每次 start() 都从 Starting 重新开始（端口变了、取消配对要断开所有连接时也会重启）
+#[derive(Clone, Debug, PartialEq)]
+enum Phase {
+    Off,
+    Starting,
+    Listening,
+    Failed(String),
+}
+
 static SERVER: Mutex<Option<Running>> = Mutex::new(None);
-/// 启动失败的原因（端口被占用等），给界面显示
-static ERROR: Mutex<String> = Mutex::new(String::new());
-/// 已经监听上了
-static LISTENING: Mutex<bool> = Mutex::new(false);
+static PHASE: Mutex<(u64, Phase)> = Mutex::new((0, Phase::Off));
 static CONNECTED: AtomicUsize = AtomicUsize::new(0);
 
 fn is_running() -> bool {
-    *lock(&LISTENING)
+    lock(&PHASE).1 == Phase::Listening
+}
+
+/// 只有当前这一代服务能改状态
+fn set_phase(generation: u64, phase: Phase) {
+    let mut p = lock(&PHASE);
+    if p.0 == generation {
+        p.1 = phase;
+    }
 }
 
 /// 按配置打开 / 关闭手机控制（启动时和保存设置后调用；配置没变时什么也不做）
@@ -458,13 +474,16 @@ fn start(enabled: bool, port: u16) {
     if let Some(old) = server.take() {
         old.task.abort();
     }
-    *lock(&LISTENING) = false;
-    lock(&ERROR).clear();
+    let generation = {
+        let mut p = lock(&PHASE);
+        p.0 += 1;
+        p.1 = if enabled { Phase::Starting } else { Phase::Off };
+        p.0
+    };
     if enabled {
         let task = rt.spawn(async move {
-            if let Err(e) = serve(port).await {
-                *lock(&LISTENING) = false;
-                *lock(&ERROR) = format!("{e:#}");
+            if let Err(e) = serve(port, generation).await {
+                set_phase(generation, Phase::Failed(format!("{e:#}")));
                 changed();
             }
         });
@@ -476,7 +495,7 @@ fn start(enabled: bool, port: u16) {
     changed();
 }
 
-async fn serve(port: u16) -> anyhow::Result<()> {
+async fn serve(port: u16, generation: u64) -> anyhow::Result<()> {
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     // 刚停掉的旧服务可能还没放开端口，稍等重试几次
     let mut tries = 0;
@@ -490,7 +509,7 @@ async fn serve(port: u16) -> anyhow::Result<()> {
             }
         }
     };
-    *lock(&LISTENING) = true;
+    set_phase(generation, Phase::Listening);
     changed();
     let mut connections = JoinSet::new();
     let mut buf = [0u8; 64];
@@ -736,8 +755,9 @@ pub struct Info {
 }
 
 pub fn info() -> Info {
-    let running = is_running();
-    let error = lock(&ERROR).clone();
+    let phase = lock(&PHASE).1.clone();
+    let running = phase == Phase::Listening;
+    let error = if let Phase::Failed(e) = &phase { e.clone() } else { String::new() };
     let paired = registry(|r| r.devices.len());
     let connected = CONNECTED.load(Ordering::SeqCst);
     let port = lock(&SERVER).as_ref().map(|s| s.port);
@@ -830,7 +850,7 @@ mod tests {
         );
         let (audio_tx, mut audio_rx) = unbounded_channel();
         audio::set_phone_output(audio_tx);
-        audio::set_mode(audio::MODE_IDLE);
+        audio::set_mode(audio::Mode::Idle);
 
         let port = {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -972,7 +992,7 @@ mod tests {
         ws.send(send(json!({"t": "ptt", "on": false}))).await.unwrap();
         let silence = tokio::time::timeout(wait, audio_rx.recv()).await.unwrap().unwrap();
         assert!(silence.len() >= 16000 && silence.iter().all(|s| *s == 0.0));
-        audio::set_mode(audio::MODE_IDLE);
+        audio::set_mode(audio::Mode::Idle);
         audio::phone_end_turn();
         assert!(!audio::phone_active());
 

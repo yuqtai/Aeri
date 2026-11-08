@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::{Agent, FRONT_PROMPT};
 use crate::asr::{self, AsrSettings};
-use crate::audio::{self, Ear, EarSettings, MODE_BARGE, MODE_CAPTURE, MODE_IDLE, MODE_MUTED, MODE_PAUSED};
+use crate::audio::{self, Ear, EarSettings, Mode};
 use crate::config::{self, Config};
 use crate::duck::Ducker;
 use crate::llm::Llm;
@@ -245,12 +245,12 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
                 match cmd {
                     Command::Wake(_word) => {
                         // 耳朵检测到唤醒词时会立刻切到录音模式；如果此后模式被改过（比如期间在处理别的命令），这个唤醒已过时
-                        let fresh = a.ear.is_some() && a.mode() == MODE_CAPTURE;
+                        let fresh = a.ear.is_some() && a.mode() == Mode::Capture;
                         if a.listening && fresh {
                             #[cfg(debug_assertions)]
                             println!("[唤醒] {_word}");
                             a.conversation(None, Origin::Wake).await;
-                        } else if a.mode() == MODE_CAPTURE {
+                        } else if a.mode() == Mode::Capture {
                             // 耳朵已切到录音但这次唤醒不算数：恢复模式并丢掉已录下的，免得堆积或串入下一轮
                             a.go_idle();
                         }
@@ -321,18 +321,18 @@ impl Assistant {
     }
 
     async fn text_command(&mut self, text: &str, echo: bool) {
-        self.set_mode(MODE_MUTED);
+        self.set_mode(Mode::Muted);
         if self.handle(text, echo).await && !self.turn.cancelled() {
             self.classic_conversation(true).await; // 播报被唤醒词打断，接着听
         }
         self.go_idle();
     }
 
-    fn set_mode(&self, mode: u8) {
+    fn set_mode(&self, mode: Mode) {
         audio::set_mode(mode);
     }
 
-    fn mode(&self) -> u8 {
+    fn mode(&self) -> Mode {
         audio::mode()
     }
 
@@ -341,7 +341,7 @@ impl Assistant {
         self.phone = false;
         audio::phone_end_turn();
         while self.audio_rx.try_recv().is_ok() {}
-        self.set_mode(if self.listening { MODE_IDLE } else { MODE_PAUSED });
+        self.set_mode(if self.listening { Mode::Idle } else { Mode::Paused });
         self.emit(UiEvent::Partial(String::new()));
         self.emit(UiEvent::Status(if self.listening { Status::Idle } else { Status::Paused }));
     }
@@ -376,7 +376,7 @@ impl Assistant {
             score: self.cfg.kws_score,
             model_dir: config::models_dir().join("kws"),
         };
-        let mode = if self.listening { MODE_IDLE } else { MODE_PAUSED };
+        let mode = if self.listening { Mode::Idle } else { Mode::Paused };
         match audio::start_ear(settings, mode, self.cmd_tx.clone(), self.audio_tx.clone()) {
             Ok((ear, name, problems)) => {
                 self.ear = Some(ear);
@@ -485,7 +485,7 @@ impl Assistant {
             self.chat(Role::System, "还没有设置语音识别的 API Key：请在“设置”页填写阿里云百炼的 key，点“保存并应用”。");
             return None;
         };
-        self.set_mode(MODE_CAPTURE);
+        self.set_mode(Mode::Capture);
         if beep && !self.phone {
             sys::beep(880, 120);
         }
@@ -502,7 +502,7 @@ impl Assistant {
             r = asr::recognize(&settings, &mut self.audio_rx, |partial| ui(UiEvent::Partial(partial.to_string()))) => r,
             _ = self.turn.stopped() => Ok(None),
         };
-        self.set_mode(MODE_MUTED);
+        self.set_mode(Mode::Muted);
         while self.audio_rx.try_recv().is_ok() {}
         self.emit(UiEvent::Partial(String::new()));
         match result {
@@ -565,7 +565,7 @@ impl Assistant {
     async fn speak(&mut self, text: &str) -> bool {
         self.emit(UiEvent::Status(Status::Speaking));
         let barge = self.cfg.barge_in && self.ear.is_some() && self.listening;
-        self.set_mode(if barge { MODE_BARGE } else { MODE_MUTED });
+        self.set_mode(if barge { Mode::Barge } else { Mode::Muted });
         let speaking = self.tts.speak(text, self.cfg.tts_rate);
         tokio::pin!(speaking);
         let notify = self.ear.as_ref().map(|e| e.barge.clone());
@@ -578,7 +578,7 @@ impl Assistant {
                     break;
                 }
                 _ = async { notify.as_ref().unwrap().notified().await }, if barge => {
-                    if self.mode() == MODE_CAPTURE {
+                    if self.mode() == Mode::Capture {
                         self.tts.stop();
                         (&mut speaking).await;
                         self.chat(Role::System, "（已打断）");
@@ -587,7 +587,7 @@ impl Assistant {
                 }
             }
         }
-        self.set_mode(MODE_MUTED);
+        self.set_mode(Mode::Muted);
         // 扬声器还有余音，多等一会儿再恢复收音，避免播报内容误触发唤醒
         tokio::time::sleep(Duration::from_millis(600)).await;
         false
@@ -629,7 +629,7 @@ impl Assistant {
         let mut session = session?;
         // 唤醒后、连接好之前用户已经开口说的话：按顺序收起来（有上限），连好后先补发
         let mut preroll = audio::PreRoll::new(audio::PREROLL_MAX_SAMPLES);
-        if matches!(origin, Origin::Wake | Origin::Phone) && self.mode() == MODE_CAPTURE {
+        if matches!(origin, Origin::Wake | Origin::Phone) && self.mode() == Mode::Capture {
             while let Ok(chunk) = self.audio_rx.try_recv() {
                 preroll.push(chunk);
             }
@@ -736,9 +736,9 @@ impl Assistant {
                 responding = true;
                 watch.start(Instant::now());
             }
-            self.set_mode(MODE_MUTED);
+            self.set_mode(Mode::Muted);
         } else {
-            self.set_mode(MODE_CAPTURE);
+            self.set_mode(Mode::Capture);
             // 唤醒后已经说出口的部分先按顺序补发（realtime_conversation 已经把残留和本轮分开）
             for chunk in preroll.into_chunks() {
                 // 补发期间也能停止；停止后不再提示音、不进入“正在听”
@@ -760,7 +760,7 @@ impl Assistant {
             tokio::select! {
                 _ = turn.stopped() => {
                     player.clear();
-                    self.set_mode(MODE_MUTED);
+                    self.set_mode(Mode::Muted);
                     if responding {
                         session.cancel_response().await; // 内部最多等 1 秒
                     }
@@ -768,7 +768,7 @@ impl Assistant {
                 }
                 chunk = self.audio_rx.recv() => {
                     if let Some(chunk) = chunk {
-                        if self.mode() == MODE_CAPTURE {
+                        if self.mode() == Mode::Capture {
                             session.send_audio(&chunk).await?;
                         }
                     }
@@ -851,7 +851,7 @@ impl Assistant {
                                 self.emit(UiEvent::Status(Status::Speaking));
                                 if !duplex {
                                     // 外放时不把麦克风发过去，否则模型会听到自己的声音；改为只听唤醒词
-                                    self.set_mode(if barge { MODE_BARGE } else { MODE_MUTED });
+                                    self.set_mode(if barge { Mode::Barge } else { Mode::Muted });
                                 }
                             }
                             player.push_pcm16(&bytes);
@@ -985,7 +985,7 @@ impl Assistant {
                 }
                 _ = async { notify.as_ref().unwrap().notified().await }, if barge && notify.is_some() => {
                     // 播报时说了唤醒词：停止播放、取消回复，开始听
-                    if self.mode() == MODE_CAPTURE {
+                    if self.mode() == Mode::Capture {
                         player.clear();
                         if responding {
                             session.cancel_response().await;
@@ -1032,7 +1032,7 @@ impl Assistant {
                     }
                     let responding = responding || busy;
                     // 播完了：等余音过去再恢复收音
-                    if !playing && !responding && self.mode() != MODE_CAPTURE {
+                    if !playing && !responding && self.mode() != Mode::Capture {
                         let at = *resume_at.get_or_insert_with(|| Instant::now() + ECHO_TAIL);
                         if Instant::now() >= at {
                             resume_at = None;
@@ -1040,13 +1040,13 @@ impl Assistant {
                                 break;
                             }
                             while self.audio_rx.try_recv().is_ok() {}
-                            self.set_mode(MODE_CAPTURE);
+                            self.set_mode(Mode::Capture);
                             self.emit(UiEvent::Status(Status::Listening));
                             last_activity = Instant::now();
                             wait_limit = REALTIME_FOLLOW_UP;
                         }
                     }
-                    if !playing && !responding && !user_speaking && self.mode() == MODE_CAPTURE && last_activity.elapsed() > wait_limit {
+                    if !playing && !responding && !user_speaking && self.mode() == Mode::Capture && last_activity.elapsed() > wait_limit {
                         break; // 没人说话了，回到待机
                     }
                 }

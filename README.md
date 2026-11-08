@@ -90,6 +90,7 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 - [轻和快](docs/performance.md)：为什么轻、为什么快，完整实测
 - [安全与已知限制](docs/safety.md)：它能做什么、不会做什么、哪些还没测过
 - [开发与发版](docs/development.md)：架构、编译、安装、发版
+- [状态机清单](docs/state-machines.md)：程序里每个“阶段”怎么表示、为什么
 
 ## 社区交流
 
