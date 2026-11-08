@@ -88,7 +88,7 @@ component Icon inherits Path {
 // 基础控件
 // ============================================================
 
-// kind：0 主按钮  1 次按钮  2 文字按钮  3 危险文字按钮
+// kind：0 主按钮  1 次按钮  2 文字按钮  3 危险文字按钮  4 危险主按钮（二次确认）
 component Btn inherits Rectangle {
     in property <string> text;
     in property <int> kind: 1;
@@ -99,6 +99,7 @@ component Btn inherits Rectangle {
     background: !root.enabled ? Theme.inset
         : root.kind == 0 ? (ta.pressed ? Theme.signal-hover : ta.has-hover ? Theme.signal-hover : Theme.signal)
         : root.kind == 1 ? (ta.pressed ? Theme.inset-strong : ta.has-hover ? Theme.inset-strong : Theme.inset)
+        : root.kind == 4 ? Theme.danger
         : (ta.has-hover ? Theme.inset : transparent);
     animate background { duration: 120ms; }
     HorizontalLayout {
@@ -111,7 +112,7 @@ component Btn inherits Rectangle {
             vertical-alignment: center;
             horizontal-alignment: center;
             // 危险操作平时是灰色，悬停才变红，不抢视线
-            color: !root.enabled ? Theme.ink-4 : root.kind == 0 ? #ffffff : root.kind == 3 ? (ta.has-hover ? Theme.danger : Theme.ink-3) : Theme.ink;
+            color: !root.enabled ? Theme.ink-4 : root.kind == 0 || root.kind == 4 ? #ffffff : root.kind == 3 ? (ta.has-hover ? Theme.danger : Theme.ink-3) : Theme.ink;
         }
     }
     ta := TouchArea {
@@ -1030,6 +1031,7 @@ export component AppWindow inherits Window {
     in property <string> history-status;
     callback history-open();
     callback history-clear();
+    in-out property <bool> history-confirm;
     in property <string> app-version;
     in property <string> update-status;
     in property <int> update-action;
@@ -2218,14 +2220,30 @@ export component AppWindow inherits Window {
                         Divider { }
                         SettingRow {
                             title: "清空历史记录";
-                            description: "删除所有已保存的对话和任务记录，不能恢复";
+                            description: root.history-confirm ? "再点一次“确认清空”就会删除，3 秒后自动取消" : "删除所有已保存的对话和任务记录，不能恢复";
                             VerticalLayout {
                                 alignment: center;
                                 Btn {
                                     width: 96px;
-                                    text: "清空";
-                                    kind: 2;
-                                    clicked => { root.history-clear(); }
+                                    text: root.history-confirm ? "确认清空" : "清空";
+                                    kind: root.history-confirm ? 4 : 2;
+                                    clicked => {
+                                        if (root.history-confirm) {
+                                            root.history-confirm = false;
+                                            root.history-clear();
+                                        } else {
+                                            root.history-confirm = true;
+                                            confirm-timer.running = true;
+                                        }
+                                    }
+                                }
+                                confirm-timer := Timer {
+                                    interval: 3s;
+                                    running: false;
+                                    triggered => {
+                                        self.running = false;
+                                        root.history-confirm = false;
+                                    }
                                 }
                             }
                         }

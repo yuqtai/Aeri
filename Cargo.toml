@@ -1,6 +1,6 @@
 [package]
 name = "aeri"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 description = "Aeri，轻量 AI 语音助手：唤醒词 + 云端流式识别 + DeepSeek + 桌面控制（agent-desktop）/ 浏览器控制"
 
