@@ -88,6 +88,11 @@ pub struct Config {
     pub ball_x: i32,
     pub ball_y: i32,
 
+    // 手机控制（同一局域网里的安卓 App）
+    pub remote_enabled: bool,
+    /// WebSocket 和局域网发现（UDP）共用的端口
+    pub remote_port: u16,
+
     /// 配置格式版本，用于一次性迁移旧配置（旧文件里没有这个字段，按 0 处理）
     #[serde(default = "legacy_version")]
     pub config_version: u32,
@@ -146,6 +151,8 @@ impl Default for Config {
             hotkey: true,
             ball_x: i32::MIN,
             ball_y: i32::MIN,
+            remote_enabled: false,
+            remote_port: 47821,
             config_version: CONFIG_VERSION,
         }
     }
@@ -231,7 +238,7 @@ pub fn protect_key(plain: &str) -> Option<String> {
     dpapi(plain.trim().as_bytes(), true).map(|b| b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
-fn unprotect_key(stored: &str) -> Option<String> {
+pub(crate) fn unprotect_key(stored: &str) -> Option<String> {
     if stored.is_empty() || stored.len() % 2 != 0 {
         return None;
     }

@@ -43,9 +43,11 @@
 | `src/tools/` | 本地工具、文件操作（`files.rs`）、系统工具（`system.rs`：音量、系统开关、截图、电源、窗口、系统状态、计算、剪贴板历史）、关闭程序（含后台进程）、桌面控制和剪贴板（`desktop.rs`，调用 agent-desktop）、读屏（`reader.rs`，直接用 UI Automation）、按需启动的浏览器控制 |
 | `src/update.rs` | 软件更新：检查 GitHub Release、下载校验、替换文件（失败回滚）并重启 |
 | `src/reminders.rs` | 提醒和倒计时，存在 `reminders.json`，重启后还在，到点由助手主动说出来 |
+| `src/remote.rs` | 手机控制：局域网 WebSocket 服务、UDP 局域网发现、配对码和令牌、把对话和状态同步给手机 |
 | `src/screen.rs` | 屏幕上下文：用户正在看的窗口（标题、程序、是否全屏），每句话都带给大模型；也负责按标题快速找窗口 |
 | `src/tts.rs` | SAPI 播报，可中途打断 |
 | `ui/app.slint` | 界面（Slint，软件渲染，不占 GPU） |
+| `android/` | 安卓 App（Kotlin + Jetpack Compose）：找电脑、配对、按住说话、打字、快捷控制；协议见 `android/PROTOCOL.md` |
 
 ## 编译和运行
 
@@ -77,6 +79,14 @@
 - 浏览器控制需要 Node.js（第一次使用时通过 npx 下载 Playwright MCP）。
 - 测试唤醒词：`aeri.exe --kws-test a.wav b.wav`。
 - 运行单元测试：`powershell -ExecutionPolicy Bypass -File D:\code\voice-assistant\build.ps1 -Test`。
+
+编译安卓 App：需要 JDK 17 以上和安卓 SDK（`ANDROID_HOME` 指向 SDK，或在 `android\local.properties` 里写 `sdk.dir`），第一次会下载 Gradle 依赖：
+
+```powershell
+cd D:\code\voice-assistant\android; .\gradlew.bat assembleRelease
+```
+
+生成的 APK 在 `android\app\build\outputs\apk\release\app-release.apk`。
 
 ## 安装与更新
 

@@ -15,6 +15,7 @@ mod mcp;
 mod player;
 mod realtime;
 mod reminders;
+mod remote;
 mod resample;
 mod screen;
 mod sys;
@@ -77,6 +78,7 @@ fn main() -> anyhow::Result<()> {
     // 后台事件 -> 界面（必须回到界面线程更新）
     let weak = window.as_weak();
     let ui: assistant::UiSink = Arc::new(move |ev| {
+        remote::observe(&ev); // 抄送给连着的手机
         let weak = weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(w) = weak.upgrade() {
@@ -85,6 +87,8 @@ fn main() -> anyhow::Result<()> {
         });
     });
     runtime.spawn(assistant::run(cfg.clone(), cmd_rx, cmd_tx.clone(), ui));
+    init_remote(&window, &cmd_tx, runtime.handle().clone());
+    remote::apply(cfg.remote_enabled, cfg.remote_port);
     // 调试用：VA_AUTOTEST="命令1|命令2" 启动后自动执行这些文字命令
     if let Ok(cmds) = std::env::var("VA_AUTOTEST") {
         for c in cmds.split('|').filter(|c| !c.trim().is_empty()) {
@@ -210,6 +214,7 @@ fn on_ui_event(w: &AppWindow, ev: UiEvent) {
         UiEvent::TaskRunning(on) => println!("[后台任务进行中] {on}"),
         UiEvent::Mic(name) => println!("[麦克风] {name}"),
         UiEvent::Partial(_) => {}
+        UiEvent::TextStarted(_) => {}
     }
     match ev {
         UiEvent::Status(s) => {
@@ -223,6 +228,11 @@ fn on_ui_event(w: &AppWindow, ev: UiEvent) {
         UiEvent::TaskRunning(on) => {
             w.set_task_running(on);
             ball::set_task_running(on);
+        }
+        UiEvent::TextStarted(generation) => {
+            if generation == assistant::text_generation() {
+                w.set_pending_texts((w.get_pending_texts() - 1).max(0));
+            }
         }
     }
 }
@@ -256,8 +266,28 @@ fn push_chat(w: &AppWindow, role: i32, text: String, replace_task: Option<u32>) 
 
 fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
     let tx = cmd_tx.clone();
+    let weak = window.as_weak();
     window.on_send_text(move |t| {
-        let _ = tx.send(Command::Text(t.trim().to_string()));
+        let text = t.trim().to_string();
+        if text.is_empty() { return; }
+        let Some(w) = weak.upgrade() else { return };
+        let generation = assistant::text_generation();
+        // 入队时就显示，不能等当前语音会话返回才确认发送。
+        if tx.send(Command::TextSubmitted { text: text.clone(), generation }).is_ok() {
+            remote::note_chat(assistant::Role::User, &text);
+            push_chat(&w, assistant::Role::User as i32, text, None);
+            w.set_pending_texts(w.get_pending_texts() + 1);
+        } else {
+            push_chat(&w, assistant::Role::System as i32, "发送失败，请重新启动助手后重试。".into(), None);
+        }
+    });
+    let weak = window.as_weak();
+    window.on_cancel_pending_texts(move || {
+        assistant::cancel_pending_texts();
+        if let Some(w) = weak.upgrade() {
+            w.set_pending_texts(0);
+            push_chat(&w, assistant::Role::System as i32, "已取消尚未开始处理的文字；正在处理的内容可点光球停止。".into(), None);
+        }
     });
     let (tx, weak) = (cmd_tx.clone(), window.as_weak());
     window.on_talk(move || {
@@ -278,6 +308,7 @@ fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
                 vm.set_vec(Vec::new());
             }
         }
+        remote::clear_history();
         let _ = tx.send(Command::ClearHistory);
     });
 }
@@ -309,6 +340,7 @@ const KEY_FAILED: i32 = 4;
 const THEMES: [&str; 3] = ["auto", "light", "dark"];
 
 fn refresh_key_status(w: &AppWindow, c: &Config) {
+    VOICE_SAVED_KEY.set(config::asr_key(c));
     w.set_llm_key_status(config::key_status(&c.llm_api_key_protected, &c.llm_key_env).into());
     w.set_asr_key_status(config::key_status(&c.asr_api_key_protected, &c.asr_key_env).into());
     w.set_llm_key_state(if config::llm_key(c).is_some() { KEY_READY } else { KEY_MISSING });
@@ -357,11 +389,14 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_executor_status(executor_status().into());
     w.set_frontend_index(FRONTENDS.iter().position(|e| *e == c.voice_frontend).unwrap_or(0) as i32);
     w.set_realtime_model(c.realtime_model.as_str().into());
+    w.set_realtime_url(c.realtime_url.as_str().into());
     w.set_realtime_voice(c.realtime_voice.as_str().into());
     w.set_barge_in(c.barge_in);
     w.set_full_duplex(c.full_duplex);
+    w.set_remote_enabled(c.remote_enabled);
     w.global::<Theme>().set_scheme(THEMES.iter().position(|t| *t == c.theme).unwrap_or(0) as i32);
     refresh_key_status(w, c);
+    invalidate_voice_test(w);
 }
 
 /// 界面 -> 配置（以已保存的配置为底，保留 key 和界面上没有的项）
@@ -410,15 +445,69 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.agent_model = text(w.get_agent_model());
     c.voice_frontend = FRONTENDS[w.get_frontend_index().clamp(0, 1) as usize].into();
     c.realtime_model = text(w.get_realtime_model());
+    c.realtime_url = text(w.get_realtime_url());
     c.realtime_voice = text(w.get_realtime_voice());
     c.barge_in = w.get_barge_in();
     c.full_duplex = w.get_full_duplex();
+    c.remote_enabled = w.get_remote_enabled();
     c.theme = THEMES[w.global::<Theme>().get_scheme().clamp(0, 2) as usize].into();
 }
 
 thread_local! {
     /// 上次载入或保存时设置页的样子，用来判断有没有未保存的更改
     static SETTINGS_BASELINE: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+    static VOICE_TEST_INPUT: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+    static VOICE_SAVED_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+// 只在内存比较，绝不记录凭证。更改当前链路后不沿用旧测试结果。
+fn voice_test_snapshot(w: &AppWindow) -> serde_json::Value {
+    let input = w.get_asr_key_input();
+    let key = effective_voice_key(input.as_str(), VOICE_SAVED_KEY.with_borrow(Clone::clone));
+    serde_json::json!({
+        "mode": w.get_frontend_index(),
+        "url": w.get_realtime_url().as_str(), "model": w.get_realtime_model().as_str(),
+        "voice": w.get_realtime_voice().as_str(), "rate": w.get_tts_rate(),
+        "asr_url": w.get_asr_url().as_str(), "asr_model": w.get_asr_model().as_str(),
+        "silence": w.get_asr_silence_ms(), "wait": w.get_asr_timeout_secs(),
+        "key": key,
+    })
+}
+
+fn effective_voice_key(input: &str, saved: Option<String>) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() { saved } else { Some(input.to_string()) }
+}
+
+#[cfg(test)]
+mod voice_settings_tests {
+    use super::*;
+
+    #[test]
+    fn saving_tested_key_preserves_identity_but_editing_invalidates_it() {
+        let tested = effective_voice_key("  test-key  ", None);
+        let saved = effective_voice_key("", Some("test-key".into()));
+        assert_eq!(tested, saved, "保存并清空输入后应保留测试结果");
+        assert_ne!(tested, effective_voice_key("different-key", saved));
+    }
+
+    #[test]
+    fn unused_realtime_fields_do_not_block_classic_mode_save() {
+        let mut c = Config::default();
+        c.voice_frontend = "asr".into();
+        c.realtime_url.clear();
+        c.realtime_model.clear();
+        assert_eq!(validate(&c), None);
+        c.voice_frontend = "realtime".into();
+        assert!(validate(&c).is_some());
+    }
+}
+
+fn invalidate_voice_test(w: &AppWindow) {
+    w.set_voice_test_epoch(w.get_voice_test_epoch().wrapping_add(1));
+    w.set_voice_test_state(KEY_READY);
+    w.set_voice_test_status("尚未测试当前语音模式；连接测试不包含实际录音和出声。".into());
+    VOICE_TEST_INPUT.set(None);
 }
 
 /// 设置页上所有可编辑内容的快照（不含悬浮球位置等界面外的项）
@@ -441,6 +530,8 @@ fn mark_settings_clean(w: &AppWindow) {
 
 /// 设置页打开时定时比较，有改动就提示“未保存”
 fn update_settings_dirty(w: &AppWindow) {
+    let stale = VOICE_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != voice_test_snapshot(w)));
+    if stale { invalidate_voice_test(w); }
     let dirty = SETTINGS_BASELINE.with_borrow(|b| b.as_ref().is_some_and(|b| *b != settings_snapshot(w)));
     if dirty != w.get_settings_dirty() {
         w.set_settings_dirty(dirty);
@@ -479,7 +570,10 @@ fn validate(c: &Config) -> Option<String> {
     if !c.asr_url.starts_with("ws") {
         return Some("语音识别服务地址应以 wss:// 开头".into());
     }
-    if c.llm_model.is_empty() || c.asr_model.is_empty() || c.realtime_model.is_empty() {
+    if c.voice_frontend == "realtime" && !c.realtime_url.starts_with("ws") {
+        return Some("实时语音服务地址应以 wss:// 开头".into());
+    }
+    if c.llm_model.is_empty() || c.asr_model.is_empty() || (c.voice_frontend == "realtime" && c.realtime_model.is_empty()) {
         return Some("模型名不能为空".into());
     }
     if !c.agent_workdir.is_empty() && !std::path::Path::new(&c.agent_workdir).is_dir() {
@@ -617,6 +711,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 w.set_launch_at_login(sys::autostart_enabled());
                 mark_settings_clean(&w);
                 set_note(&w, kind, note);
+                remote::apply(c.remote_enabled, c.remote_port);
                 let _ = tx.send(Command::Reload(c));
             }
             Err(e) => set_note(&w, NOTE_ERROR, format!("保存失败：{e}")),
@@ -706,7 +801,67 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         });
     });
 
-    // 测试语音识别
+    // 测试正在编辑的语音模式，不保存配置，也不采集/播放音频。
+    let (weak, voice_rt) = (window.as_weak(), rt.clone());
+    window.on_test_voice(move || {
+        let Some(w) = weak.upgrade() else { return };
+        if w.get_voice_test_state() == KEY_TESTING { return; }
+        let c = read_settings(&w, &[]);
+        let input = w.get_asr_key_input().trim().to_string();
+        let Some(key) = (if input.is_empty() { config::asr_key(&c) } else { Some(input) }) else {
+            w.set_voice_test_state(KEY_MISSING);
+            w.set_voice_test_status("请先填写顶部的百炼 key，再测试当前模式。".into());
+            return;
+        };
+        let snapshot = voice_test_snapshot(&w);
+        VOICE_TEST_INPUT.set(Some(snapshot.clone()));
+        let epoch = w.get_voice_test_epoch().wrapping_add(1);
+        w.set_voice_test_epoch(epoch);
+        w.set_voice_test_state(KEY_TESTING);
+        w.set_voice_test_status("正在验证当前语音服务连接和会话参数…".into());
+        let weak = weak.clone();
+        voice_rt.spawn(async move {
+            let realtime_mode = c.voice_frontend == "realtime";
+            let label = if realtime_mode { "实时语音" } else { "语音识别" };
+            let result = tokio::time::timeout(Duration::from_secs(20), async {
+                if realtime_mode {
+                    let settings = realtime::RealtimeSettings {
+                        url: c.realtime_url.clone(), model: c.realtime_model.clone(),
+                        voice: c.realtime_voice.clone(), api_key: key.clone(),
+                        instructions: realtime::VOICE_PROMPT.to_string(), tools: Vec::new(),
+                        speech_rate: (1.0 + c.tts_rate as f32 * 0.1).clamp(0.5, 2.0),
+                    };
+                    let session = realtime::Session::connect(&settings).await?;
+                    // 不请求回复；配置确认后有界关闭测试会话。
+                    let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+                    Ok::<(), anyhow::Error>(())
+                } else {
+                    asr::check(&asr::AsrSettings {
+                        url: c.asr_url.clone(), model: c.asr_model.clone(), api_key: key.clone(),
+                        sentence_silence_ms: c.asr_sentence_silence_ms,
+                        speech_timeout: Duration::from_secs(c.asr_speech_timeout_secs),
+                    }).await
+                }
+            }).await;
+            let (state, msg) = match result {
+                Ok(Ok(())) => (KEY_OK, format!("{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。")),
+                Ok(Err(_)) => (KEY_FAILED, format!("{label}连接失败，请检查凭证、模型/音色是否开通及服务地址，然后重试。")),
+                Err(_) => (KEY_FAILED, format!("{label}连接测试超时，请检查网络与服务地址后重试。")),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    if w.get_voice_test_epoch() == epoch {
+                        if voice_test_snapshot(&w) == snapshot {
+                            w.set_voice_test_state(state);
+                            w.set_voice_test_status(msg.into());
+                        } else { invalidate_voice_test(&w); }
+                    }
+                }
+            });
+        });
+    });
+
+    // 仅测试语音识别，独立于当前实时模式。
     let weak = window.as_weak();
     window.on_test_asr(move || {
         let Some(w) = weak.upgrade() else { return };
@@ -913,10 +1068,54 @@ fn apply_hotkey(w: &AppWindow, on: bool) {
 }
 
 fn toggle_listening(w: &AppWindow, tx: &UnboundedSender<Command>) {
-    let on = !w.get_listening_enabled();
+    set_listening(w, tx, !w.get_listening_enabled());
+}
+
+fn set_listening(w: &AppWindow, tx: &UnboundedSender<Command>, on: bool) {
     w.set_listening_enabled(on);
     sync_listening_menus(on);
     let _ = tx.send(Command::SetListening(on));
+}
+
+// ---------- 手机控制 ----------
+
+fn init_remote(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, rt: Handle) {
+    let (weak, tx) = (window.as_weak(), cmd_tx.clone());
+    let set_listening_hook = move |on: bool| {
+        let (weak, tx) = (weak.clone(), tx.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                set_listening(&w, &tx, on);
+            }
+        });
+    };
+    let weak = window.as_weak();
+    let changed_hook = move || {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                refresh_remote(&w);
+            }
+        });
+    };
+    remote::init(
+        rt,
+        remote::Hooks { commands: cmd_tx.clone(), set_listening: Box::new(set_listening_hook), changed: Box::new(changed_hook) },
+    );
+    window.on_start_pairing(|| {
+        remote::start_pairing();
+    });
+    window.on_cancel_pairing(remote::cancel_pairing);
+    window.on_unpair_all(remote::unpair_all);
+    refresh_remote(window);
+}
+
+fn refresh_remote(w: &AppWindow) {
+    let info = remote::info();
+    w.set_remote_running(info.running);
+    w.set_remote_code(info.code.into());
+    w.set_remote_paired(info.paired as i32);
+    w.set_remote_status(info.status.into());
 }
 
 thread_local! {

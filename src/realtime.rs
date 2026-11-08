@@ -31,6 +31,8 @@ pub enum Event {
     /// 用户开始说话（服务端会自动打断正在进行的回复）
     SpeechStarted,
     SpeechStopped,
+    /// 说话结束但服务端判定不算一句话（turn_invalid）：不会有回复，只需要结束“正在说”
+    SpeechInvalid,
     UserPartial(String),
     UserText(String),
     /// 助手回复的文字（随语音一起流式返回）
@@ -42,6 +44,8 @@ pub enum Event {
     ResponseCreated,
     /// 一轮回复结束：completed / cancelled / failed
     ResponseDone(String),
+    /// 服务端报告的请求错误（连接还在）；已知无害的（比如没有回复时发了取消）不会报上来
+    Error(String),
     Other,
 }
 
@@ -51,9 +55,24 @@ pub struct Session {
     ws: Ws,
 }
 
+/// 连接、握手、等配置确认整体的截止时间
+pub const CONNECT_DEADLINE: Duration = Duration::from_secs(15);
+
 impl Session {
+    /// 连接并完成配置；整体不超过 CONNECT_DEADLINE
     pub async fn connect(s: &RealtimeSettings) -> anyhow::Result<Self> {
-        let url = format!("{}?model={}", s.url.trim_end_matches('/'), s.model);
+        Self::connect_within(s, CONNECT_DEADLINE).await
+    }
+
+    pub async fn connect_within(s: &RealtimeSettings, deadline: Duration) -> anyhow::Result<Self> {
+        match tokio::time::timeout(deadline, Self::connect_inner(s)).await {
+            Ok(r) => r,
+            Err(_) => bail!("连接实时语音服务超时（{} 秒内没有完成配置）", deadline.as_secs()),
+        }
+    }
+
+    async fn connect_inner(s: &RealtimeSettings) -> anyhow::Result<Self> {
+        let url = session_url(&s.url, &s.model);
         let mut request = url.as_str().into_client_request()?;
         request.headers_mut().insert("Authorization", format!("Bearer {}", s.api_key).parse()?);
         let (ws, _) = tokio::time::timeout(Duration::from_secs(8), connect_async(request))
@@ -129,8 +148,9 @@ impl Session {
         self.send(json!({"type": "response.create"})).await
     }
 
+    /// 尽力取消当前回复；最多等 1 秒，连接半开时也不会挂住调用方
     pub async fn cancel_response(&mut self) {
-        let _ = self.send(json!({"type": "response.cancel"})).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.send(json!({"type": "response.cancel"}))).await;
     }
 
     pub async fn close(mut self) {
@@ -143,7 +163,8 @@ impl Session {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
         Ok(match v["type"].as_str().unwrap_or("") {
             "input_audio_buffer.speech_started" => Event::SpeechStarted,
-            "input_audio_buffer.speech_stopped" if v["reason"] != "turn_invalid" => Event::SpeechStopped,
+            "input_audio_buffer.speech_stopped" if v["reason"] == "turn_invalid" => Event::SpeechInvalid,
+            "input_audio_buffer.speech_stopped" => Event::SpeechStopped,
             "conversation.item.input_audio_transcription.delta" => Event::UserPartial(format!("{}{}", s("text"), s("stash"))),
             "conversation.item.input_audio_transcription.completed" => Event::UserText(s("transcript")),
             "response.audio_transcript.delta" | "response.text.delta" => Event::Transcript(s("delta")),
@@ -159,12 +180,29 @@ impl Session {
                 if err["type"] == "server_error" {
                     bail!("实时语音服务出错：{message}");
                 }
-                eprintln!("实时语音请求错误：{message}"); // 客户端错误不断开连接，比如没有回复时发了取消
-                Event::Other
+                eprintln!("实时语音请求错误：{message}"); // 客户端错误不断开连接
+                if is_benign_error(err) { Event::Other } else { Event::Error(message.to_string()) }
             }
             _ => Event::Other,
         })
     }
+}
+
+/// 拼连接地址；地址里没有路径时补上“/”，否则请求行不合法
+fn session_url(base: &str, model: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let has_path = base.split_once("://").is_some_and(|(_, rest)| rest.contains('/'));
+    if has_path { format!("{base}?model={model}") } else { format!("{base}/?model={model}") }
+}
+
+/// 白名单：只有这些错误静默——我们主动取消时服务端恰好已经没有进行中的回复
+fn is_benign_error(err: &Value) -> bool {
+    let code = err["code"].as_str().unwrap_or("").to_lowercase();
+    let message = err["message"].as_str().unwrap_or("").to_lowercase();
+    code == "response_cancel_not_active"
+        || message.contains("no active response")
+        || message.contains("none active response")
+        || message.contains("cancellation failed")
 }
 
 fn parse(msg: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>) -> anyhow::Result<Value> {
@@ -219,6 +257,111 @@ fn base64_decode(text: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use tokio::net::TcpListener;
+
+    fn settings(url: String) -> RealtimeSettings {
+        RealtimeSettings {
+            url,
+            model: "m".into(),
+            voice: "v".into(),
+            api_key: "test".into(),
+            instructions: String::new(),
+            tools: Vec::new(),
+            speech_rate: 1.0,
+        }
+    }
+
+    /// 本地 WebSocket 替身：收到 session.update 后按 script 依次回消息，然后一直挂着不关
+    async fn fake_server(script: Vec<Value>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _ = ws.next().await; // session.update
+            for v in script {
+                ws.send(Message::text(v.to_string())).await.unwrap();
+            }
+            while ws.next().await.is_some() {}
+        });
+        format!("ws://{addr}/realtime")
+    }
+
+    #[test]
+    fn url_without_path_still_valid() {
+        assert_eq!(session_url("ws://127.0.0.1:1", "m"), "ws://127.0.0.1:1/?model=m");
+        assert_eq!(session_url("wss://h/api/realtime/", "m"), "wss://h/api/realtime?model=m");
+    }
+
+    #[tokio::test]
+    async fn connect_has_overall_deadline_even_if_server_keeps_chatting() {
+        // 服务端一直回无关消息、从不确认配置：单条消息的 8 秒超时永远触发不了，必须靠整体截止
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (got_update_tx, got_update_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            if matches!(ws.next().await, Some(Ok(Message::Text(t))) if t.as_str().contains("session.update")) {
+                let _ = got_update_tx.send(());
+            }
+            loop {
+                if ws.send(Message::text(json!({"type": "session.created"}).to_string())).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        let started = std::time::Instant::now();
+        let r = Session::connect_within(&settings(format!("ws://{addr}/realtime")), Duration::from_millis(600)).await;
+        let elapsed = started.elapsed();
+        let err = r.err().expect("从不确认配置时必须失败");
+        assert!(format!("{err:#}").contains("超时"), "{err:#}");
+        // 确实握手成功、发了配置，然后一直等到整体截止才放弃
+        assert!(got_update_rx.await.is_ok(), "服务端应收到 session.update");
+        assert!(elapsed >= Duration::from_millis(550) && elapsed < Duration::from_secs(3), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn connect_reports_config_error() {
+        let url = fake_server(vec![json!({"type": "error", "error": {"type": "invalid_request_error", "message": "voice not found"}})]).await;
+        let err = Session::connect_within(&settings(url), Duration::from_secs(5)).await.err().unwrap();
+        assert!(format!("{err:#}").contains("voice not found"));
+    }
+
+    #[tokio::test]
+    async fn request_errors_surface_except_whitelisted() {
+        let url = fake_server(vec![
+            json!({"type": "session.updated"}),
+            json!({"type": "error", "error": {"type": "invalid_request_error", "code": "response_cancel_not_active", "message": "Conversation has none active response"}}),
+            json!({"type": "error", "error": {"type": "invalid_request_error", "message": "audio format invalid"}}),
+            json!({"type": "error", "error": {"type": "server_error", "message": "boom"}}),
+        ])
+        .await;
+        let mut session = Session::connect_within(&settings(url), Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(session.next_event().await.unwrap(), Event::Other));
+        match session.next_event().await.unwrap() {
+            Event::Error(m) => assert_eq!(m, "audio format invalid"),
+            _ => panic!("非白名单错误应该报上来"),
+        }
+        assert!(session.next_event().await.is_err(), "server_error 应断开");
+    }
+
+    #[tokio::test]
+    async fn invalid_turn_ends_speaking_instead_of_vanishing() {
+        let url = fake_server(vec![
+            json!({"type": "session.updated"}),
+            json!({"type": "input_audio_buffer.speech_started"}),
+            json!({"type": "input_audio_buffer.speech_stopped", "reason": "turn_invalid"}),
+            json!({"type": "input_audio_buffer.speech_stopped"}),
+        ])
+        .await;
+        let mut session = Session::connect_within(&settings(url), Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(session.next_event().await.unwrap(), Event::SpeechStarted));
+        assert!(matches!(session.next_event().await.unwrap(), Event::SpeechInvalid));
+        assert!(matches!(session.next_event().await.unwrap(), Event::SpeechStopped));
+    }
 
     #[test]
     fn base64_roundtrip() {

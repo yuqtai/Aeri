@@ -13,7 +13,7 @@ cpal = "0.18"
 uiautomation = { version = "0.25", features = ["pattern"] }
 # DLL 版：预编译的静态库需要 VS 17.10+ 的 MSVC，DLL 版不受编译器版本影响
 sherpa-onnx = { version = "2.0.1", default-features = false, features = ["shared"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "system-proxy"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

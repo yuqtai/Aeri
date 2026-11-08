@@ -52,6 +52,14 @@ global Icons {
     out property <string> check: "M5 12l5 5 9-10";
     out property <string> bolt: "M13 3L5 13h6l-1 8 8-10h-6l1-8z";
     out property <string> refresh: "M20 11a8 8 0 0 0-14.6-4.5 M4 4v4h4 M4 13a8 8 0 0 0 14.6 4.5 M20 20v-4h-4";
+    out property <string> chevron-right: "M9 6l6 6-6 6";
+    out property <string> download: "M12 4v11 M7 10l5 5 5-5 M5 19h14";
+    out property <string> chevron-up: "M6 15l6-6 6 6";
+    out property <string> wave: "M4 10v4 M8 7v10 M12 4v16 M16 7v10 M20 10v4";
+    out property <string> sparkle: "M12 4L13.8 10.2L20 12L13.8 13.8L12 20L10.2 13.8L4 12L10.2 10.2Z";
+    out property <string> desktop: "M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M9 20h6 M12 16v4";
+    out property <string> phone: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M11 18h2";
+    out property <string> contrast: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 3v18 M12 8h4.5 M12 12h6 M12 16h4.5";
 }
 
 component Icon inherits Path {
@@ -515,6 +523,122 @@ component Divider inherits HorizontalLayout {
     Rectangle { height: 1px; background: Theme.hairline; }
 }
 
+// 设置首页的分类入口：图标 + 名称 + 当前状态（有问题时变黄）+ 箭头
+component NavRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> summary;
+    in property <bool> warn;
+    callback clicked;
+    height: 62px;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        border-radius: 8px;
+        background: ta.pressed ? Theme.inset-strong : ta.has-hover ? Theme.inset : transparent;
+        animate background { duration: 120ms; }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 9px;
+                background: Theme.signal-soft;
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    source: root.icon;
+                    tint: Theme.signal;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                font-size: 14px;
+                font-weight: 500;
+                color: Theme.ink;
+            }
+            Text {
+                min-width: 0px;
+                text: root.summary;
+                font-size: 12px;
+                color: root.warn ? Theme.warn : Theme.ink-3;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 16px;
+                height: 16px;
+                source: Icons.chevron-right;
+                tint: Theme.ink-4;
+            }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// “高级选项”展开 / 收起
+component Disclosure inherits Rectangle {
+    in property <string> text: "高级选项";
+    in-out property <bool> open;
+    height: 36px;
+    HorizontalLayout {
+        alignment: start;
+        padding-left: 4px;
+        spacing: 4px;
+        Text {
+            text: root.open ? "收起" + root.text : root.text;
+            font-size: 12px;
+            font-weight: 600;
+            color: ta.has-hover ? Theme.ink-2 : Theme.ink-3;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 14px;
+                height: 14px;
+                source: root.open ? Icons.chevron-up : Icons.chevron-down;
+                tint: Theme.ink-3;
+            }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open = !root.open; }
+    }
+}
+
+// 子页面顶部的一段说明
+component PageIntro inherits VerticalLayout {
+    in property <string> text;
+    padding-left: 4px;
+    padding-right: 4px;
+    padding-bottom: 2px;
+    Text {
+        text: root.text;
+        font-size: 12px;
+        color: Theme.ink-3;
+        wrap: word-wrap;
+    }
+}
+
 // 左边标题 + 说明，右边放控件
 component SettingRow inherits HorizontalLayout {
     in property <string> title;
@@ -569,6 +693,7 @@ component FieldBlock inherits VerticalLayout {
 }
 
 component KeyBlock inherits VerticalLayout {
+    in property <string> test-label: "测试";
     in property <int> state;
     in property <string> detail;
     in property <string> hint;
@@ -604,7 +729,7 @@ component KeyBlock inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
         Btn {
-            text: "测试";
+            text: root.test-label;
             enabled: root.state != 2;
             clicked => { root.test(); }
         }
@@ -857,6 +982,11 @@ export component AppWindow inherits Window {
     in property <string> memory;
     in property <string> mic-name;
     in property <[ChatItem]> messages;
+    in property <int> pending-texts;
+    in property <int> voice-test-state: 1;
+    in property <string> voice-test-status: "尚未测试当前语音模式";
+    in-out property <int> voice-test-epoch;
+    in-out property <string> realtime-url;
     in-out property <bool> listening-enabled: true;
 
     // 设置：大模型
@@ -924,8 +1054,17 @@ export component AppWindow inherits Window {
     in-out property <string> realtime-voice;
     in-out property <bool> barge-in;
     in-out property <bool> full-duplex;
+    // 手机控制：开关跟着“保存并应用”；其余是运行状态
+    in-out property <bool> remote-enabled;
+    in property <bool> remote-running;
+    in property <string> remote-status;
+    // 正在配对时的 6 位配对码
+    in property <string> remote-code;
+    in property <int> remote-paired;
 
     callback send-text(string);
+    callback cancel-pending-texts();
+    callback test-voice();
     callback talk();
     callback toggle-listening(bool);
     callback clear-chat();
@@ -938,9 +1077,16 @@ export component AppWindow inherits Window {
     callback clear-asr-key();
     callback theme-changed();
     callback discard-settings();
+    callback start-pairing();
+    callback cancel-pairing();
+    callback unpair-all();
 
     // 0 对话  1 设置
     in-out property <int> page: 0;
+    // 设置里的哪一页：0 首页  1 语音对话  2 唤醒与麦克风  3 大模型  4 电脑操控  5 手机控制  6 外观与启动  7 软件更新
+    in-out property <int> settings-sub: 0;
+    // 当前设置页的“高级选项”展开了没有（换页时收起）
+    property <bool> show-advanced: false;
     // 有未保存的更改时点了返回：底栏改成询问保存还是放弃
     property <bool> leave-pending;
     property <bool> show-keyboard: false;
@@ -948,6 +1094,18 @@ export component AppWindow inherits Window {
 
     public function scroll-to-bottom() {
         chat-list.content-y = min(0px, chat-list.visible-height - chat-list.content-height);
+    }
+
+    // 打开设置（sub 见 settings-sub）
+    public function open-settings(sub: int) {
+        root.page = 1;
+        root.show-settings(sub);
+    }
+
+    function show-settings(sub: int) {
+        root.settings-sub = sub;
+        root.show-advanced = false;
+        settings-scroll.content-y = 0px;
     }
 
     function leave-settings() {
@@ -1020,7 +1178,7 @@ export component AppWindow inherits Window {
                 alignment: center;
                 IconButton {
                     source: Icons.sliders;
-                    clicked => { root.page = 1; }
+                    clicked => { root.open-settings(0); }
                 }
             }
         }
@@ -1087,7 +1245,7 @@ export component AppWindow inherits Window {
                                     color: Theme.ink;
                                 }
                                 Text {
-                                    text: "语音对话需要阿里云百炼的 key；现在也可以先打字使用";
+                                    text: "语音需要百炼 key；报时、打开应用可先打字试用，普通聊天还需大模型配置";
                                     font-size: 11px;
                                     color: Theme.ink-3;
                                     wrap: word-wrap;
@@ -1098,7 +1256,7 @@ export component AppWindow inherits Window {
                                 Btn {
                                     text: "去设置";
                                     kind: 0;
-                                    clicked => { root.page = 1; }
+                                    clicked => { root.open-settings(1); }
                                 }
                             }
                         }
@@ -1155,6 +1313,25 @@ export component AppWindow inherits Window {
                         color: Theme.signal-ink;
                     }
                 }
+            }
+        }
+
+        if root.pending-texts > 0: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                text: "已接收 " + root.pending-texts + " 条待处理文字，将按顺序处理";
+                font-size: 12px;
+                color: Theme.ink-2;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+            Btn {
+                text: "取消排队";
+                kind: 2;
+                clicked => { root.cancel-pending-texts(); }
             }
         }
 
@@ -1263,6 +1440,8 @@ export component AppWindow inherits Window {
     }
 
     // -------------------- 设置页 --------------------
+    // 两级：首页是分类入口（每项下面一行是当前状态，有问题时变黄），点进去是这一类的设置；
+    // 很少需要改的项目（服务地址、模型名、细调参数）收在每页底部的“高级选项”里。
     Rectangle {
     width: root.width;
     height: root.height;
@@ -1281,11 +1460,24 @@ export component AppWindow inherits Window {
                 alignment: center;
                 IconButton {
                     source: Icons.back;
-                    clicked => { root.leave-settings(); }
+                    clicked => {
+                        if (root.settings-sub > 0) {
+                            root.show-settings(0);
+                        } else {
+                            root.leave-settings();
+                        }
+                    }
                 }
             }
             Text {
-                text: "设置";
+                text: root.settings-sub == 1 ? "语音对话"
+                    : root.settings-sub == 2 ? "唤醒与麦克风"
+                    : root.settings-sub == 3 ? "大模型"
+                    : root.settings-sub == 4 ? "电脑操控"
+                    : root.settings-sub == 5 ? "手机控制"
+                    : root.settings-sub == 6 ? "外观与启动"
+                    : root.settings-sub == 7 ? "软件更新"
+                    : "设置";
                 font-size: 17px;
                 font-weight: 600;
                 letter-spacing: -0.2px;
@@ -1295,473 +1487,695 @@ export component AppWindow inherits Window {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        ScrollView {
+        settings-scroll := ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
+                // 内容不满一屏时靠上排列，不把卡片拉高
+                alignment: start;
                 padding-left: 16px;
                 padding-right: 16px;
                 padding-top: 4px;
                 padding-bottom: 16px;
                 spacing: 8px;
 
-                SectionLabel { text: "后台智能体"; }
-                Card {
-                    FieldBlock {
-                        title: "谁来干活";
-                        hint: root.executor-status;
-                        Select {
-                            options: ["Codex", "Claude Code", "内置助手（DeepSeek）"];
-                            current <=> root.executor-index;
+                // ---------- 首页：分类入口 ----------
+                if root.settings-sub == 0: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        NavRow {
+                            icon: Icons.wave;
+                            title: "语音对话";
+                            summary: (root.frontend-index == 0 ? "实时语音" : "识别 + 大模型") + " · "
+                                + (root.asr-key-state == 0 ? "还没有填百炼 key" : root.asr-key-state == 4 ? "百炼 key 测试没通过" : "百炼 key 已就绪");
+                            warn: root.asr-key-state == 0 || root.asr-key-state == 4;
+                            clicked => { root.show-settings(1); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.mic;
+                            title: "唤醒与麦克风";
+                            summary: "“" + root.first-wake-word + "” · "
+                                + (root.mic-name == "" || root.mic-name == "麦克风不可用" ? "麦克风不可用" : root.mic-name);
+                            warn: root.mic-name == "" || root.mic-name == "麦克风不可用";
+                            clicked => { root.show-settings(2); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.sparkle;
+                            title: "大模型";
+                            summary: root.llm-model + " · "
+                                + (root.llm-key-state == 0 ? (root.frontend-index == 0 ? "没填 key，由实时语音模型自己回答" : "还没有填 key")
+                                    : root.llm-key-state == 4 ? "key 测试没通过" : "key 已就绪");
+                            warn: (root.llm-key-state == 0 && root.frontend-index == 1) || root.llm-key-state == 4;
+                            clicked => { root.show-settings(3); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.desktop;
+                            title: "电脑操控";
+                            summary: (root.executor-index == 0 ? "Codex" : root.executor-index == 1 ? "Claude Code" : "内置助手") + " · "
+                                + (root.access-index == 0 ? "完全访问" : root.access-index == 1 ? "只改工作目录" : "只读")
+                                + (!root.desktop-control && !root.browser-control ? " · 桌面和浏览器都已关闭"
+                                    : !root.desktop-control ? " · 桌面控制已关闭"
+                                    : !root.browser-control ? " · 浏览器控制已关闭" : "");
+                            clicked => { root.show-settings(4); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.phone;
+                            title: "手机控制";
+                            summary: !root.remote-enabled ? "未开启"
+                                : root.remote-paired > 0 ? "已开启 · 已配对 " + root.remote-paired + " 台手机"
+                                : "已开启 · 还没有配对手机";
+                            clicked => { root.show-settings(5); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.contrast;
+                            title: "外观与启动";
+                            summary: (Theme.scheme == 1 ? "浅色" : Theme.scheme == 2 ? "深色" : "跟随系统") + " · "
+                                + (root.launch-at-login ? "开机自动启动" : "不开机启动")
+                                + (root.float-ball ? " · 显示悬浮球" : "");
+                            clicked => { root.show-settings(6); }
+                        }
+                        Divider { padding-left: 60px; }
+                        NavRow {
+                            icon: Icons.download;
+                            title: "软件更新";
+                            summary: root.app-version + " · "
+                                + (root.update-action == 1 ? "有新版本可以安装"
+                                    : root.update-action == 2 ? "正在更新…"
+                                    : root.auto-update ? "每天自动检查" : "自动检查已关闭");
+                            warn: root.update-action == 1;
+                            clicked => { root.show-settings(7); }
                         }
                     }
-                    Divider { }
-                    SettingRow {
-                        title: "权限";
-                        description: root.access-index == 0 ? "什么都能做，不再逐项确认；听错一句话也可能被执行" : root.access-index == 1 ? "只能改工作目录里的文件，桌面操作走自带工具" : "只能查看和回答，不能修改任何东西";
-                        VerticalLayout {
-                            alignment: center;
-                            Segmented {
-                                width: 196px;
-                                options: ["完全访问", "工作目录", "只读"];
-                                current <=> root.access-index;
-                            }
-                        }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "工作目录";
-                        hint: "留空使用用户目录。";
-                        TextField { text <=> root.agent-workdir; placeholder: "例如 D:\\code"; }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "模型";
-                        hint: "留空使用智能体自己的默认模型。";
-                        TextField { text <=> root.agent-model; }
-                    }
-                }
-
-                SectionLabel { text: "语音对话"; }
-                Card {
-                    SettingRow {
-                        title: "对话方式";
-                        description: root.frontend-index == 0 ? "百炼实时语音模型：边说边回，更自然" : "语音识别 + DeepSeek + 系统播报";
-                        VerticalLayout {
-                            alignment: center;
-                            Segmented {
-                                width: 196px;
-                                options: ["实时语音", "识别+大模型"];
-                                current <=> root.frontend-index;
-                            }
-                        }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "实时语音模型";
-                        hint: "使用下方“语音识别”里填写的阿里云百炼 key。qwen-audio-3.1-realtime-flash 更便宜。";
-                        TextField { text <=> root.realtime-model; }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "音色";
-                        TextField { text <=> root.realtime-voice; }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "说唤醒词打断播报";
-                        description: "助手说话时喊一声唤醒词，它就停下来听你说";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.barge-in; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "戴耳机，直接插话";
-                        description: "播报时麦克风也开着，直接说话就能打断；外放时请关闭";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.full-duplex; }
-                        }
-                    }
-                }
-
-                SectionLabel { text: "大模型 · DeepSeek"; }
-                Card {
-                    KeyBlock {
-                        state: root.llm-key-state;
-                        detail: root.llm-key-status;
-                        placeholder: "粘贴新的 key（留空表示不修改）";
-                        hint: "在 platform.deepseek.com 的 API keys 页面创建。key 用 Windows 加密保存在本机，界面上不再显示。";
-                        saved: root.llm-key-saved;
-                        input <=> root.llm-key-input;
-                        test => { root.test-llm(); }
-                        clear => { root.clear-llm-key(); }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "接口地址";
-                        TextField { text <=> root.llm-base-url; }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "模型";
-                        hint: "deepseek-flash 快且便宜；deepseek-v4-pro 更强。";
-                        TextField { text <=> root.llm-model; }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "深度思考";
-                        description: "多步操作更稳，简单命令几乎不变慢";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.llm-thinking; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "思考强度";
-                        VerticalLayout {
-                            alignment: center;
-                            Segmented {
-                                width: 168px;
-                                enabled: root.llm-thinking;
-                                options: ["低", "高", "最高"];
-                                current <=> root.effort-index;
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "新对话间隔";
-                        description: "这么久没说话后，忘掉之前的上下文";
-                        VerticalLayout {
-                            alignment: center;
-                            Stepper {
-                                minimum: 30;
-                                maximum: 3600;
-                                step: 30;
-                                unit: "秒";
-                                value <=> root.new-conversation-secs;
-                            }
-                        }
-                    }
-                }
-
-                SectionLabel { text: "语音识别 · 阿里云百炼"; }
-                Card {
-                    KeyBlock {
-                        state: root.asr-key-state;
-                        detail: root.asr-key-status;
-                        placeholder: "粘贴新的 key（留空表示不修改）";
-                        hint: "在 bailian.console.aliyun.com 的 API-KEY 页面创建。约 1.2 元/小时，只在唤醒后上传音频。";
-                        saved: root.asr-key-saved;
-                        input <=> root.asr-key-input;
-                        test => { root.test-asr(); }
-                        clear => { root.clear-asr-key(); }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "服务地址";
-                        TextField { text <=> root.asr-url; }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "模型";
-                        TextField { text <=> root.asr-model; }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "断句静音";
-                        description: "停顿多久算说完一句";
-                        VerticalLayout {
-                            alignment: center;
-                            Stepper {
-                                minimum: 200;
-                                maximum: 6000;
-                                step: 100;
-                                unit: "毫秒";
-                                value <=> root.asr-silence-ms;
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "等待开口";
-                        description: "唤醒后这么久没说话就放弃";
-                        VerticalLayout {
-                            alignment: center;
-                            Stepper {
-                                minimum: 2;
-                                maximum: 30;
-                                unit: "秒";
-                                value <=> root.asr-timeout-secs;
-                            }
-                        }
-                    }
-                }
-
-                SectionLabel { text: "唤醒与麦克风"; }
-                Card {
-                    FieldBlock {
-                        title: "唤醒词";
-                        hint: "中文，多个用逗号分隔；四个字的词最不容易误唤醒。";
-                        TextField { text <=> root.wake-words; }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "灵敏度";
-                        description: "越高越容易唤醒，也越容易误唤醒";
+                    VerticalLayout {
+                        padding-top: 4px;
+                        spacing: 2px;
                         HorizontalLayout {
-                            spacing: 10px;
-                            RangeSlider {
-                                width: 120px;
-                                value <=> root.sensitivity;
-                            }
-                            Text {
-                                width: 34px;
-                                text: round(root.sensitivity * 100) + "%";
-                                font-size: 12px;
-                                color: Theme.ink-2;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "唤醒词加权";
-                        description: "嘈杂环境建议调低";
-                        HorizontalLayout {
-                            spacing: 10px;
-                            RangeSlider {
-                                width: 120px;
-                                minimum: 0.5;
-                                maximum: 3;
-                                value <=> root.kws-score;
-                            }
-                            Text {
-                                width: 34px;
-                                text: round(root.kws-score * 10) / 10;
-                                font-size: 12px;
-                                color: Theme.ink-2;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "麦克风";
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Select {
-                                horizontal-stretch: 1;
-                                options: root.devices;
-                                current <=> root.device-index;
-                            }
-                            IconButton {
-                                size: 36px;
-                                source: Icons.refresh;
-                                clicked => { root.refresh-devices(); }
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "快捷键说话";
-                        description: root.hotkey-note;
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.hotkey; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "启动时开启语音唤醒";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.listen-on-start; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "回复后继续聆听";
-                        description: "接着说话不用再喊唤醒词";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.follow-up; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "对话时调低其他声音";
-                        description: "说话和回答时把视频、音乐调小，结束后恢复，免得把电脑里的声音当成你说的话";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.duck-others; }
-                        }
-                    }
-                }
-
-                SectionLabel { text: "操控权限"; }
-                Card {
-                    SettingRow {
-                        title: "控制桌面软件";
-                        description: "读取窗口控件、点击、输入、快捷键";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.desktop-control; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "控制浏览器";
-                        description: "按需启动独立的 Edge 窗口，需要 Node.js";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.browser-control; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "浏览器闲置关闭";
-                        VerticalLayout {
-                            alignment: center;
-                            Stepper {
-                                enabled: root.browser-control;
-                                minimum: 1;
-                                maximum: 120;
-                                unit: "分钟";
-                                value <=> root.browser-idle-minutes;
-                            }
-                        }
-                    }
-                    Divider { }
-                    FieldBlock {
-                        title: "Playwright 包";
-                        TextField {
-                            enabled: root.browser-control;
-                            text <=> root.playwright-package;
-                        }
-                    }
-                }
-
-                SectionLabel { text: "外观、播报与启动"; }
-                Card {
-                    SettingRow {
-                        title: "外观";
-                        VerticalLayout {
-                            alignment: center;
-                            Segmented {
-                                width: 168px;
-                                options: ["跟随系统", "浅色", "深色"];
-                                current <=> Theme.scheme;
-                                changed => { root.theme-changed(); }
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "语速";
-                        HorizontalLayout {
-                            spacing: 10px;
-                            RangeSlider {
-                                width: 120px;
-                                minimum: -5;
-                                maximum: 5;
-                                value <=> root.tts-rate;
-                            }
-                            Text {
-                                width: 34px;
-                                text: round(root.tts-rate);
-                                font-size: 12px;
-                                color: Theme.ink-2;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "显示悬浮球";
-                        description: "桌面上的小光球，单击展开主界面，可以拖到任意位置";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.float-ball; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "开机自动启动";
-                        description: "登录 Windows 后自动在后台运行";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.launch-at-login; }
-                        }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "启动时打开主界面";
-                        description: "关闭时只显示悬浮球；开机自启时始终不打开";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.show-on-start; }
-                        }
-                    }
-                }
-
-                SectionLabel { text: "软件更新"; }
-                Card {
-                    SettingRow {
-                        title: "当前版本 " + root.app-version;
-                        description: root.update-status != "" ? root.update-status : "从 GitHub 下载新版本，校验后自动替换并重启，设置和 API Key 都会保留";
-                        VerticalLayout {
                             alignment: center;
                             Btn {
-                                width: 96px;
-                                text: root.update-action == 1 ? "更新" : root.update-action == 2 ? "请稍候…" : "检查更新";
-                                kind: root.update-action == 1 ? 0 : 1;
-                                enabled: root.update-action != 2;
-                                clicked => { root.update-clicked(); }
+                                text: "恢复默认设置";
+                                kind: 2;
+                                clicked => { root.reset-settings(); }
                             }
                         }
-                    }
-                    Divider { }
-                    SettingRow {
-                        title: "自动检查更新";
-                        description: "每天检查一次，有新版本时在对话里提醒，不会自己安装";
-                        VerticalLayout {
-                            alignment: center;
-                            Toggle { checked <=> root.auto-update; }
+                        if root.memory != "": Text {
+                            text: "当前" + root.memory;
+                            font-size: 11px;
+                            color: Theme.ink-4;
+                            horizontal-alignment: center;
                         }
                     }
                 }
 
-                VerticalLayout {
-                    padding-top: 4px;
-                    spacing: 2px;
-                    HorizontalLayout {
-                        alignment: center;
-                        Btn {
-                            text: "恢复默认设置";
-                            kind: 2;
-                            clicked => { root.reset-settings(); }
+                // ---------- 语音对话 ----------
+                if root.settings-sub == 1: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        SettingRow {
+                            title: "对话方式";
+                            description: root.frontend-index == 0 ? "百炼实时语音模型：边说边回，可以插话" : "先识别成文字，再由大模型回答、系统播报";
+                            VerticalLayout {
+                                alignment: center;
+                                Segmented {
+                                    width: 196px;
+                                    options: ["实时语音", "识别+大模型"];
+                                    current <=> root.frontend-index;
+                                }
+                            }
+                        }
+                        Divider { }
+                        KeyBlock {
+                            state: root.voice-test-state == 1 ? (root.asr-key-input != "" ? 1 : root.asr-key-state == 0 ? 0 : 1) : root.voice-test-state;
+                            detail: root.voice-test-status;
+                            test-label: root.frontend-index == 0 ? "测试实时语音" : "测试语音识别";
+                            placeholder: "粘贴阿里云百炼 key（留空保留已保存的）";
+                            hint: "在 bailian.console.aliyun.com 创建";
+                            saved: root.asr-key-saved;
+                            input <=> root.asr-key-input;
+                            test => { root.test-voice(); }
+                            clear => { root.clear-asr-key(); }
                         }
                     }
-                    if root.memory != "": Text {
-                        text: "当前" + root.memory;
-                        font-size: 11px;
-                        color: Theme.ink-4;
-                        horizontal-alignment: center;
+                    SectionLabel { text: "播报与打断"; }
+                    Card {
+                        SettingRow {
+                            title: "语速";
+                            HorizontalLayout {
+                                spacing: 10px;
+                                RangeSlider {
+                                    width: 120px;
+                                    minimum: -5;
+                                    maximum: 5;
+                                    value <=> root.tts-rate;
+                                }
+                                Text {
+                                    width: 34px;
+                                    text: round(root.tts-rate);
+                                    font-size: 12px;
+                                    color: Theme.ink-2;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "回复后继续聆听";
+                            description: "接着说话不用再喊唤醒词";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.follow-up; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "说唤醒词打断播报";
+                            description: "助手说话时喊一声唤醒词，它就停下来听你说";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.barge-in; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "戴耳机，直接插话";
+                            description: "播报时麦克风也开着，直接说话就能打断；外放时请关闭";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.full-duplex; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "对话时调低其他声音";
+                            description: "把视频、音乐调小，结束后恢复";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.duck-others; }
+                            }
+                        }
+                    }
+                    Disclosure { open <=> root.show-advanced; }
+                    if root.show-advanced && root.frontend-index == 0: Card {
+                        FieldBlock {
+                            title: "音色";
+                            TextField { text <=> root.realtime-voice; }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "实时语音模型";
+                            hint: "改了模型或音色后，建议重新测试一次";
+                            TextField { text <=> root.realtime-model; }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "实时语音服务地址";
+                            TextField { text <=> root.realtime-url; }
+                        }
+                    }
+                    if root.show-advanced: SectionLabel { text: "语音识别"; }
+                    if root.show-advanced: Card {
+                        if root.frontend-index == 0: FieldBlock {
+                            title: "识别服务";
+                            hint: "实时语音连不上时会自动改用“识别 + 大模型”，这里单独测试识别服务";
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Btn {
+                                    text: "测试语音识别";
+                                    enabled: root.asr-key-state != 2;
+                                    clicked => { root.test-asr(); }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.asr-key-status;
+                                    color: root.asr-key-state == 4 ? Theme.danger : Theme.ink-3;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        if root.frontend-index == 0: Divider { }
+                        FieldBlock {
+                            title: "识别服务地址";
+                            TextField { text <=> root.asr-url; }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "识别模型";
+                            TextField { text <=> root.asr-model; }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "断句静音";
+                            description: "停顿多久算说完一句";
+                            VerticalLayout {
+                                alignment: center;
+                                Stepper {
+                                    minimum: 200;
+                                    maximum: 6000;
+                                    step: 100;
+                                    unit: "毫秒";
+                                    value <=> root.asr-silence-ms;
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "等待开口";
+                            description: "唤醒后这么久没说话就放弃";
+                            VerticalLayout {
+                                alignment: center;
+                                Stepper {
+                                    minimum: 2;
+                                    maximum: 30;
+                                    unit: "秒";
+                                    value <=> root.asr-timeout-secs;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 唤醒与麦克风 ----------
+                if root.settings-sub == 2: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        FieldBlock {
+                            title: "麦克风";
+                            hint: root.mic-name == "" ? "麦克风还没打开" : "正在使用：" + root.mic-name;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Select {
+                                    horizontal-stretch: 1;
+                                    options: root.devices;
+                                    current <=> root.device-index;
+                                }
+                                IconButton {
+                                    size: 36px;
+                                    source: Icons.refresh;
+                                    clicked => { root.refresh-devices(); }
+                                }
+                            }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "唤醒词";
+                            hint: "多个用逗号分隔；四个字的词最不容易误唤醒";
+                            TextField { text <=> root.wake-words; }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "灵敏度";
+                            description: "越高越容易唤醒，也越容易误唤醒";
+                            HorizontalLayout {
+                                spacing: 10px;
+                                RangeSlider {
+                                    width: 120px;
+                                    value <=> root.sensitivity;
+                                }
+                                Text {
+                                    width: 34px;
+                                    text: round(root.sensitivity * 100) + "%";
+                                    font-size: 12px;
+                                    color: Theme.ink-2;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "启动时开启语音唤醒";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.listen-on-start; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "快捷键说话";
+                            description: root.hotkey-note;
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.hotkey; }
+                            }
+                        }
+                    }
+                    Disclosure { open <=> root.show-advanced; }
+                    if root.show-advanced: Card {
+                        SettingRow {
+                            title: "唤醒词加权";
+                            description: "越大越容易检出唤醒词；嘈杂环境建议调低";
+                            HorizontalLayout {
+                                spacing: 10px;
+                                RangeSlider {
+                                    width: 120px;
+                                    minimum: 0.5;
+                                    maximum: 3;
+                                    value <=> root.kws-score;
+                                }
+                                Text {
+                                    width: 34px;
+                                    text: round(root.kws-score * 10) / 10;
+                                    font-size: 12px;
+                                    color: Theme.ink-2;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 大模型 ----------
+                if root.settings-sub == 3: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    PageIntro {
+                        text: root.frontend-index == 0
+                            ? "实时语音模式下，填了大模型就由它来判断和调用工具，实时语音只负责听和说；不填则由实时语音模型自己回答。"
+                            : "“识别 + 大模型”模式下必须填写。";
+                    }
+                    Card {
+                        KeyBlock {
+                            state: root.llm-key-state;
+                            detail: root.llm-key-status;
+                            placeholder: "粘贴新的 key（留空表示不修改）";
+                            hint: "默认用 DeepSeek，在 platform.deepseek.com 创建；key 加密保存在本机";
+                            saved: root.llm-key-saved;
+                            input <=> root.llm-key-input;
+                            test => { root.test-llm(); }
+                            clear => { root.clear-llm-key(); }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "模型";
+                            hint: "deepseek-flash 快且便宜；deepseek-v4-pro 更强";
+                            TextField { text <=> root.llm-model; }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "深度思考";
+                            description: "多步操作更稳，简单命令几乎不变慢";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.llm-thinking; }
+                            }
+                        }
+                        if root.llm-thinking: Divider { }
+                        if root.llm-thinking: SettingRow {
+                            title: "思考强度";
+                            VerticalLayout {
+                                alignment: center;
+                                Segmented {
+                                    width: 168px;
+                                    options: ["低", "高", "最高"];
+                                    current <=> root.effort-index;
+                                }
+                            }
+                        }
+                    }
+                    Disclosure { open <=> root.show-advanced; }
+                    if root.show-advanced: Card {
+                        FieldBlock {
+                            title: "接口地址";
+                            hint: "Anthropic Messages 格式的接口";
+                            TextField { text <=> root.llm-base-url; }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "新对话间隔";
+                            description: "这么久没说话后，忘掉之前的上下文";
+                            VerticalLayout {
+                                alignment: center;
+                                Stepper {
+                                    minimum: 30;
+                                    maximum: 3600;
+                                    step: 30;
+                                    unit: "秒";
+                                    value <=> root.new-conversation-secs;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 电脑操控 ----------
+                if root.settings-sub == 4: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        SettingRow {
+                            title: "控制桌面软件";
+                            description: "读取窗口控件、点击、输入、快捷键";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.desktop-control; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "控制浏览器";
+                            description: "按需打开一个独立的 Edge 窗口，需要 Node.js";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.browser-control; }
+                            }
+                        }
+                    }
+                    SectionLabel { text: "费时的任务交给谁"; }
+                    Card {
+                        FieldBlock {
+                            title: "后台智能体";
+                            hint: root.executor-status;
+                            Select {
+                                options: ["Codex", "Claude Code", "内置助手（DeepSeek）"];
+                                current <=> root.executor-index;
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "权限";
+                            description: root.access-index == 0 ? "什么都能做，不再逐项确认；听错一句话也可能被执行" : root.access-index == 1 ? "只能改工作目录里的文件，桌面操作走自带工具" : "只能查看和回答，不能修改任何东西";
+                            VerticalLayout {
+                                alignment: center;
+                                Segmented {
+                                    width: 196px;
+                                    options: ["完全访问", "工作目录", "只读"];
+                                    current <=> root.access-index;
+                                }
+                            }
+                        }
+                    }
+                    Disclosure { open <=> root.show-advanced; }
+                    if root.show-advanced: Card {
+                        FieldBlock {
+                            title: "工作目录";
+                            hint: "留空使用用户目录";
+                            TextField { text <=> root.agent-workdir; placeholder: "例如 D:\\code"; }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "智能体用的模型";
+                            hint: "留空使用智能体自己的默认模型";
+                            TextField { text <=> root.agent-model; }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "浏览器闲置关闭";
+                            VerticalLayout {
+                                alignment: center;
+                                Stepper {
+                                    enabled: root.browser-control;
+                                    minimum: 1;
+                                    maximum: 120;
+                                    unit: "分钟";
+                                    value <=> root.browser-idle-minutes;
+                                }
+                            }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: "Playwright 包";
+                            TextField {
+                                enabled: root.browser-control;
+                                text <=> root.playwright-package;
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 手机控制 ----------
+                if root.settings-sub == 5: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    PageIntro {
+                        text: "同一个 Wi-Fi 下用安卓 App 打字、按住说话、停止和调音量。只接受局域网连接；第一次打开时 Windows 防火墙会询问，请允许“专用网络”。";
+                    }
+                    Card {
+                        SettingRow {
+                            title: "允许手机控制";
+                            description: root.settings-dirty && root.remote-enabled && !root.remote-running ? "保存后生效" : "";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.remote-enabled; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "配对手机";
+                            description: root.remote-status;
+                            VerticalLayout {
+                                alignment: center;
+                                Btn {
+                                    text: "配对新手机";
+                                    enabled: root.remote-running && root.remote-code == "";
+                                    clicked => { root.start-pairing(); }
+                                }
+                            }
+                        }
+                        if root.remote-code != "": VerticalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            padding-bottom: 14px;
+                            spacing: 4px;
+                            Text {
+                                text: "在手机 App 里输入配对码";
+                                font-size: 12px;
+                                color: Theme.ink-3;
+                            }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text {
+                                    text: root.remote-code;
+                                    font-size: 30px;
+                                    font-weight: 600;
+                                    letter-spacing: 6px;
+                                    color: Theme.signal-ink;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Btn {
+                                        text: "取消";
+                                        kind: 2;
+                                        clicked => { root.cancel-pairing(); }
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "5 分钟内有效，输错 5 次作废";
+                                font-size: 11px;
+                                color: Theme.ink-4;
+                            }
+                        }
+                        if root.remote-paired > 0: Divider { }
+                        if root.remote-paired > 0: SettingRow {
+                            title: "取消全部配对";
+                            description: "已配对的手机会断开，下次要重新输入配对码";
+                            VerticalLayout {
+                                alignment: center;
+                                Btn {
+                                    text: "取消配对";
+                                    kind: 3;
+                                    clicked => { root.unpair-all(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 外观与启动 ----------
+                if root.settings-sub == 6: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        SettingRow {
+                            title: "外观";
+                            VerticalLayout {
+                                alignment: center;
+                                Segmented {
+                                    width: 168px;
+                                    options: ["跟随系统", "浅色", "深色"];
+                                    current <=> Theme.scheme;
+                                    changed => { root.theme-changed(); }
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "显示悬浮球";
+                            description: "桌面上的小光球，单击展开主界面，可以拖到任意位置";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.float-ball; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "开机自动启动";
+                            description: "登录 Windows 后自动在后台运行";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.launch-at-login; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "启动时打开主界面";
+                            description: "关闭时只显示悬浮球；开机自启时始终不打开";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.show-on-start; }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- 软件更新 ----------
+                if root.settings-sub == 7: VerticalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    Card {
+                        SettingRow {
+                            title: "当前版本 " + root.app-version;
+                            description: root.update-status != "" ? root.update-status : "从 GitHub 下载新版本，校验后自动替换并重启，设置和 API Key 都会保留";
+                            VerticalLayout {
+                                alignment: center;
+                                Btn {
+                                    width: 96px;
+                                    text: root.update-action == 1 ? "更新" : root.update-action == 2 ? "请稍候…" : "检查更新";
+                                    kind: root.update-action == 1 ? 0 : 1;
+                                    enabled: root.update-action != 2;
+                                    clicked => { root.update-clicked(); }
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: "自动检查更新";
+                            description: "每天检查一次，有新版本时在对话里提醒，不会自己安装";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.auto-update; }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // 固定在底部的操作栏
-        Rectangle {
+        // 底部操作栏：只在有改动（或刚保存、出错要提示）时出现
+        if root.settings-dirty || root.leave-pending || root.settings-note != "": Rectangle {
             height: 1px;
             background: Theme.hairline;
         }
-        HorizontalLayout {
+        if root.settings-dirty || root.leave-pending || root.settings-note != "": HorizontalLayout {
             vertical-stretch: 0;
             padding-left: 20px;
             padding-right: 16px;
@@ -1780,16 +2194,18 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 wrap: word-wrap;
             }
-            if root.leave-pending: Btn {
+            if root.leave-pending || root.settings-dirty: Btn {
                 text: "放弃更改";
                 kind: 2;
                 clicked => {
                     root.discard-settings();
-                    root.leave-pending = false;
-                    root.page = 0;
+                    if (root.leave-pending) {
+                        root.leave-pending = false;
+                        root.page = 0;
+                    }
                 }
             }
-            Btn {
+            if root.leave-pending || root.settings-dirty: Btn {
                 text: "保存并应用";
                 kind: 0;
                 clicked => {

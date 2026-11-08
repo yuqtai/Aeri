@@ -1,9 +1,8 @@
 //! 麦克风采集 + “耳朵”线程：待机时只跑唤醒词检测，唤醒后把音频转发给云端识别。
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -26,6 +25,164 @@ pub const MODE_MUTED: u8 = 2;
 pub const MODE_PAUSED: u8 = 3;
 /// 播报中：只听唤醒词，听到就打断播报并开始录音
 pub const MODE_BARGE: u8 = 4;
+
+/// 当前模式。全局只有一份：电脑麦克风（耳朵线程）和手机麦克风都看它，没有电脑麦克风时手机也能说话
+static MODE: AtomicU8 = AtomicU8::new(MODE_PAUSED);
+
+pub fn mode() -> u8 {
+    MODE.load(Ordering::SeqCst)
+}
+
+pub fn set_mode(mode: u8) {
+    MODE.store(mode, Ordering::SeqCst);
+}
+
+// ---------- 手机麦克风 ----------
+//
+// 手机按住说话时，手机传来的声音代替电脑麦克风送去识别：
+// - 按下后这一轮里电脑麦克风的声音不再送去识别（唤醒词照常听）；
+// - 还没开始收音（助手正在停下上一轮、连接服务）时先按顺序存着，开始收音时先补发，开头的字不丢；
+// - 松开时补一段静音，让服务端判断这句话说完了。
+
+/// 松开说话后补多少静音（16k 采样，1.5 秒）
+const PHONE_RELEASE_SILENCE: usize = 16000 * 3 / 2;
+
+struct PhoneMic {
+    /// 手机正按着说话键
+    held: bool,
+    /// 这一轮用手机麦克风（电脑麦克风的声音不送去识别）
+    active: bool,
+    /// 已经请调度中心开始一轮“听手机”，还没开始
+    requested: bool,
+    /// 调度中心正在进行“听手机”的这一轮
+    turn: bool,
+    /// 这次按下已经开始过一轮：这一轮结束（哪怕是出错）后不再自动开始，免得按着不放时反复出错
+    served: bool,
+    /// 还没开始收音时收到的声音
+    pending: PreRoll,
+    out: Option<UnboundedSender<Vec<f32>>>,
+}
+
+static PHONE: Mutex<PhoneMic> = Mutex::new(PhoneMic {
+    held: false,
+    active: false,
+    requested: false,
+    turn: false,
+    served: false,
+    pending: PreRoll::new(PREROLL_MAX_SAMPLES),
+    out: None,
+});
+
+/// 测试里会改手机麦克风的全局状态，用它排队，免得并行的测试互相干扰
+#[cfg(test)]
+pub(crate) static PHONE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn phone() -> std::sync::MutexGuard<'static, PhoneMic> {
+    PHONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 手机的声音送到哪里（和电脑麦克风同一个通道）
+pub fn set_phone_output(tx: UnboundedSender<Vec<f32>>) {
+    phone().out = Some(tx);
+}
+
+/// 这一轮用的是手机麦克风：电脑麦克风的声音不送去识别
+pub fn phone_active() -> bool {
+    phone().active
+}
+
+/// 手机按下说话键
+pub fn phone_press() {
+    let mut p = phone();
+    p.held = true;
+    p.active = true;
+    p.served = false;
+    p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
+}
+
+/// 手机传来一段声音（16k 单声道）。正在收音就直接送去识别，否则先存着
+pub fn phone_audio(samples: Vec<f32>) {
+    let mut p = phone();
+    if !p.held || samples.is_empty() {
+        return;
+    }
+    p.feed(samples);
+}
+
+/// 手机松开说话键：补一段静音让服务端断句
+pub fn phone_release() {
+    let mut p = phone();
+    if !p.held {
+        return;
+    }
+    p.feed(vec![0.0; PHONE_RELEASE_SILENCE]);
+    p.held = false;
+}
+
+/// 手机按了一下就松开（没打算说话）：丢掉存着的声音。返回“听手机”的这一轮是否已经开始（需要停下）
+pub fn phone_cancel() -> bool {
+    let mut p = phone();
+    p.held = false;
+    p.requested = false;
+    p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
+    p.turn
+}
+
+/// 手机正按着说话键、还没请调度中心开始听：记下“已请求”并返回 true（调用方去发命令）。
+/// 同一次按下只会返回一次 true
+pub fn phone_wants_turn() -> bool {
+    let mut p = phone();
+    if p.held && !p.requested && !p.turn && !p.served {
+        p.requested = true;
+        true
+    } else {
+        false
+    }
+}
+
+/// 调度中心开始“听手机”的这一轮：先补发存着的声音，再切到收音（同一把锁里做，先后顺序不乱）。
+/// 手机已经取消了（没按着、也没存下声音）时返回 false，不用开始
+pub fn phone_begin_turn() -> bool {
+    let mut p = phone();
+    p.requested = false;
+    if !p.held && p.pending.samples() == 0 {
+        return false;
+    }
+    p.turn = true;
+    p.served = true;
+    p.active = true;
+    let pending = std::mem::replace(&mut p.pending, PreRoll::new(PREROLL_MAX_SAMPLES));
+    if let Some(out) = &p.out {
+        for chunk in pending.into_chunks() {
+            let _ = out.send(chunk);
+        }
+    }
+    set_mode(MODE_CAPTURE);
+    true
+}
+
+/// 回到待机：这一轮结束。手机还按着时保留状态（马上会开始下一轮）
+pub fn phone_end_turn() {
+    let mut p = phone();
+    p.turn = false;
+    if !p.held {
+        p.active = false;
+        p.requested = false;
+        p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
+    }
+}
+
+impl PhoneMic {
+    fn feed(&mut self, samples: Vec<f32>) {
+        if mode() == MODE_CAPTURE {
+            if let Some(out) = &self.out {
+                let _ = out.send(samples);
+            }
+        } else {
+            self.pending.push(samples);
+        }
+    }
+}
 
 pub fn input_device_names() -> Vec<String> {
     let host = cpal::default_host();
@@ -156,6 +313,43 @@ impl EnergyGate {
     }
 }
 
+/// 唤醒后、实时连接就绪前最多保留多少音频（16k 采样，25 秒）：
+/// 覆盖最坏的准备窗口（打开扬声器 ≤5 秒 + 连接整体 ≤15 秒）并留余量，正常情况下不会裁剪，只作内存保护
+pub const PREROLL_MAX_SAMPLES: usize = 16000 * 25;
+
+/// 唤醒后先录下的音频：按到达顺序保存，超过上限丢最旧的整块（不切开块）
+pub struct PreRoll {
+    chunks: std::collections::VecDeque<Vec<f32>>,
+    samples: usize,
+    max: usize,
+}
+
+impl PreRoll {
+    pub const fn new(max: usize) -> Self {
+        Self { chunks: std::collections::VecDeque::new(), samples: 0, max }
+    }
+
+    pub fn push(&mut self, chunk: Vec<f32>) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.samples += chunk.len();
+        self.chunks.push_back(chunk);
+        while self.samples > self.max {
+            let Some(front) = self.chunks.pop_front() else { break };
+            self.samples -= front.len();
+        }
+    }
+
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
+
+    pub fn into_chunks(self) -> impl Iterator<Item = Vec<f32>> {
+        self.chunks.into_iter()
+    }
+}
+
 pub struct EarSettings {
     pub device: String,
     pub wake_words: Vec<String>,
@@ -183,19 +377,12 @@ const SILENT_DEVICE_TIMEOUT: Duration = Duration::from_secs(3);
 /// 多久检查一次该用的麦克风有没有变化
 const DEVICE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
-/// 后台“耳朵”线程的句柄；drop 时停止线程并释放麦克风
+/// 后台“耳朵”线程的句柄；drop 时停止线程并释放麦克风。模式见全局的 mode() / set_mode()
 pub struct Ear {
-    pub mode: Arc<AtomicU8>,
     /// 播报中听到唤醒词时通知（这时已经切到录音模式）
     pub barge: Arc<Notify>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-}
-
-impl Ear {
-    pub fn set_mode(&self, mode: u8) {
-        self.mode.store(mode, Ordering::SeqCst);
-    }
 }
 
 impl Drop for Ear {
@@ -214,11 +401,11 @@ pub fn start_ear(
     events: UnboundedSender<Command>,
     audio_out: UnboundedSender<Vec<f32>>,
 ) -> anyhow::Result<(Ear, String, Vec<String>)> {
-    let mode = Arc::new(AtomicU8::new(initial_mode));
+    set_mode(initial_mode);
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready_rx) = mpsc::channel::<anyhow::Result<(String, Vec<String>)>>();
     let barge = Arc::new(Notify::new());
-    let (mode2, stop2, barge2) = (mode.clone(), stop.clone(), barge.clone());
+    let (stop2, barge2) = (stop.clone(), barge.clone());
 
     let thread = std::thread::Builder::new()
         .name("ear".into())
@@ -265,7 +452,7 @@ pub fn start_ear(
                 };
                 last_audio = Instant::now();
                 let samples = resampler.process(&chunk);
-                let current = mode2.load(Ordering::SeqCst);
+                let current = mode();
                 if current == MODE_IDLE || current == MODE_BARGE {
                     if last_mode != current {
                         detector.reset();
@@ -275,7 +462,7 @@ pub fn start_ear(
                     for piece in gate.process(&samples, &mut detector) {
                         if let Some(word) = detector.accept(&piece) {
                             // 立刻切到录音，唤醒词之后的话一个字都不丢
-                            mode2.store(MODE_CAPTURE, Ordering::SeqCst);
+                            set_mode(MODE_CAPTURE);
                             if current == MODE_BARGE {
                                 barge2.notify_one();
                             } else {
@@ -284,7 +471,8 @@ pub fn start_ear(
                             break;
                         }
                     }
-                } else if current == MODE_CAPTURE && !samples.is_empty() {
+                } else if current == MODE_CAPTURE && !samples.is_empty() && !phone_active() {
+                    // 这一轮用手机麦克风时，电脑麦克风的声音不送去识别
                     let _ = audio_out.send(samples);
                 }
                 last_mode = current;
@@ -292,8 +480,61 @@ pub fn start_ear(
         })?;
 
     match ready_rx.recv_timeout(Duration::from_secs(15)) {
-        Ok(Ok((name, problems))) => Ok((Ear { mode, barge, stop, thread: Some(thread) }, name, problems)),
+        Ok(Ok((name, problems))) => Ok((Ear { barge, stop, thread: Some(thread) }, name, problems)),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(anyhow!("启动麦克风超时").context(MicUnavailable)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 按着不放时这一轮出错结束了：不能自动反复开始
+    #[test]
+    fn phone_press_starts_at_most_one_turn() {
+        let _serial = PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        phone_press();
+        assert!(phone_wants_turn());
+        assert!(!phone_wants_turn(), "同一次按下只请求一次");
+        assert!(phone_begin_turn());
+        phone_end_turn(); // 这一轮出错结束，手指还按着
+        assert!(phone_active());
+        assert!(!phone_wants_turn(), "这次按下已经开始过一轮");
+        phone_release();
+        phone_end_turn();
+        assert!(!phone_active());
+        // 下一次按下又可以开始
+        phone_press();
+        assert!(phone_wants_turn());
+        assert!(!phone_cancel(), "还没开始的一轮不用停");
+        assert!(!phone_begin_turn(), "取消后不用开始");
+        phone_end_turn();
+        set_mode(MODE_PAUSED);
+    }
+
+    #[test]
+    fn preroll_keeps_order_and_everything_under_limit() {
+        let mut p = PreRoll::new(1000);
+        for i in 0..5 {
+            p.push(vec![i as f32; 100]);
+        }
+        p.push(Vec::new());
+        let firsts: Vec<f32> = p.into_chunks().map(|c| c[0]).collect();
+        assert_eq!(firsts, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn preroll_is_bounded_and_drops_oldest_whole_chunks() {
+        let mut p = PreRoll::new(250);
+        for i in 0..10 {
+            p.push(vec![i as f32; 100]);
+        }
+        assert!(p.samples() <= 250);
+        let chunks: Vec<Vec<f32>> = p.into_chunks().collect();
+        // 保留最新的两整块，块不被切开
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.len() == 100));
+        assert_eq!((chunks[0][0], chunks[1][0]), (8.0, 9.0));
     }
 }
