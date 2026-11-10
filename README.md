@@ -34,8 +34,8 @@
 Say <b>"Hey Aeri"</b> and what you need. It opens apps, renames files, changes settings and sets reminders. No clicks, no keyboard. It also speaks up on its own when a reminder is due or a background job is done.
 </td>
 <td width="33%" valign="top">
-<h4>🧩 Plugins</h4>
-Teach it any app with a <b>plain-text plugin</b>: a short Markdown guide, no code. 13 ready to install: Spotify, Outlook, VS Code, Slack, Notion, Obsidian and more.
+<h4>🧩 Build your own</h4>
+Write a few lines of plain English and Aeri learns <b>your</b> routine, your apps, your folders. No code, no build step. Snap the built-in abilities together like blocks, or install one of 13 ready-made plugins.
 </td>
 <td width="33%" valign="top">
 <h4>🪶 Light</h4>
@@ -101,11 +101,30 @@ Voice is just as open. Speech recognition: built-in offline models (Moonshine, W
 
 New versions install from inside the app (Settings → Updates).
 
-## Plugins
+## Build your own
 
-Built in: apps, windows, files, volume, brightness, Wi-Fi, screenshots, reminders, power, clipboard history, calculator.
+Aeri comes with the building blocks: open and close apps, files and folders, volume, brightness, Wi-Fi, dark mode, windows, screenshots, reminders, clipboard, calculator, and local app APIs. A **plugin** is a short note in plain English that snaps these blocks together for *your* PC.
 
-**How to use a specific app** comes from plugins: short Markdown guides that teach Aeri the fastest reliable way to work with that app. They are text, not code. Browse and install them in **Settings → Plugins**, or just say "install the Obsidian plugin". Want to write one? See [yuqtai/aeri-plugins](https://github.com/yuqtai/aeri-plugins).
+For example, save this as `%APPDATA%\VoiceAssistant\plugins\work-mode\PLUGIN.md`:
+
+```markdown
+---
+id: work-mode
+name: Work mode
+version: 1.0.0
+description: My morning setup
+keywords: work mode, start work
+---
+When I say "work mode":
+1. Open Slack, Outlook and VS Code.
+2. Open my project folder D:\code\shop in VS Code.
+3. Set the volume to 20 and switch to dark mode.
+4. Tell me which reminders I have today.
+```
+
+Now say **"Hey Aeri, work mode"** and your morning sets itself up. It works right away: no code, no restart. Write one for your game launcher, your stream setup, your note app, the folder you open fifty times a day.
+
+Want something ready-made? 13 plugins (Spotify, Outlook, VS Code, Slack, Notion, Obsidian…) install in one click from **Settings → Plugins**, or just say "install the Spotify plugin". Built something others would like? Share it in the [plugin market](https://github.com/yuqtai/aeri-plugins).
 
 ## Privacy
 
