@@ -18,6 +18,7 @@ mod reminders;
 mod remote;
 mod history;
 mod plugins;
+mod locale;
 mod resample;
 mod screen;
 mod sys;
