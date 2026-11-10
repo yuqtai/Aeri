@@ -298,7 +298,7 @@ impl TaskManager {
     async fn run_builtin(&self, id: u32, s: &TaskSettings, prompt: &str) -> anyhow::Result<String> {
         let (cfg, key) = s.builtin.clone().ok_or_else(|| anyhow::anyhow!("内置助手需要先在设置里填 DeepSeek 的 API Key"))?;
         let tools = s.full_tools.clone().ok_or_else(|| anyhow::anyhow!("工具没有准备好"))?;
-        let llm = Llm::new(&cfg.llm_base_url, key, &cfg.llm_model, cfg.llm_thinking, &cfg.llm_effort)?;
+        let llm = Llm::new(&cfg.llm_provider, &cfg.llm_base_url, key, &cfg.llm_model, cfg.llm_thinking, &cfg.llm_effort)?;
         let mut agent = Agent::backend(llm, tools);
         agent.ask(prompt, |name, input| self.progress(id, &crate::assistant::describe_tool(name, input))).await
     }

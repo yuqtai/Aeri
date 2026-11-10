@@ -45,6 +45,7 @@ const MAX_CHAT_ITEMS: usize = 200;
 const EFFORTS: [&str; 3] = ["low", "high", "max"];
 const EXECUTORS: [&str; 3] = ["codex", "claude", "builtin"];
 const ACCESS: [&str; 3] = ["full", "workspace", "readonly"];
+const ASR_PROVIDERS: [&str; 4] = ["local", "openai", "groq", "dashscope"];
 const FRONTENDS: [&str; 2] = ["realtime", "classic"];
 
 fn main() -> anyhow::Result<()> {
@@ -350,17 +351,23 @@ const KEY_FAILED: i32 = 4;
 const THEMES: [&str; 3] = ["auto", "light", "dark"];
 
 fn refresh_key_status(w: &AppWindow, c: &Config) {
-    VOICE_SAVED_KEY.set(config::asr_key(c));
-    w.set_llm_key_status(config::key_status(&c.llm_api_key_protected, &c.llm_key_env).into());
-    w.set_asr_key_status(config::key_status(&c.asr_api_key_protected, &c.asr_key_env).into());
+    VOICE_SAVED_KEY.set(if c.voice_frontend == "realtime" { config::realtime_key(c) } else { config::asr_key(c) });
+    w.set_llm_key_status(config::key_status(config::llm_protected(c), &c.llm_key_env).into());
+    let voice_protected = config::voice_protected(c);
+    let voice_ready = if c.voice_frontend == "realtime" { config::realtime_key(c).is_some() } else { config::asr_key(c).is_some() };
+    w.set_asr_key_status(if voice_ready { "Speech provider ready (local, saved key, shared key, or environment)".into() } else { "API key not set for the selected speech provider".into() });
     w.set_llm_key_state(if config::llm_key(c).is_some() { KEY_READY } else { KEY_MISSING });
-    w.set_asr_key_state(if config::asr_key(c).is_some() { KEY_READY } else { KEY_MISSING });
-    w.set_llm_key_saved(config::has_saved_key(&c.llm_api_key_protected));
-    w.set_asr_key_saved(config::has_saved_key(&c.asr_api_key_protected));
+    w.set_asr_key_state(if voice_ready { KEY_READY } else { KEY_MISSING });
+    w.set_llm_key_saved(config::has_saved_key(config::llm_protected(c)));
+    w.set_asr_key_saved(config::has_saved_key(voice_protected));
 }
 
 /// 配置 -> 界面（key 本身从不显示，只显示状态）
 fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
+    w.set_llm_providers(ModelRc::from(Rc::new(VecModel::from(llm::PRESETS.iter().map(|p| slint::SharedString::from(p.name)).collect::<Vec<_>>()))));
+    w.set_llm_provider_index(llm::PRESETS.iter().position(|p| p.id == c.llm_provider).unwrap_or(7) as i32);
+    w.set_asr_provider_index(ASR_PROVIDERS.iter().position(|p| *p == c.asr_provider).unwrap_or(3) as i32);
+    w.set_realtime_provider_index(if c.realtime_provider == "openai" { 1 } else { 0 });
     w.set_llm_key_input("".into());
     w.set_llm_base_url(c.llm_base_url.as_str().into());
     w.set_llm_model(c.llm_model.as_str().into());
@@ -419,6 +426,11 @@ fn read_settings(w: &AppWindow, devices: &[String]) -> Config {
 
 fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     let text = |s: slint::SharedString| s.trim().to_string();
+    let provider = &llm::PRESETS[w.get_llm_provider_index().clamp(0, 7) as usize];
+    if c.llm_provider != provider.id { c.llm_key_env = provider.env.into(); }
+    c.llm_provider = provider.id.into();
+    c.asr_provider = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 3) as usize].into();
+    c.realtime_provider = if w.get_realtime_provider_index() == 1 { "openai" } else { "dashscope" }.into();
     c.llm_base_url = text(w.get_llm_base_url());
     c.llm_model = text(w.get_llm_model());
     c.llm_thinking = w.get_llm_thinking();
@@ -477,7 +489,8 @@ fn voice_test_snapshot(w: &AppWindow) -> serde_json::Value {
     let input = w.get_asr_key_input();
     let key = effective_voice_key(input.as_str(), VOICE_SAVED_KEY.with_borrow(Clone::clone));
     serde_json::json!({
-        "mode": w.get_frontend_index(),
+        "mode": w.get_frontend_index(), "provider": w.get_realtime_provider_index(), "asr_provider": w.get_asr_provider_index(),
+        "llm_provider": w.get_llm_provider_index(), "llm_key": w.get_llm_key_input().as_str(),
         "url": w.get_realtime_url().as_str(), "model": w.get_realtime_model().as_str(),
         "voice": w.get_realtime_voice().as_str(), "rate": w.get_tts_rate(),
         "asr_url": w.get_asr_url().as_str(), "asr_model": w.get_asr_model().as_str(),
@@ -579,13 +592,16 @@ fn validate(c: &Config) -> Option<String> {
     if !c.llm_base_url.starts_with("http") {
         return Some("大模型接口地址应以 http 开头".into());
     }
-    if !c.asr_url.starts_with("ws") {
+    if c.voice_frontend != "realtime" && c.asr_provider == "dashscope" && !c.asr_url.starts_with("ws") {
         return Some("语音识别服务地址应以 wss:// 开头".into());
+    }
+    if c.voice_frontend != "realtime" && ["openai", "groq"].contains(&c.asr_provider.as_str()) && !c.asr_url.starts_with("http") {
+        return Some("Transcription base URL must start with https:// (or http:// for a local proxy)".into());
     }
     if c.voice_frontend == "realtime" && !c.realtime_url.starts_with("ws") {
         return Some("实时语音服务地址应以 wss:// 开头".into());
     }
-    if c.llm_model.is_empty() || c.asr_model.is_empty() || (c.voice_frontend == "realtime" && c.realtime_model.is_empty()) {
+    if c.llm_model.is_empty() || (c.asr_provider != "local" && c.asr_model.is_empty()) || (c.voice_frontend == "realtime" && c.realtime_model.is_empty()) {
         return Some("模型名不能为空".into());
     }
     if !c.agent_workdir.is_empty() && !std::path::Path::new(&c.agent_workdir).is_dir() {
@@ -800,6 +816,53 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
 }
 
 fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices: Rc<RefCell<Vec<String>>>, rt: Handle) {
+    let weak = window.as_weak();
+    window.on_llm_provider_changed(move |index| {
+        let Some(w) = weak.upgrade() else { return };
+        let p = &llm::PRESETS[index.clamp(0, 7) as usize];
+        w.set_llm_base_url(p.url.into());
+        w.set_llm_model(p.model.into());
+        w.set_llm_thinking(p.id == "deepseek");
+        w.set_llm_key_input("".into());
+        refresh_key_status(&w, &read_settings(&w, &[]));
+    });
+    let weak = window.as_weak();
+    window.on_realtime_provider_changed(move |index| {
+        let Some(w) = weak.upgrade() else { return };
+        let defaults = if index == 1 {
+            ("wss://api.openai.com/v1/realtime", "gpt-realtime-2", "marin")
+        } else {
+            ("wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "qwen-audio-3.1-realtime-plus", "longanqian_v3.1")
+        };
+        w.set_realtime_url(defaults.0.into());
+        w.set_realtime_model(defaults.1.into());
+        w.set_realtime_voice(defaults.2.into());
+        w.set_asr_key_input("".into());
+        let c = read_settings(&w, &[]);
+        refresh_key_status(&w, &c);
+        invalidate_voice_test(&w);
+    });
+    let weak = window.as_weak();
+    window.on_asr_provider_changed(move |index| {
+        let Some(w) = weak.upgrade() else { return };
+        let defaults = match index {
+            1 => ("https://api.openai.com/v1", "gpt-transcribe"),
+            2 => ("https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
+            _ => ("wss://dashscope.aliyuncs.com/api-ws/v1/inference", "fun-asr-realtime"),
+        };
+        w.set_asr_url(defaults.0.into());
+        w.set_asr_model(defaults.1.into());
+        w.set_asr_key_input("".into());
+        refresh_key_status(&w, &read_settings(&w, &[]));
+        invalidate_voice_test(&w);
+    });
+    let weak = window.as_weak();
+    window.on_voice_mode_changed(move |_| {
+        let Some(w) = weak.upgrade() else { return };
+        w.set_asr_key_input("".into());
+        refresh_key_status(&w, &read_settings(&w, &[]));
+        invalidate_voice_test(&w);
+    });
     // 保存并应用
     let (tx, weak, devs) = (cmd_tx.clone(), window.as_weak(), devices.clone());
     window.on_save_settings(move || {
@@ -809,17 +872,13 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             set_note(&w, NOTE_ERROR, problem);
             return;
         }
-        for (input, slot) in [
-            (w.get_llm_key_input(), &mut c.llm_api_key_protected),
-            (w.get_asr_key_input(), &mut c.asr_api_key_protected),
-        ] {
+        for (input, llm) in [(w.get_llm_key_input(), true), (w.get_asr_key_input(), false)] {
             if !input.trim().is_empty() {
                 match config::protect_key(&input) {
-                    Some(protected) => *slot = protected,
-                    None => {
-                        set_note(&w, NOTE_ERROR, "key 加密保存失败");
-                        return;
+                    Some(protected) => {
+                        if llm { *config::llm_key_slot(&mut c) = protected; } else { *config::voice_key_slot(&mut c) = protected; }
                     }
+                    None => { set_note(&w, NOTE_ERROR, "key encryption failed"); return; }
                 }
             }
         }
@@ -852,7 +911,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let saved = config::load();
         let defaults = Config {
             llm_api_key_protected: saved.llm_api_key_protected,
+            llm_key_provider: saved.llm_key_provider,
+            llm_api_keys_protected: saved.llm_api_keys_protected,
             asr_api_key_protected: saved.asr_api_key_protected,
+            realtime_openai_api_key_protected: saved.realtime_openai_api_key_protected,
+            stt_api_keys_protected: saved.stt_api_keys_protected,
             ..Config::default()
         };
         apply_config(&w, &defaults, &devs.borrow());
@@ -886,7 +949,20 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let clear = move || {
             let Some(w) = weak.upgrade() else { return };
             let mut c = config::load();
-            if asr { c.asr_api_key_protected.clear() } else { c.llm_api_key_protected.clear() }
+            if asr {
+                if w.get_frontend_index() == 0 {
+                    if w.get_realtime_provider_index() == 1 { c.realtime_openai_api_key_protected.clear(); }
+                    else { c.asr_api_key_protected.clear(); }
+                } else {
+                    let id = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 3) as usize];
+                    if id == "dashscope" { c.asr_api_key_protected.clear(); }
+                    else { c.stt_api_keys_protected.remove(id); }
+                }
+            } else {
+                let id = llm::PRESETS[w.get_llm_provider_index().clamp(0, 7) as usize].id;
+                if c.llm_key_provider == id { c.llm_api_key_protected.clear(); }
+                else { c.llm_api_keys_protected.remove(id); }
+            }
             if config::save(&c).is_ok() {
                 refresh_key_status(&w, &c);
                 set_note(&w, NOTE_OK, "已清除保存的 key");
@@ -911,7 +987,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         w.set_llm_key_status("正在连接…".into());
         let weak = weak.clone();
         rt2.spawn(async move {
-            let result = match llm::Llm::new(&c.llm_base_url, key, &c.llm_model, false, &c.llm_effort) {
+            let result = match llm::Llm::new(&c.llm_provider, &c.llm_base_url, key, &c.llm_model, false, &c.llm_effort) {
                 Ok(l) => l.ping().await,
                 Err(e) => Err(e),
             };
@@ -933,11 +1009,14 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     window.on_test_voice(move || {
         let Some(w) = weak.upgrade() else { return };
         if w.get_voice_test_state() == KEY_TESTING { return; }
-        let c = read_settings(&w, &[]);
+        let mut c = read_settings(&w, &[]);
+        if c.llm_provider == "openai" && !w.get_llm_key_input().trim().is_empty() {
+            *config::llm_key_slot(&mut c) = config::protect_key(w.get_llm_key_input().as_str()).unwrap_or_default();
+        }
         let input = w.get_asr_key_input().trim().to_string();
-        let Some(key) = (if input.is_empty() { config::asr_key(&c) } else { Some(input) }) else {
+        let Some(key) = (if input.is_empty() { if c.voice_frontend == "realtime" { config::realtime_key(&c) } else { config::asr_key(&c) } } else { Some(input) }) else {
             w.set_voice_test_state(KEY_MISSING);
-            w.set_voice_test_status("请先填写顶部的百炼 key，再测试当前模式。".into());
+            w.set_voice_test_status("Enter a key for the selected voice provider (OpenAI can share the LLM key).".into());
             return;
         };
         let snapshot = voice_test_snapshot(&w);
@@ -945,14 +1024,15 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let epoch = w.get_voice_test_epoch().wrapping_add(1);
         w.set_voice_test_epoch(epoch);
         w.set_voice_test_state(KEY_TESTING);
-        w.set_voice_test_status("正在验证当前语音服务连接和会话参数…".into());
+        w.set_voice_test_status(if c.voice_frontend != "realtime" && c.asr_provider == "local" { "Preparing local recognition; first use downloads and verifies the language model (may take a few minutes)…".into() } else { "Checking the selected voice provider…".into() });
         let weak = weak.clone();
         voice_rt.spawn(async move {
             let realtime_mode = c.voice_frontend == "realtime";
             let label = if realtime_mode { "实时语音" } else { "语音识别" };
-            let result = tokio::time::timeout(Duration::from_secs(20), async {
+            let result = tokio::time::timeout(Duration::from_secs(if c.asr_provider == "local" && !realtime_mode { 660 } else { 20 }), async {
                 if realtime_mode {
                     let settings = realtime::RealtimeSettings {
+                        provider: realtime::Provider::from_id(&c.realtime_provider), listen_only: true,
                         url: c.realtime_url.clone(), model: c.realtime_model.clone(),
                         voice: c.realtime_voice.clone(), api_key: key.clone(),
                         instructions: realtime::VOICE_PROMPT.to_string(), tools: Vec::new(),
@@ -964,6 +1044,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                     Ok::<(), anyhow::Error>(())
                 } else {
                     asr::check(&asr::AsrSettings {
+                        provider: asr::Provider::from_id(&c.asr_provider),
                         url: c.asr_url.clone(), model: c.asr_model.clone(), api_key: key.clone(),
                         sentence_silence_ms: c.asr_sentence_silence_ms,
                         speech_timeout: Duration::from_secs(c.asr_speech_timeout_secs),
@@ -1004,6 +1085,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let weak = weak.clone();
         rt.spawn(async move {
             let settings = asr::AsrSettings {
+                provider: asr::Provider::from_id(&c.asr_provider),
                 url: c.asr_url.clone(),
                 model: c.asr_model.clone(),
                 api_key: key,

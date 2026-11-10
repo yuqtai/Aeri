@@ -5,11 +5,49 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use tokio::sync::oneshot;
-use windows::Win32::Media::Speech::{ISpVoice, SPF_ASYNC, SPF_PURGEBEFORESPEAK, SpVoice};
+use windows::Win32::Media::Speech::{ISpVoice, ISpObjectTokenCategory, SPF_ASYNC, SPF_PURGEBEFORESPEAK, SPCAT_VOICES, SpObjectTokenCategory, SpVoice};
 use windows::Win32::Foundation::WAIT_OBJECT_0;
-use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::core::HSTRING;
+
+// Enumerate only SAPI-visible voices. Natural/Neural voices win when Windows
+// exposes them through SAPI; otherwise use the best installed language match.
+unsafe fn select_language_voice(voice: &ISpVoice) {
+    unsafe {
+        let Ok(category) = CoCreateInstance::<_, ISpObjectTokenCategory>(&SpObjectTokenCategory, None, CLSCTX_ALL) else { return };
+        if category.SetId(SPCAT_VOICES, false).is_err() { return; }
+        let Ok(tokens) = category.EnumTokens(None, None) else { return };
+        let mut count = 0;
+        if tokens.GetCount(&mut count).is_err() { return; }
+        let mut best = None;
+        let mut best_score = 0;
+        for i in 0..count {
+            let Ok(token) = tokens.Item(i) else { continue };
+            let Ok(attributes) = token.OpenKey(windows::core::w!("Attributes")) else { continue };
+            let read = |key| {
+                attributes.GetStringValue(key).map(|p| {
+                    let text = p.to_string().unwrap_or_default();
+                    CoTaskMemFree(Some(p.0.cast()));
+                    text
+                }).unwrap_or_default()
+            };
+            let language = read(windows::core::w!("Language"));
+            let name = read(windows::core::w!("Name"));
+            let score = voice_score(&language, &name, crate::locale::is_zh());
+            if score > best_score { best_score = score; best = Some(token); }
+        }
+        if let Some(token) = best { let _ = voice.SetVoice(&token); }
+    }
+}
+
+fn voice_score(language: &str, name: &str, zh: bool) -> u8 {
+    let matches = language.split(';').filter_map(|id| u16::from_str_radix(id.trim(), 16).ok())
+        .any(|id| id & 0x3ff == if zh { 0x04 } else { 0x09 });
+    if !matches { return 0; }
+    let name = name.to_ascii_lowercase();
+    1 + if name.contains("natural") || name.contains("neural") { 2 } else { 0 }
+}
 
 type Job = (String, i32, oneshot::Sender<()>);
 
@@ -28,6 +66,7 @@ impl Tts {
             .spawn(move || unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 let voice: Option<ISpVoice> = CoCreateInstance(&SpVoice, None, CLSCTX_ALL).ok();
+                if let Some(voice) = &voice { select_language_voice(voice); }
                 for (text, rate, done) in rx {
                     if let Some(voice) = &voice {
                         stop2.store(false, Ordering::SeqCst);
@@ -70,6 +109,15 @@ impl Tts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_and_natural_voice_preference() {
+        assert_eq!(voice_score("409", "English", false), 1);
+        assert_eq!(voice_score("809;409", "English Natural", false), 3);
+        assert_eq!(voice_score("804", "Chinese", false), 0);
+        assert_eq!(voice_score("804", "Chinese Neural", true), 3);
+        assert_eq!(voice_score("409", "English", true), 0);
+    }
 
     /// 会真的出声：念一段长句，0.5 秒后打断，应当很快停下。cargo test -- --ignored
     #[test]

@@ -357,7 +357,7 @@ impl Assistant {
     fn build_agent(&self) -> Option<Agent> {
         let key = config::llm_key(&self.cfg)?;
         let c = &self.cfg;
-        match Llm::new(&c.llm_base_url, key, &c.llm_model, c.llm_thinking, &c.llm_effort) {
+        match Llm::new(&c.llm_provider, &c.llm_base_url, key, &c.llm_model, c.llm_thinking, &c.llm_effort) {
             Ok(llm) => Some(Agent::front(llm, self.front_tools.clone(), c.new_conversation_after_secs)),
             Err(e) => {
                 self.chat(Role::System, format!("大模型初始化失败：{e}"));
@@ -482,21 +482,34 @@ impl Assistant {
             return None;
         }
         let Some(api_key) = config::asr_key(&self.cfg) else {
-            self.chat(Role::System, "还没有设置语音识别的 API Key：请在“设置”页填写阿里云百炼的 key，点“保存并应用”。");
+            self.chat(Role::System, "Set an API key for the selected speech recognition provider in Settings.");
             return None;
         };
-        self.set_mode(Mode::Capture);
-        if beep && !self.phone {
-            sys::beep(880, 120);
-        }
-        self.emit(UiEvent::Status(Status::Listening));
         let settings = AsrSettings {
+            provider: asr::Provider::from_id(&self.cfg.asr_provider),
             url: self.cfg.asr_url.clone(),
             model: self.cfg.asr_model.clone(),
             api_key,
             sentence_silence_ms: self.cfg.asr_sentence_silence_ms,
             speech_timeout: Duration::from_secs(self.cfg.asr_speech_timeout_secs),
         };
+        if settings.provider == asr::Provider::Local {
+            let ui = self.ui.clone();
+            let prepared = tokio::select! {
+                result = asr::prepare_local(|status| ui(UiEvent::Chat(Role::System, status.into()))) => Some(result),
+                _ = self.turn.stopped() => None,
+            };
+            match prepared {
+                Some(Ok(_)) => {},
+                Some(Err(e)) => { self.chat(Role::System, format!("{e:#}")); return None; },
+                None => return None,
+            }
+        }
+        self.set_mode(Mode::Capture);
+        if beep && !self.phone {
+            sys::beep(880, 120);
+        }
+        self.emit(UiEvent::Status(Status::Listening));
         let ui = self.ui.clone();
         let result = tokio::select! {
             r = asr::recognize(&settings, &mut self.audio_rx, |partial| ui(UiEvent::Partial(partial.to_string()))) => r,
@@ -599,11 +612,13 @@ impl Assistant {
         if self.ear.is_none() && notice.is_none() && origin != Origin::Phone {
             anyhow::bail!("麦克风不可用");
         }
-        let api_key = config::asr_key(&self.cfg).ok_or_else(|| anyhow::anyhow!("实时语音需要阿里云百炼的 API Key"))?;
+        let api_key = config::realtime_key(&self.cfg).ok_or_else(|| anyhow::anyhow!("Realtime voice requires an API key for the selected provider"))?;
         // 设置了自己的大模型（比如 DeepSeek）时，实时语音模型只负责听和说，判断、调工具都交给那个大模型；
         // 没设置时才让实时语音模型自己当大脑
         let local = self.agent.is_some();
         let settings = RealtimeSettings {
+            provider: realtime::Provider::from_id(&self.cfg.realtime_provider),
+            listen_only: local,
             url: self.cfg.realtime_url.clone(),
             model: self.cfg.realtime_model.clone(),
             voice: self.cfg.realtime_voice.clone(),

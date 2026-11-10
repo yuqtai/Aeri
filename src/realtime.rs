@@ -1,7 +1,5 @@
-//! 阿里云百炼实时语音模型（Qwen-Audio Realtime，WebSocket）：麦克风音频直接发过去，
-//! 服务端判断一句话说完后边想边说，返回 24kHz 语音；支持工具调用和打断。
-//! 协议：session.update → input_audio_buffer.append（16k PCM，Base64）→ response.audio.delta / response.done，
-//! 工具调用：response.function_call_arguments.done → conversation.item.create(function_call_output) → response.create。
+//! DashScope and OpenAI realtime voice adapters. Input is 16 kHz microphone
+//! audio; events expose 24 kHz PCM16 for the existing player.
 
 use std::time::Duration;
 
@@ -16,7 +14,18 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 /// 想好的回复再交给它读出来
 pub const VOICE_PROMPT: &str = "你是语音播报员，只负责把文字读出来。用户消息里“【朗读】”后面的文字，用自然、口语的语气原样读出来，一字不改，不要回答、解释或补充任何内容。没有【朗读】标记的内容一律不要回应。";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider { DashScope, OpenAi }
+
+impl Provider {
+    pub fn from_id(id: &str) -> Self {
+        if id == "openai" { Self::OpenAi } else { Self::DashScope }
+    }
+}
+
 pub struct RealtimeSettings {
+    pub provider: Provider,
+    pub listen_only: bool,
     pub url: String,
     pub model: String,
     pub voice: String,
@@ -53,6 +62,8 @@ type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<t
 
 pub struct Session {
     ws: Ws,
+    provider: Provider,
+    input_resampler: InputResampler,
 }
 
 /// 连接、握手、等配置确认整体的截止时间
@@ -79,7 +90,7 @@ impl Session {
             .await
             .context("连接实时语音服务超时")?
             .context("连接实时语音服务失败（检查 API Key、模型是否已开通和网络）")?;
-        let mut session = Self { ws };
+        let mut session = Self { ws, provider: s.provider, input_resampler: InputResampler::default() };
         let tools: Vec<Value> = s
             .tools
             .iter()
@@ -95,7 +106,24 @@ impl Session {
             "input_audio_transcription": {"language": "zh"},
             "turn_detection": {"type": "smart_turn_v2"},
         });
-        if !tools.is_empty() {
+        if s.provider == Provider::OpenAi {
+            config = json!({
+                "type": "realtime",
+                "output_modalities": ["audio"],
+                "instructions": s.instructions,
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": "gpt-transcribe", "language": crate::locale::pick("en", "zh")},
+                        "turn_detection": {"type": "server_vad", "create_response": !s.listen_only, "interrupt_response": true}
+                    },
+                    "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": s.voice, "speed": s.speech_rate.clamp(0.25, 1.5)}
+                }
+            });
+            if !s.tools.is_empty() {
+                config["tools"] = json!(s.tools.iter().map(|t| json!({"type":"function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"]})).collect::<Vec<_>>());
+            }
+        } else if !tools.is_empty() {
             config["tools"] = json!(tools);
         }
         session.send(json!({"type": "session.update", "session": config})).await?;
@@ -117,6 +145,11 @@ impl Session {
 
     /// 发送 16k 单声道音频
     pub async fn send_audio(&mut self, samples: &[f32]) -> anyhow::Result<()> {
+        let converted;
+        let samples = if self.provider == Provider::OpenAi {
+            converted = self.input_resampler.convert(samples);
+            converted.as_slice()
+        } else { samples };
         let mut pcm = Vec::with_capacity(samples.len() * 2);
         for s in samples {
             pcm.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
@@ -165,10 +198,10 @@ impl Session {
             "input_audio_buffer.speech_started" => Event::SpeechStarted,
             "input_audio_buffer.speech_stopped" if v["reason"] == "turn_invalid" => Event::SpeechInvalid,
             "input_audio_buffer.speech_stopped" => Event::SpeechStopped,
-            "conversation.item.input_audio_transcription.delta" => Event::UserPartial(format!("{}{}", s("text"), s("stash"))),
+            "conversation.item.input_audio_transcription.delta" => Event::UserPartial(if self.provider == Provider::OpenAi { s("delta") } else { format!("{}{}", s("text"), s("stash")) }),
             "conversation.item.input_audio_transcription.completed" => Event::UserText(s("transcript")),
-            "response.audio_transcript.delta" | "response.text.delta" => Event::Transcript(s("delta")),
-            "response.audio.delta" => Event::Audio(base64_decode(v["delta"].as_str().unwrap_or(""))),
+            "response.output_audio_transcript.delta" | "response.output_text.delta" | "response.audio_transcript.delta" | "response.text.delta" => Event::Transcript(s("delta")),
+            "response.output_audio.delta" | "response.audio.delta" => Event::Audio(base64_decode(v["delta"].as_str().unwrap_or(""))),
             "response.function_call_arguments.done" => {
                 Event::FunctionCall { call_id: s("call_id"), name: s("name"), arguments: s("arguments") }
             }
@@ -185,6 +218,31 @@ impl Session {
             }
             _ => Event::Other,
         })
+    }
+}
+
+// Continuous linear interpolation from the microphone's 16 kHz to OpenAI's
+// 24 kHz. Retain the boundary sample and fractional position across chunks.
+#[derive(Default)]
+struct InputResampler {
+    pending: Vec<f32>,
+    position: f64,
+}
+
+impl InputResampler {
+    fn convert(&mut self, samples: &[f32]) -> Vec<f32> {
+        self.pending.extend_from_slice(samples);
+        let mut out = Vec::with_capacity(samples.len() * 3 / 2 + 2);
+        while self.position + 1.0 < self.pending.len() as f64 {
+            let i = self.position.floor() as usize;
+            let t = (self.position - i as f64) as f32;
+            out.push(self.pending[i] * (1.0 - t) + self.pending[i + 1] * t);
+            self.position += 2.0 / 3.0;
+        }
+        let consumed = self.position.floor() as usize;
+        self.pending.drain(..consumed);
+        self.position -= consumed as f64;
+        out
     }
 }
 
@@ -262,6 +320,8 @@ mod tests {
 
     fn settings(url: String) -> RealtimeSettings {
         RealtimeSettings {
+            provider: Provider::DashScope,
+            listen_only: false,
             url,
             model: "m".into(),
             voice: "v".into(),
@@ -286,6 +346,58 @@ mod tests {
             while ws.next().await.is_some() {}
         });
         format!("ws://{addr}/realtime")
+    }
+
+    #[tokio::test]
+    async fn openai_session_schema_audio_events_and_interrupt() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let update = parse(ws.next().await).unwrap();
+            assert_eq!(update["session"]["type"], "realtime");
+            assert_eq!(update["session"]["audio"]["input"]["format"]["rate"], 24000);
+            assert_eq!(update["session"]["audio"]["output"]["format"]["rate"], 24000);
+            assert_eq!(update["session"]["audio"]["input"]["turn_detection"]["create_response"], false);
+            assert_eq!(update["session"]["tools"][0]["name"], "weather");
+            ws.send(Message::text(json!({"type":"session.updated"}).to_string())).await.unwrap();
+            let audio = parse(ws.next().await).unwrap();
+            assert_eq!(audio["type"], "input_audio_buffer.append");
+            assert!((base64_decode(audio["audio"].as_str().unwrap()).len() as i32 - 4800).abs() <= 4);
+            assert_eq!(parse(ws.next().await).unwrap()["type"], "response.cancel");
+            for event in [
+                json!({"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello"}),
+                json!({"type":"response.output_audio_transcript.delta","delta":"Hi"}),
+                json!({"type":"response.output_audio.delta","delta":"AQIDBA=="}),
+                json!({"type":"response.done","response":{"status":"cancelled"}}),
+            ] { ws.send(Message::text(event.to_string())).await.unwrap(); }
+            while ws.next().await.is_some() {}
+        });
+        let mut cfg = settings(format!("ws://{addr}/realtime"));
+        cfg.provider = Provider::OpenAi;
+        cfg.listen_only = true;
+        cfg.tools = vec![json!({"name":"weather","description":"Weather","input_schema":{"type":"object"}})];
+        let mut session = Session::connect(&cfg).await.unwrap();
+        session.send_audio(&vec![0.1; 1600]).await.unwrap();
+        session.cancel_response().await;
+        assert!(matches!(session.next_event().await.unwrap(), Event::UserText(t) if t == "Hello"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::Transcript(t) if t == "Hi"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::Audio(b) if b == [1,2,3,4]));
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(t) if t == "cancelled"));
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn resampler_preserves_stream_boundaries() {
+        let samples: Vec<f32> = (0..1600).map(|i| i as f32 / 1600.0).collect();
+        let whole = InputResampler::default().convert(&samples);
+        let mut resampler = InputResampler::default();
+        let split: Vec<f32> = samples.chunks(37).flat_map(|c| resampler.convert(c)).collect();
+        assert_eq!(whole.len(), split.len());
+        assert!((whole.len() as i32 - 2400).abs() <= 2);
+        for (a, b) in whole.iter().zip(split) { assert!((a-b).abs() < 0.00001); }
     }
 
     #[test]
