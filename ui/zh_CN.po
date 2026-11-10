@@ -939,3 +939,6 @@ msgstr "服务商的 API Key"
 
 msgid "Stored on this computer. Use the eye button to show it. Leave empty to use the environment variable."
 msgstr "保存在本机，点眼睛图标可以显示。留空则使用环境变量。"
+
+msgid "https:// = OpenAI speech API; wss://…/api-ws/… = Alibaba / Qwen (CosyVoice)."
+msgstr "https:// 是 OpenAI 语音接口，wss://…/api-ws/… 是阿里 / 千问（CosyVoice）"

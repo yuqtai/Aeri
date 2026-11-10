@@ -8,6 +8,7 @@ pub fn defaults(provider: &str, zh: bool) -> (&'static str, &'static str) {
         "openai" => ("gpt-realtime-2.1-mini", "marin"),
         "elevenlabs" => ("eleven_flash_v2_5", "JBFqnCBsd6RMkjVDRZzb"),
         "azure" => ("", if zh { "zh-CN-XiaoxiaoNeural" } else { "en-US-JennyNeural" }),
+        "custom" => ("qwen-audio-3.1-tts-flash", "longanhuan_v3.1"),
         _ => ("", ""),
     }
 }
@@ -54,8 +55,66 @@ pub(super) fn request(cfg: &Config, text: &str) -> anyhow::Result<reqwest::Reque
                 .header("Ocp-Apim-Subscription-Key",key).header("Content-Type","application/ssml+xml")
                 .header("X-Microsoft-OutputFormat","raw-24khz-16bit-mono-pcm").header("User-Agent","Aeri").body(ssml)
         }
+        "custom" => {
+            let base = cfg.tts_url.trim().trim_end_matches('/');
+            ensure!(base.starts_with("http"), "Enter an http(s) address for the speech service");
+            let mut r = client.post(format!("{base}/audio/speech"))
+                .json(&json!({"model":model,"voice":voice,"input":text,"response_format":"pcm","speed":speed}));
+            if !key.is_empty() { r = r.bearer_auth(key); }
+            r
+        }
         _ => bail!("Unsupported speech provider"),
     })
+}
+
+/// Custom speech output at an Alibaba address (wss://…/api-ws/…): CosyVoice / Qwen TTS over WebSocket
+pub(super) fn is_alibaba(cfg: &Config) -> bool {
+    cfg.tts_provider == "custom" && cfg.tts_url.trim().starts_with("ws") && cfg.tts_url.contains("/api-ws/")
+}
+
+/// Streams 24 kHz PCM16 from Alibaba's speech synthesis (run-task / continue-task / finish-task)
+pub(super) async fn alibaba_stream(cfg: &Config, text: &str, mut on_pcm: impl FnMut(&[u8])) -> anyhow::Result<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let key = config::tts_key(cfg).unwrap_or_default();
+    ensure!(!key.is_empty(), "No key saved for this speech provider");
+    let (default_model, default_voice) = defaults("custom", crate::locale::is_zh());
+    let model = if cfg.tts_model.is_empty() { default_model } else { &cfg.tts_model };
+    let voice = if cfg.tts_voice.is_empty() { default_voice } else { &cfg.tts_voice };
+    let mut request = cfg.tts_url.trim().into_client_request()?;
+    request.headers_mut().insert("Authorization", format!("Bearer {key}").parse()?);
+    let (mut ws, _) = tokio::time::timeout(std::time::Duration::from_secs(8), tokio_tungstenite::connect_async(request))
+        .await.context("Speech service timed out")??;
+    let task = uuid::Uuid::new_v4().simple().to_string();
+    let header = |action: &str| json!({"action": action, "task_id": task, "streaming": "duplex"});
+    let rate = (1.0 + cfg.tts_rate as f32 * 0.1).clamp(0.5, 2.0);
+    ws.send(Message::text(json!({"header": header("run-task"), "payload": {
+        "task_group": "audio", "task": "tts", "function": "SpeechSynthesizer", "model": model,
+        "parameters": {"text_type": "PlainText", "voice": voice, "format": "pcm", "sample_rate": 24000, "rate": rate},
+        "input": {}}}).to_string())).await?;
+    let mut sent = false;
+    while let Some(msg) = tokio::time::timeout(std::time::Duration::from_secs(20), ws.next()).await.context("Speech service stopped responding")? {
+        match msg? {
+            Message::Binary(b) => on_pcm(&b),
+            Message::Text(t) => {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                match v["header"]["event"].as_str() {
+                    Some("task-started") if !sent => {
+                        sent = true;
+                        ws.send(Message::text(json!({"header": header("continue-task"), "payload": {"input": {"text": text}}}).to_string())).await?;
+                        ws.send(Message::text(json!({"header": header("finish-task"), "payload": {"input": {}}}).to_string())).await?;
+                    }
+                    Some("task-finished") => break,
+                    Some("task-failed") => bail!("{}", v["header"]["error_message"].as_str().unwrap_or("Speech synthesis failed")),
+                    _ => {}
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    let _ = ws.close(None).await;
+    Ok(())
 }
 
 // HTTP chunks may split a PCM16 sample at any byte; retain the final byte.
@@ -106,5 +165,23 @@ mod tests {
         assert!(!pcm.complete());
         assert_eq!(pcm.push(&[6]),vec![5,6]);
         assert!(pcm.complete());
+    }
+}
+
+#[cfg(test)]
+mod alibaba_live {
+    /// Runs only when QWEN_TTS_KEY is set: synthesizes a sentence with Qwen TTS
+    #[tokio::test]
+    async fn qwen_tts_returns_audio() {
+        let Ok(key) = std::env::var("QWEN_TTS_KEY") else { return };
+        let mut cfg = crate::config::Config::default();
+        cfg.tts_provider = "custom".into();
+        cfg.tts_url = "wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference".into();
+        cfg.stt_api_keys_protected.insert(crate::config::TTS_CUSTOM_SLOT.into(), crate::config::protect_key(&key).unwrap());
+        assert!(super::is_alibaba(&cfg));
+        let mut bytes = 0;
+        super::alibaba_stream(&cfg, "今天天气不错。", |b| bytes += b.len()).await.unwrap();
+        println!("qwen tts bytes: {bytes}");
+        assert!(bytes > 24000, "{bytes}");
     }
 }

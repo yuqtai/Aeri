@@ -92,6 +92,8 @@ pub struct Config {
     pub tts_provider: String,
     pub tts_voice: String,
     pub tts_model: String,
+    /// Address for the Custom speech output provider
+    pub tts_url: String,
     pub azure_speech_region: String,
     /// auto（跟随系统）/ light / dark
     pub theme: String,
@@ -177,6 +179,7 @@ impl Config {
             tts_provider: "windows".into(),
             tts_voice: String::new(),
             tts_model: String::new(),
+            tts_url: String::new(),
             azure_speech_region: String::new(),
             theme: "auto".into(),
             language: "system".into(),
@@ -486,7 +489,20 @@ pub fn shared_provider_key(cfg: &Config, provider: &str) -> Option<String> {
 }
 
 pub fn tts_key(cfg: &Config) -> Option<String> {
-    if cfg.tts_provider == "windows" { Some(String::new()) } else { shared_provider_key(cfg, &cfg.tts_provider) }
+    match cfg.tts_provider.as_str() {
+        "windows" => Some(String::new()),
+        // A local server may not need a key
+        "custom" => cfg.stt_api_keys_protected.get(TTS_CUSTOM_SLOT).and_then(|v| unprotect_key(v)).or_else(|| Some(String::new())),
+        p => shared_provider_key(cfg, p),
+    }
+}
+
+/// The Custom speech output key is kept apart from the Custom recognition key
+pub const TTS_CUSTOM_SLOT: &str = "tts-custom";
+
+/// Where the key for the selected speech output provider is stored
+pub fn tts_slot(cfg: &Config) -> String {
+    if cfg.tts_provider == "custom" { TTS_CUSTOM_SLOT.into() } else { cfg.tts_provider.clone() }
 }
 
 pub fn azure_region(cfg: &Config) -> String {

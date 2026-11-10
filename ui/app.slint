@@ -1124,6 +1124,7 @@ export component AppWindow inherits Window {
     in-out property <int> realtime-provider-index;
     in-out property <int> asr-provider-index;
     in-out property <int> tts-provider-index;
+    in-out property <string> tts-url;
     in-out property <string> tts-voice;
     in-out property <string> tts-model;
     in-out property <string> azure-region;
@@ -1803,10 +1804,16 @@ export component AppWindow inherits Window {
                             title: @tr("Speech output provider");
                             hint: @tr("Cloud voices use AI-generated speech. If a cloud call fails, Aeri uses Windows speech and shows a note.");
                             Select {
-                                options: [@tr("Windows (offline)"), @tr("OpenAI"), @tr("ElevenLabs"), @tr("Azure AI Speech")];
+                                options: [@tr("Windows (offline)"), @tr("OpenAI"), @tr("ElevenLabs"), @tr("Azure AI Speech"), @tr("Custom")];
                                 current <=> root.tts-provider-index;
                                 selected(index) => { root.tts-provider-changed(index); }
                             }
+                        }
+                        if root.tts-provider-index == 4: Divider { }
+                        if root.tts-provider-index == 4: FieldBlock {
+                            title: @tr("Service URL");
+                            hint: @tr("https:// = OpenAI speech API; wss://…/api-ws/… = Alibaba / Qwen (CosyVoice).");
+                            TextField { text <=> root.tts-url; }
                         }
                         if root.tts-provider-index != 0: Divider { }
                         if root.tts-provider-index != 0: FieldBlock {
@@ -1814,7 +1821,7 @@ export component AppWindow inherits Window {
                             hint: root.tts-provider-index == 2 ? @tr("Enter a voice ID from your ElevenLabs voice library; the default George voice supports multiple languages.") : @tr("Use a voice supported by the selected provider. The preset follows your language.");
                             TextField { text <=> root.tts-voice; }
                         }
-                        if root.tts-provider-index == 1 || root.tts-provider-index == 2: FieldBlock {
+                        if root.tts-provider-index == 1 || root.tts-provider-index == 2 || root.tts-provider-index == 4: FieldBlock {
                             title: @tr("Speech model");
                             TextField { text <=> root.tts-model; }
                         }

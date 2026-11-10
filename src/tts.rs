@@ -122,7 +122,15 @@ impl Tts {
             let realtime_openai = cfg.tts_provider == "openai" && (cfg.tts_model.is_empty() || cfg.tts_model.starts_with("gpt-realtime"));
             let mut received = false;
             let mut player;
-            if realtime_openai {
+            if cloud::is_alibaba(cfg) {
+                player = tokio::task::spawn_blocking(crate::player::Player::open).await??;
+                let mut pcm = cloud::PcmChunks::default();
+                cloud::alibaba_stream(cfg, text, |bytes| {
+                    let bytes = pcm.push(bytes);
+                    received |= !bytes.is_empty();
+                    player.push_pcm16(&bytes);
+                }).await?;
+            } else if realtime_openai {
                 let mut session = crate::realtime::Session::connect(&cloud::openai_settings(cfg)?).await?;
                 player = tokio::task::spawn_blocking(crate::player::Player::open).await??;
                 session.read_aloud(text).await?;

@@ -78,7 +78,7 @@ fn rt_id(index: i32, url: &str) -> &'static str {
     let id = RT_PROVIDERS[index.clamp(0, RT_PROVIDERS.len() as i32 - 1) as usize];
     if id == "custom" && is_alibaba_realtime(url) { "dashscope" } else { id }
 }
-const TTS_PROVIDERS: [&str; 4] = ["windows", "openai", "elevenlabs", "azure"];
+const TTS_PROVIDERS: [&str; 5] = ["windows", "openai", "elevenlabs", "azure", "custom"];
 const FRONTENDS: [&str; 2] = ["realtime", "classic"];
 
 // Keep format literals checked by Rust while selecting UI copy centrally.
@@ -432,12 +432,12 @@ fn refresh_key_status(w: &AppWindow, c: &Config) {
     w.set_asr_key_state(if voice_ready { KEY_READY } else { KEY_MISSING });
     w.set_llm_key_saved(config::has_saved_key(config::llm_protected(c)));
     w.set_asr_key_saved(config::has_saved_key(config::voice_protected(c)));
-    w.set_tts_key_saved(c.stt_api_keys_protected.get(&c.tts_provider).is_some_and(|v| config::has_saved_key(v)));
+    w.set_tts_key_saved(c.stt_api_keys_protected.get(&config::tts_slot(c)).is_some_and(|v| config::has_saved_key(v)));
     // Saved keys are shown (hidden behind the eye button) so you can always check what is stored
     let shown = |p: &str| slint::SharedString::from(config::unprotect_key(p).unwrap_or_default());
     w.set_llm_key_input(shown(config::llm_protected(c)));
     w.set_asr_key_input(shown(config::voice_protected(c)));
-    w.set_tts_key_input(shown(c.stt_api_keys_protected.get(&c.tts_provider).map(String::as_str).unwrap_or("")));
+    w.set_tts_key_input(shown(c.stt_api_keys_protected.get(&config::tts_slot(c)).map(String::as_str).unwrap_or("")));
 }
 
 fn ui_key_status(protected: &str, env_name: &str) -> String {
@@ -492,6 +492,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     let (model, voice) = tts::defaults(&c.tts_provider,locale::is_zh());
     w.set_tts_model(if c.tts_model.is_empty() { model } else { &c.tts_model }.into());
     w.set_tts_voice(if c.tts_voice.is_empty() { voice } else { &c.tts_voice }.into());
+    w.set_tts_url(c.tts_url.as_str().into());
     w.set_azure_region(c.azure_speech_region.as_str().into());
     w.set_tts_key_input("".into());
     w.set_tts_test_status("".into());
@@ -565,7 +566,8 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.browser_idle_minutes = w.get_browser_idle_minutes().clamp(1, 120) as u64;
     c.playwright_mcp = text(w.get_playwright_package());
     c.tts_rate = w.get_tts_rate().round() as i32;
-    c.tts_provider = TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,3) as usize].into();
+    c.tts_provider = TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,4) as usize].into();
+    c.tts_url = text(w.get_tts_url());
     c.tts_model = text(w.get_tts_model());
     c.tts_voice = text(w.get_tts_voice());
     c.azure_speech_region = text(w.get_azure_region());
@@ -1041,7 +1043,10 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let weak = window.as_weak();
     window.on_tts_provider_changed(move |index| {
         let Some(w) = weak.upgrade() else { return };
-        let (model, voice) = tts::defaults(TTS_PROVIDERS[index.clamp(0,3) as usize],locale::is_zh());
+        let (model, voice) = tts::defaults(TTS_PROVIDERS[index.clamp(0,4) as usize],locale::is_zh());
+        if index == 4 && w.get_tts_url().trim().is_empty() {
+            w.set_tts_url("wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference".into());
+        }
         w.set_tts_model(model.into());
         w.set_tts_voice(voice.into());
         w.set_tts_key_input("".into());
@@ -1056,7 +1061,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let mut c = read_settings(&w,&[]);
         let input = w.get_tts_key_input();
         if !input.trim().is_empty() {
-            c.stt_api_keys_protected.insert(c.tts_provider.clone(), config::protect_key(input.as_str()).unwrap_or_default());
+            c.stt_api_keys_protected.insert(config::tts_slot(&c), config::protect_key(input.as_str()).unwrap_or_default());
         } else if c.llm_provider == c.tts_provider && !w.get_llm_key_input().trim().is_empty() {
             *config::llm_key_slot(&mut c) = config::protect_key(w.get_llm_key_input().as_str()).unwrap_or_default();
         } else {
@@ -1083,7 +1088,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     window.on_clear_tts_key(move || {
         let Some(w) = weak.upgrade() else { return };
         let mut c = config::load();
-        c.stt_api_keys_protected.remove(TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,3) as usize]);
+        let slot = if w.get_tts_provider_index() == 4 { config::TTS_CUSTOM_SLOT } else { TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,4) as usize] };
+        c.stt_api_keys_protected.remove(slot);
         if config::save(&c).is_ok() { refresh_key_status(&w,&c); let _ = tx.send(Command::Reload(c)); }
     });
     // 保存并应用
@@ -1109,7 +1115,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             let Some(protected) = config::protect_key(w.get_tts_key_input().as_str()) else {
                 set_note(&w,NOTE_ERROR,locale::pick("Could not save the key", "key 保存失败")); return;
             };
-            c.stt_api_keys_protected.insert(c.tts_provider.clone(),protected);
+            c.stt_api_keys_protected.insert(config::tts_slot(&c),protected);
         }
         match config::save(&c) {
             Ok(()) => {
