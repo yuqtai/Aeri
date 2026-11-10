@@ -594,7 +594,9 @@ fn invalidate_voice_test(w: &AppWindow) {
 
 /// 设置页上所有可编辑内容的快照（不含悬浮球位置等界面外的项）
 fn settings_snapshot(w: &AppWindow) -> serde_json::Value {
-    let mut c = Config::default();
+    // Start from fixed (legacy) defaults, not Config::default(): new-install defaults depend on the
+    // interface language, and switching language must not look like an unsaved change.
+    let mut c: Config = serde_json::from_str("{}").unwrap_or_default();
     fill_settings(w, &[], &mut c);
     serde_json::json!({
         "config": serde_json::to_value(&c).unwrap_or_default(),
