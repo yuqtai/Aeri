@@ -44,7 +44,9 @@ pub fn serve(tx: UnboundedSender<TaskDone>) {
                 if v["token"].as_str() != Some(token.as_str()) {
                     continue;
                 }
-                if let Some(text) = v["text"].as_str().filter(|t| !t.is_empty()) {
+                let text = v["text"].as_str().unwrap_or_default();
+                let finished = v["event"].as_str() == Some("Stop");
+                if !text.is_empty() && take_watch(v["agent"].as_str().unwrap_or_default(), v["project"].as_str().unwrap_or_default(), finished) {
                     let _ = tx.send(TaskDone { id: 0, ok: true, text: text.to_string(), reminder: false, notice: true });
                 }
             }
@@ -65,25 +67,111 @@ pub fn run_hook(agent: &str) {
     let debug = std::env::var_os("AERI_NOTIFY_DEBUG").is_some();
     if debug { eprintln!("input={input:?}"); }
     let Some(text) = alert_text(agent, &v) else { return };
+    let project = project_of(&v);
+    let event = v["hook_event_name"].as_str().unwrap_or_default().to_string();
     if debug { eprintln!("text={text} file={}", port_file().display()); }
     let Ok(info) = std::fs::read_to_string(port_file()) else { return };
     let Ok(info) = serde_json::from_str::<Value>(&info) else { return };
     let Some(port) = info["port"].as_u64() else { return };
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port as u16));
     if let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
-        let msg = json!({"token": info["token"], "text": text}).to_string() + "\n";
+        let msg = json!({"token": info["token"], "text": text, "agent": agent, "project": project, "event": event}).to_string() + "\n";
         let _ = s.write_all(msg.as_bytes());
+    }
+}
+
+fn project_of(v: &Value) -> String {
+    v["cwd"]
+        .as_str()
+        .and_then(|c| std::path::Path::new(c.trim_end_matches(['/', '\\'])).file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+// ---------- watches: only speak up when the user asked ----------
+
+struct Watch {
+    /// "claude", "codex", or "" for either
+    agent: String,
+    /// Part of the project folder name (lowercase), or "" for any session
+    project: String,
+    since: std::time::Instant,
+}
+
+static WATCHES: std::sync::Mutex<Vec<Watch>> = std::sync::Mutex::new(Vec::new());
+const WATCH_HOURS: u64 = 12;
+
+/// Is someone waiting for this event? A finished session ends the watch that matched it.
+fn take_watch(agent: &str, project: &str, finished: bool) -> bool {
+    let mut ws = WATCHES.lock().unwrap();
+    ws.retain(|w| w.since.elapsed() < Duration::from_secs(WATCH_HOURS * 3600));
+    let project = project.to_lowercase();
+    let Some(i) = ws
+        .iter()
+        .position(|w| (w.agent.is_empty() || w.agent == agent) && (w.project.is_empty() || project.contains(&w.project)))
+    else {
+        return false;
+    };
+    if finished {
+        ws.remove(i);
+    }
+    true
+}
+
+pub fn definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "agent_watch",
+            "description": "Keep an eye on a Claude Code or Codex session the user runs themselves, e.g. \"watch Claude and tell me when it's done\". Aeri then says when that session finishes (the watch ends) or waits for approval. Only use when the user asks.",
+            "input_schema": {"type": "object", "properties": {
+                "agent": {"type": "string", "enum": ["claude", "codex", "any"]},
+                "project": {"type": "string", "description": "Project folder name if the user named one; omit for any session"}
+            }, "required": ["agent"]}
+        }),
+        json!({
+            "name": "agent_watch_cancel",
+            "description": "Stop watching Claude Code / Codex sessions.",
+            "input_schema": {"type": "object", "properties": {}}
+        }),
+    ]
+}
+
+pub fn call(name: &str, input: &Value) -> Option<(String, bool)> {
+    match name {
+        "agent_watch" => {
+            let agent = match input["agent"].as_str().unwrap_or("any") {
+                "claude" => "claude",
+                "codex" => "codex",
+                _ => "",
+            };
+            let project = input["project"].as_str().unwrap_or_default().trim().to_lowercase();
+            let note = match install(true) {
+                Ok(n) => n,
+                Err(e) => return Some((e, true)),
+            };
+            let mut ws = WATCHES.lock().unwrap();
+            ws.retain(|w| !(w.agent == agent && w.project == project));
+            ws.push(Watch { agent: agent.into(), project: project.clone(), since: std::time::Instant::now() });
+            let who = match agent {
+                "claude" => "Claude",
+                "codex" => "Codex",
+                _ => "Claude / Codex",
+            };
+            let wher = if project.is_empty() { String::new() } else { format!(" ({project})") };
+            Some((format!("Watching {who}{wher}; Aeri will speak up when it finishes or needs approval ({note})."), false))
+        }
+        "agent_watch_cancel" => {
+            WATCHES.lock().unwrap().clear();
+            Some(("Stopped watching.".into(), false))
+        }
+        _ => None,
     }
 }
 
 /// What to say for a hook event, or None for events we stay quiet about.
 fn alert_text(agent: &str, v: &Value) -> Option<String> {
     let name = if agent == "codex" { "Codex" } else { "Claude" };
-    let project = v["cwd"]
-        .as_str()
-        .and_then(|c| std::path::Path::new(c).file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let project = project_of(v);
     let tool = v["tool_name"].as_str().unwrap_or_default();
     match v["hook_event_name"].as_str()? {
         "Stop" if v["stop_hook_active"].as_bool() != Some(true) => Some(if project.is_empty() {
@@ -150,7 +238,8 @@ fn update_hooks(root: &mut Value, entry: Option<Value>) {
     }
 }
 
-fn edit_json(path: &PathBuf, entry: Option<Value>) -> Result<(), String> {
+/// Returns whether the file changed.
+fn edit_json(path: &PathBuf, entry: Option<Value>) -> Result<bool, String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut root: Value = if text.trim().is_empty() {
         json!({})
@@ -160,7 +249,7 @@ fn edit_json(path: &PathBuf, entry: Option<Value>) -> Result<(), String> {
     let before = root.clone();
     update_hooks(&mut root, entry);
     if root == before {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -169,43 +258,42 @@ fn edit_json(path: &PathBuf, entry: Option<Value>) -> Result<(), String> {
         let _ = std::fs::write(path.with_extension("json.aeri-bak"), &text);
     }
     let out = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())? + "\n";
-    std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
 }
 
-/// Turn the alerts on or off for both agents. Returns a short status line for Settings.
-pub fn install(on: bool) -> String {
-    let Some(home) = home() else { return String::new() };
+/// Make sure both agents call us on Stop / PermissionRequest. The hook stays quiet unless a watch is active.
+/// Ok carries a note saying whether the hook was just added (then only newly started sessions report).
+pub fn install(on: bool) -> Result<String, String> {
+    let Some(home) = home() else { return Err("no home folder".into()) };
     let exe = exe();
-    let mut done = Vec::new();
-    let mut errors = Vec::new();
+    let mut added = Vec::new();
+    let mut found = false;
     let claude_dir = home.join(".claude");
     if claude_dir.exists() {
+        found = true;
         let entry = on.then(|| json!({"hooks": [{"type": "command", "command": exe, "args": [MARK, "claude"], "timeout": 5}]}));
-        match edit_json(&claude_dir.join("settings.json"), entry) {
-            Ok(()) => done.push("Claude Code"),
-            Err(e) => errors.push(e),
+        if edit_json(&claude_dir.join("settings.json"), entry)? {
+            added.push("Claude Code");
         }
     }
     let codex_dir = home.join(".codex");
     if codex_dir.exists() {
+        found = true;
         let cmd = format!("& '{exe}' {MARK} codex");
         let entry = on.then(|| json!({"hooks": [{"type": "command", "command": cmd, "commandWindows": cmd, "timeout": 5}]}));
-        match edit_json(&codex_dir.join("hooks.json"), entry) {
-            Ok(()) => done.push("Codex"),
-            Err(e) => errors.push(e),
+        if edit_json(&codex_dir.join("hooks.json"), entry)? {
+            added.push("Codex");
         }
     }
-    if let Some(e) = errors.first() {
-        return pick(&format!("Could not update agent settings: {e}"), &format!("没能修改编程助手的设置：{e}")).to_string();
+    if !found {
+        return Err("Neither Claude Code nor Codex is installed on this PC.".into());
     }
-    match (on, done.is_empty()) {
-        (_, true) => pick("Claude Code and Codex were not found on this computer", "这台电脑上没有找到 Claude Code 或 Codex").into(),
-        (true, false) => {
-            let names = done.join(pick(" and ", " 和 "));
-            pick(&format!("On for {names}. Applies to sessions started from now on"), &format!("已为 {names} 开启，对之后新开的会话生效")).to_string()
-        }
-        (false, false) => pick("Off", "已关闭").into(),
-    }
+    Ok(if added.is_empty() {
+        "hooks already in place".into()
+    } else {
+        format!("hook just added for {}; sessions that were already open must be restarted before they report", added.join(" and "))
+    })
 }
 
 #[cfg(test)]
@@ -222,6 +310,17 @@ mod tests {
         assert!(t.contains("Codex") && t.contains("api") && t.contains("Bash"), "{t}");
         assert!(alert_text("claude", &json!({"hook_event_name": "PreToolUse"})).is_none());
         assert!(alert_text("claude", &json!({"hook_event_name": "Stop", "stop_hook_active": true})).is_none());
+    }
+
+    #[test]
+    fn speaks_only_while_watched() {
+        assert!(!take_watch("claude", "shop", true));
+        WATCHES.lock().unwrap().push(Watch { agent: "claude".into(), project: "shop".into(), since: std::time::Instant::now() });
+        assert!(!take_watch("codex", "shop", true));
+        assert!(!take_watch("claude", "blog", true));
+        assert!(take_watch("claude", "Shop-API", false)); // approval: still watching
+        assert!(take_watch("claude", "shop", true)); // finished: the watch ends
+        assert!(!take_watch("claude", "shop", true));
     }
 
     #[test]

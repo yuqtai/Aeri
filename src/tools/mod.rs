@@ -76,6 +76,7 @@ impl Tools {
         }
         if self.reminders.is_some() {
             defs.extend(reminders::definitions());
+            defs.extend(crate::notify::definitions());
             defs.extend(crate::history::definitions());
             defs.extend(crate::plugins::market_definitions());
             defs.push(crate::update::definition());
@@ -129,6 +130,9 @@ impl Tools {
         }
         if let Some(r) = &self.reminders {
             if let Some(out) = r.call(name, input) {
+                return out;
+            }
+            if let Some(out) = crate::notify::call(name, input) {
                 return out;
             }
             if let Some(out) = crate::history::call(name, input) {

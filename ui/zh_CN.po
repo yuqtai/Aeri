@@ -847,11 +847,3 @@ msgstr "直接说话打断播报"
 msgid "Start talking while Aeri reads a reply and it stops to listen. With speakers, speak a little louder than the reply"
 msgstr "Aeri 读回复时直接开口说话，它会停下来听你说。用外放时说话声音要比播报大一些"
 
-msgid "Your own coding sessions"
-msgstr "你自己开的编程会话"
-
-msgid "Alert me about Claude Code and Codex"
-msgstr "Claude Code 和 Codex 提醒"
-
-msgid "Aeri speaks up when a session you started finishes or needs your approval"
-msgstr "你自己开的会话做完了、或者在等你批准时，Aeri 会说一声"

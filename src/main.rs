@@ -437,7 +437,6 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_duck_others(c.duck_others);
     w.set_auto_update(c.auto_update);
     w.set_save_history(c.save_history);
-    w.set_coding_alerts(c.coding_alerts);
     w.set_listen_on_start(c.listen_on_start);
     set_devices(w, devices, &c.input_device);
     w.set_desktop_control(c.desktop_control);
@@ -513,7 +512,6 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.duck_others = w.get_duck_others();
     c.auto_update = w.get_auto_update();
     c.save_history = w.get_save_history();
-    c.coding_alerts = w.get_coding_alerts();
     c.listen_on_start = w.get_listen_on_start();
     let idx = w.get_device_index();
     c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
@@ -1049,7 +1047,6 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let (tx, weak, devs) = (cmd_tx.clone(), window.as_weak(), devices.clone());
     window.on_save_settings(move || {
         let Some(w) = weak.upgrade() else { return };
-        let notify_was = config::load().coding_alerts;
         let mut c = read_settings(&w, &devs.borrow());
         if let Some(problem) = validate(&c) {
             set_note(&w, NOTE_ERROR, problem);
@@ -1088,9 +1085,6 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 set_note(&w, kind, note);
                 remote::apply(c.remote_enabled, c.remote_port);
                 history::set_enabled(c.save_history);
-                if c.coding_alerts != notify_was {
-                    w.set_coding_alerts_status(notify::install(c.coding_alerts).into());
-                }
                 let _ = tx.send(Command::Reload(c));
             }
             Err(e) => set_note(&w, NOTE_ERROR, ui_format!("Could not save: {e}", "保存失败：{e}")),

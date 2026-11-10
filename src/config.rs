@@ -28,8 +28,6 @@ pub struct Config {
     pub auto_update: bool,
     /// 对话和任务记录存到硬盘（保留 30 天）
     pub save_history: bool,
-    /// Speak up when Claude Code or Codex sessions finish or wait for approval
-    pub coding_alerts: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_provider: String,
@@ -139,7 +137,6 @@ impl Config {
             duck_others: true,
             auto_update: true,
             save_history: true,
-            coding_alerts: false,
             asr_provider: "dashscope".into(),
             local_asr_model: "zipformer".into(),
             stt_api_keys_protected: Default::default(),

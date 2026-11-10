@@ -1041,8 +1041,6 @@ export component AppWindow inherits Window {
     // 软件更新：update-action 0 检查、1 有新版本可安装、2 正在进行
     in-out property <bool> auto-update;
     in-out property <bool> save-history: true;
-    in-out property <bool> coding-alerts;
-    in-out property <string> coding-alerts-status;
     in property <string> history-status;
     callback history-open();
     callback history-clear();
@@ -2150,17 +2148,6 @@ export component AppWindow inherits Window {
                                     options: [@tr("Full access"), @tr("Working directory"), @tr("Read only")];
                                     current <=> root.access-index;
                                 }
-                            }
-                        }
-                    }
-                    SectionLabel { text: @tr("Your own coding sessions"); }
-                    Card {
-                        SettingRow {
-                            title: @tr("Alert me about Claude Code and Codex");
-                            description: root.coding-alerts-status != "" ? root.coding-alerts-status : @tr("Aeri speaks up when a session you started finishes or needs your approval");
-                            VerticalLayout {
-                                alignment: center;
-                                Toggle { checked <=> root.coding-alerts; }
                             }
                         }
                     }
