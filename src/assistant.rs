@@ -209,6 +209,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
     audio::set_phone_output(audio_tx.clone());
     let (done_tx, done_rx) = unbounded_channel();
     let reminders = Reminders::new(done_tx.clone());
+    crate::notify::serve(done_tx.clone());
     let tasks = TaskManager::new(done_tx, ui.clone());
     let mut a = Assistant {
         front_tools: Arc::new(Tools::local_only(apps.clone())), // 马上由 apply_config 换成正式的
@@ -579,7 +580,8 @@ impl Assistant {
     /// 系统播报。开启打断时播报期间仍听唤醒词，听到就停下并返回 true（这时已经在录音）
     async fn speak(&mut self, text: &str) -> bool {
         self.emit(UiEvent::Status(Status::Speaking));
-        let barge = self.cfg.barge_in && self.ear.is_some() && self.listening;
+        let barge = (self.cfg.barge_in || self.cfg.talk_barge) && self.ear.is_some() && self.listening;
+        crate::audio::set_talk_barge(self.cfg.talk_barge);
         self.set_mode(if barge { Mode::Barge } else { Mode::Muted });
         let ui = self.ui.clone();
         let speaking = self.tts.speak_configured(&self.cfg, text, |note| ui(UiEvent::Chat(Role::System, note.into())));

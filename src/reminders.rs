@@ -113,7 +113,7 @@ impl Reminders {
                 crate::sys::beep(988, 180);
                 let late = now_secs().saturating_sub(r.due);
                 let text = if late > 120 { crate::locale::pick(&format!("{} (originally due at {}; Aeri was not running then)", r.text, local_text(r.due)), &format!("{}（本来是 {} 提醒，当时 Aeri 没在运行）", r.text, local_text(r.due))).to_string() } else { r.text };
-                let _ = me.tx.send(TaskDone { id: r.id, ok: true, text, reminder: true });
+                let _ = me.tx.send(TaskDone { id: r.id, ok: true, text, reminder: true, notice: false });
             }
         });
     }

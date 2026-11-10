@@ -1036,10 +1036,13 @@ export component AppWindow inherits Window {
     in-out property <float> sensitivity: 0.6;
     in-out property <float> kws-score: 1.5;
     in-out property <bool> follow-up;
+    in-out property <bool> talk-barge: true;
     in-out property <bool> duck-others;
     // 软件更新：update-action 0 检查、1 有新版本可安装、2 正在进行
     in-out property <bool> auto-update;
     in-out property <bool> save-history: true;
+    in-out property <bool> coding-alerts;
+    in-out property <string> coding-alerts-status;
     in property <string> history-status;
     callback history-open();
     callback history-clear();
@@ -1813,6 +1816,15 @@ export component AppWindow inherits Window {
                         }
                         Divider { }
                         SettingRow {
+                            title: @tr("Interrupt by talking");
+                            description: @tr("Start talking while Aeri reads a reply and it stops to listen. With speakers, speak a little louder than the reply");
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.talk-barge; }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
                             title: @tr("Interrupt with wake word");
                             description: @tr("Say the wake word while Aeri speaks to make it stop and listen");
                             VerticalLayout {
@@ -2138,6 +2150,17 @@ export component AppWindow inherits Window {
                                     options: [@tr("Full access"), @tr("Working directory"), @tr("Read only")];
                                     current <=> root.access-index;
                                 }
+                            }
+                        }
+                    }
+                    SectionLabel { text: @tr("Your own coding sessions"); }
+                    Card {
+                        SettingRow {
+                            title: @tr("Alert me about Claude Code and Codex");
+                            description: root.coding-alerts-status != "" ? root.coding-alerts-status : @tr("Aeri speaks up when a session you started finishes or needs your approval");
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle { checked <=> root.coding-alerts; }
                             }
                         }
                     }

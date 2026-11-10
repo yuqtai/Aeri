@@ -28,6 +28,8 @@ pub struct Config {
     pub auto_update: bool,
     /// 对话和任务记录存到硬盘（保留 30 天）
     pub save_history: bool,
+    /// Speak up when Claude Code or Codex sessions finish or wait for approval
+    pub coding_alerts: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_provider: String,
@@ -78,6 +80,8 @@ pub struct Config {
     pub barge_in: bool,
     /// 戴耳机时可以开：播报时麦克风也一直开着，直接说话就能打断（外放会把自己的声音当成用户在说话）
     pub full_duplex: bool,
+    /// Just start talking to interrupt a spoken reply (no wake word)
+    pub talk_barge: bool,
 
     // 工具
     pub desktop_control: bool,
@@ -135,6 +139,7 @@ impl Config {
             duck_others: true,
             auto_update: true,
             save_history: true,
+            coding_alerts: false,
             asr_provider: "dashscope".into(),
             local_asr_model: "zipformer".into(),
             stt_api_keys_protected: Default::default(),
@@ -166,6 +171,7 @@ impl Config {
             realtime_voice: "longanqian_v3.1".into(),
             barge_in: true,
             full_duplex: false,
+            talk_barge: true,
             desktop_control: true,
             browser_control: true,
             browser_idle_minutes: 5,

@@ -20,6 +20,7 @@ mod history;
 mod plugins;
 mod locale;
 mod ocr;
+mod notify;
 mod resample;
 mod screen;
 mod sys;
@@ -63,6 +64,10 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--kws-test") {
         return kws_test(&args[2..]);
+    }
+    if args.get(1).map(String::as_str) == Some("--notify") {
+        notify::run_hook(args.get(2).map(String::as_str).unwrap_or("claude"));
+        return Ok(());
     }
     if args.get(1).map(String::as_str) == Some("--ocr-test") {
         let mut pt = windows::Win32::Foundation::POINT::default();
@@ -432,6 +437,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_duck_others(c.duck_others);
     w.set_auto_update(c.auto_update);
     w.set_save_history(c.save_history);
+    w.set_coding_alerts(c.coding_alerts);
     w.set_listen_on_start(c.listen_on_start);
     set_devices(w, devices, &c.input_device);
     w.set_desktop_control(c.desktop_control);
@@ -462,6 +468,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_realtime_voice(c.realtime_voice.as_str().into());
     w.set_barge_in(c.barge_in);
     w.set_full_duplex(c.full_duplex);
+    w.set_talk_barge(c.talk_barge);
     w.set_remote_enabled(c.remote_enabled);
     w.set_language_index(locale::PREFERENCES.iter().position(|l| *l == c.language).unwrap_or(0) as i32);
     w.global::<Theme>().set_scheme(THEMES.iter().position(|t| *t == c.theme).unwrap_or(0) as i32);
@@ -506,6 +513,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.duck_others = w.get_duck_others();
     c.auto_update = w.get_auto_update();
     c.save_history = w.get_save_history();
+    c.coding_alerts = w.get_coding_alerts();
     c.listen_on_start = w.get_listen_on_start();
     let idx = w.get_device_index();
     c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
@@ -531,6 +539,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.realtime_voice = text(w.get_realtime_voice());
     c.barge_in = w.get_barge_in();
     c.full_duplex = w.get_full_duplex();
+    c.talk_barge = w.get_talk_barge();
     c.remote_enabled = w.get_remote_enabled();
     c.theme = THEMES[w.global::<Theme>().get_scheme().clamp(0, 2) as usize].into();
 }
@@ -1040,6 +1049,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let (tx, weak, devs) = (cmd_tx.clone(), window.as_weak(), devices.clone());
     window.on_save_settings(move || {
         let Some(w) = weak.upgrade() else { return };
+        let notify_was = config::load().coding_alerts;
         let mut c = read_settings(&w, &devs.borrow());
         if let Some(problem) = validate(&c) {
             set_note(&w, NOTE_ERROR, problem);
@@ -1078,6 +1088,9 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 set_note(&w, kind, note);
                 remote::apply(c.remote_enabled, c.remote_port);
                 history::set_enabled(c.save_history);
+                if c.coding_alerts != notify_was {
+                    w.set_coding_alerts_status(notify::install(c.coding_alerts).into());
+                }
                 let _ = tx.send(Command::Reload(c));
             }
             Err(e) => set_note(&w, NOTE_ERROR, ui_format!("Could not save: {e}", "保存失败：{e}")),

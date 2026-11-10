@@ -51,6 +51,58 @@ impl Mode {
 
 static MODE: AtomicU8 = AtomicU8::new(Mode::Paused as u8);
 
+/// While Aeri speaks, talking (not only the wake word) interrupts it
+static TALK_BARGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_talk_barge(on: bool) {
+    TALK_BARGE.store(on, Ordering::SeqCst);
+}
+
+/// Notices the user starting to talk over Aeri's own voice.
+/// The first second of playback teaches it how loud the reply sounds in the microphone
+/// (near silent with headphones, clearly audible with speakers); after that, sustained sound
+/// well above that level counts as the user talking.
+pub(crate) struct TalkDetector {
+    heard: usize,
+    echo_peak: f32,
+    loud_run: usize,
+    recent: std::collections::VecDeque<Vec<f32>>,
+}
+
+impl TalkDetector {
+    const LEARN: usize = 16000; // 1 s at 16 kHz
+    const NEED: usize = 4800; // 0.3 s of continuous talking
+    const MARGIN: f32 = 3.0; // about 10 dB louder than the reply
+    const FLOOR: f32 = 0.012;
+
+    pub(crate) fn new() -> Self {
+        Self { heard: 0, echo_peak: 0.0, loud_run: 0, recent: Default::default() }
+    }
+
+    /// Returns the audio of the talking so far once it is sure, so no words are lost.
+    pub(crate) fn process(&mut self, samples: &[f32]) -> Option<Vec<f32>> {
+        if samples.is_empty() {
+            return None;
+        }
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        self.recent.push_back(samples.to_vec());
+        while self.recent.iter().map(Vec::len).sum::<usize>() > 12000 {
+            self.recent.pop_front();
+        }
+        if self.heard < Self::LEARN {
+            self.heard += samples.len();
+            self.echo_peak = self.echo_peak.max(rms);
+            return None;
+        }
+        if rms > (self.echo_peak * Self::MARGIN).max(Self::FLOOR) {
+            self.loud_run += samples.len();
+        } else {
+            self.loud_run = self.loud_run.saturating_sub(samples.len() / 2);
+        }
+        (self.loud_run >= Self::NEED).then(|| self.recent.drain(..).flatten().collect())
+    }
+}
+
 pub fn mode() -> Mode {
     Mode::from_u8(MODE.load(Ordering::SeqCst))
 }
@@ -463,6 +515,7 @@ pub fn start_ear(
 
             let mut resampler = Resampler::new(rate);
             let mut gate = EnergyGate::new();
+            let mut talk = TalkDetector::new();
             let mut last_mode: Option<Mode> = None;
             // 正常的麦克风即使安静也会持续回调；几秒没有数据说明设备被拔掉或出错了
             let mut last_audio = Instant::now();
@@ -489,6 +542,16 @@ pub fn start_ear(
                     if last_mode != Some(current) {
                         detector.reset();
                         gate = EnergyGate::new();
+                        talk = TalkDetector::new();
+                    }
+                    if current == Mode::Barge && TALK_BARGE.load(Ordering::SeqCst) {
+                        if let Some(spoken) = talk.process(&samples) {
+                            set_mode(Mode::Capture);
+                            barge2.notify_one();
+                            let _ = audio_out.send(spoken);
+                            last_mode = Some(Mode::Capture);
+                            continue;
+                        }
                     }
                     // 安静时不跑唤醒词模型；有声音时连同之前 0.5 秒一起送进去
                     for piece in gate.process(&samples, &mut detector) {

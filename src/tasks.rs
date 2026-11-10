@@ -67,12 +67,16 @@ pub struct TaskDone {
     pub text: String,
     /// 到点的提醒（不是后台任务）
     pub reminder: bool,
+    /// A finished sentence from outside (coding agent alerts), spoken as is
+    pub notice: bool,
 }
 
 impl TaskDone {
     /// 交给助手播报的通知文字
     pub fn message(&self) -> String {
-        if self.reminder {
+        if self.notice {
+            self.text.clone()
+        } else if self.reminder {
             crate::locale::pick(&format!("Reminder {} is due: {}", self.id, self.text), &format!("提醒{}到点了：{}", self.id, self.text)).to_string()
         } else if self.ok {
             crate::locale::pick(&format!("Task {} returned: {}", self.id, self.text), &format!("任务{}返回结果：{}", self.id, self.text)).to_string()
@@ -287,7 +291,7 @@ impl TaskManager {
         t.result = text.clone();
         record(t);
         (self.ui)(UiEvent::TaskRunning(false));
-        let _ = self.done_tx.send(TaskDone { id, ok, text, reminder: false });
+        let _ = self.done_tx.send(TaskDone { id, ok, text, reminder: false, notice: false });
     }
 
     async fn run_builtin(&self, id: u32, s: &TaskSettings, prompt: &str) -> anyhow::Result<String> {
@@ -315,6 +319,7 @@ impl TaskManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
+            .env(crate::notify::OWN_TASK_ENV, "1")
             .creation_flags_no_window();
         let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!(crate::locale::pick(
             &format!("Could not start {}: {e}", executor_name(executor)),
