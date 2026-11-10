@@ -95,11 +95,11 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $outDir = Join-Path $env:CARGO_TARGET_DIR ($(if ($Release) { 'release' } else { 'debug' }))
     Copy-Item -LiteralPath $agentDesktop -Destination $outDir -Force
-    # 只复制实际加载的模型文件（int8 编码器/连接器 + 解码器 + tokens），约 5MB
+    # Copy runtime models, tokens and the English wake-word lexicon; omit unused float/chunk-8 models.
     $modelsOut = Join-Path $outDir 'models'
     if (Test-Path $modelsOut) { Remove-Item -Recurse -Force $modelsOut }
     robocopy models $modelsOut /E /NFL /NDL /NJH /NJS /XD test_wavs `
-        /XF *chunk-8* en.phone encoder-epoch-13-avg-2-chunk-16-left-64.onnx joiner-epoch-13-avg-2-chunk-16-left-64.onnx | Out-Null
+        /XF *chunk-8* encoder-epoch-13-avg-2-chunk-16-left-64.onnx joiner-epoch-13-avg-2-chunk-16-left-64.onnx | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "复制模型失败（robocopy $LASTEXITCODE）" }
     $global:LASTEXITCODE = 0  # robocopy 用 1 表示“已复制”，不是错误
     if ($Release -or $Android) { Build-AndroidApp (Join-Path $outDir 'android') }

@@ -118,7 +118,7 @@ pub fn matching(text: &str, exes: &[String]) -> Vec<Plugin> {
 pub fn hint(text: &str, exes: &[String]) -> String {
     matching(text, exes)
         .iter()
-        .map(|p| format!("【插件说明书：{} v{}，系统自动附上，照着做最快】\n{}", p.name, p.version, truncate(&p.body, MAX_BODY)))
+        .map(|p| format!("[Plugin guide: {} v{}, automatically attached; follow it for the fastest approach]\n{}", p.name, p.version, truncate(&p.body, MAX_BODY)))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -134,17 +134,17 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "plugin_guide",
-            "description": format!("读某个软件的插件说明书：怎么用最快的办法操作这个软件。已装的插件：{}。要操作这些软件、但系统没有自动附上说明书时先读它。", if names.is_empty() { "无".into() } else { names.join("、") }),
-            "input_schema": {"type": "object", "properties": {"id": {"type": "string", "description": "插件 id 或名字"}}, "required": ["id"]}
+            "description": format!("Read a software plugin guide for the fastest way to operate it. Installed plugins: {}. Read before operating these apps if the guide was not automatically attached.", if names.is_empty() { "none".into() } else { names.join("、") }),
+            "input_schema": {"type": "object", "properties": {"id": {"type": "string", "description": "Plugin id or name."}}, "required": ["id"]}
         }),
         json!({
             "name": "local_http",
-            "description": "调用这台电脑上软件提供的本机 HTTP 接口（只能访问 127.0.0.1 / localhost），按插件说明书用。说明书里的 {{secret:...}} 原样照抄，Aeri 会在本机读取后填进去。",
+            "description": "Call a local software HTTP API on this computer (127.0.0.1 / localhost only), following its plugin guide. Copy {{secret:...}} placeholders exactly; Aeri resolves them locally.",
             "input_schema": {"type": "object", "properties": {
                 "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"]},
-                "url": {"type": "string", "description": "http://127.0.0.1:端口/路径"},
+                "url": {"type": "string", "description": "http://127.0.0.1:port/path"},
                 "headers": {"type": "object", "additionalProperties": {"type": "string"}},
-                "body": {"description": "JSON 对象，或者字符串"}
+                "body": {"description": "JSON object or string."}
             }, "required": ["url"]}
         }),
     ]
@@ -154,7 +154,7 @@ pub fn definitions() -> Vec<Value> {
 pub fn market_definitions() -> Vec<Value> {
     vec![json!({
         "name": "plugin_market",
-        "description": "插件市场：插件是教 Aeri 用某个软件的说明书。list 看有哪些（含已装的）；install 安装或更新（给 id）；remove 卸载（给 id）。用户问“能不能用某某软件”、要装插件时用。",
+        "description": "Plugin market: plugins teach Aeri how to use software. list shows available and installed plugins; install installs/updates by id; remove uninstalls by id. Use when the user asks whether an app is supported or asks to install a plugin.",
         "input_schema": {"type": "object", "properties": {
             "action": {"type": "string", "enum": ["list", "install", "remove"]},
             "id": {"type": "string"}

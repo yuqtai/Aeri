@@ -60,6 +60,10 @@ fn normalize(text: &str) -> String {
 }
 
 pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
+    if crate::locale::is_zh() { try_handle_zh(text, apps) } else { try_handle_en(text, apps) }
+}
+
+fn try_handle_zh(text: &str, apps: &AppIndex) -> Option<String> {
     let t = normalize(text);
     if t.is_empty() || t.chars().count() > 20 {
         return None;
@@ -148,6 +152,108 @@ pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
     None
 }
 
+#[derive(Debug, PartialEq)]
+enum EnglishCommand {
+    Open(String),
+    Close(String),
+    Search(String, String),
+    Volume(u32),
+    Media(&'static str),
+    Lock,
+    Desktop,
+    Time,
+}
+
+static EN_OPEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:open|launch|start) (.+)$").unwrap());
+static EN_CLOSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:close|quit|exit) (.+)$").unwrap());
+static EN_SEARCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^search (.+?)(?: on (youtube|google|amazon|reddit|x|twitter|wikipedia|spotify|bing|github))?$").unwrap());
+static EN_VOLUME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:set (?:the )?)?volume(?: to)? (\d{1,3})(?:\s*(?:%|percent))?$").unwrap());
+
+/// Parse without side effects so language rules can be tested independently of Windows.
+fn english_command(text: &str) -> Option<EnglishCommand> {
+    let mut t = text.trim().trim_end_matches(['.', '!', '?']).trim();
+    if t.len() > 240 { return None; }
+    if t.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("please ")) { t = t[7..].trim(); }
+    if t.len() >= 7 && t.get(t.len()-7..).is_some_and(|s| s.eq_ignore_ascii_case(" please")) { t = t[..t.len()-7].trim(); }
+    let lower = t.to_ascii_lowercase();
+    match lower.as_str() {
+        "what time is it" | "what's the time" | "what is the time" | "what is today's date" | "what day is it" => return Some(EnglishCommand::Time),
+        "lock the screen" | "lock screen" | "lock the computer" | "lock my computer" => return Some(EnglishCommand::Lock),
+        "show desktop" | "show the desktop" | "minimize all windows" => return Some(EnglishCommand::Desktop),
+        "mute" | "mute the sound" => return Some(EnglishCommand::Media("mute")),
+        "unmute" | "unmute the sound" => return Some(EnglishCommand::Media("unmute")),
+        "volume up" | "turn up the volume" | "louder" => return Some(EnglishCommand::Media("volume_up")),
+        "volume down" | "turn down the volume" | "quieter" => return Some(EnglishCommand::Media("volume_down")),
+        "pause" | "pause playback" | "play" | "resume playback" => return Some(EnglishCommand::Media("play_pause")),
+        "next song" | "next track" | "skip track" => return Some(EnglishCommand::Media("next")),
+        "previous song" | "previous track" => return Some(EnglishCommand::Media("previous")),
+        _ => {}
+    }
+    if let Some(c) = EN_VOLUME.captures(t) {
+        return c[1].parse::<u32>().ok().filter(|p| *p <= 100).map(EnglishCommand::Volume);
+    }
+    if let Some(c) = EN_SEARCH.captures(t) {
+        return Some(EnglishCommand::Search(c[1].trim().into(), c.get(2).and_then(|s| apps::site_engine(s.as_str())).unwrap_or("google").into()));
+    }
+    if let Some(c) = EN_CLOSE.captures(t) {
+        let name = c[1].trim();
+        if ["this", "that", "current", "the current", "the window", "the tab"].iter().any(|p| name.to_ascii_lowercase().starts_with(p)) { return None; }
+        return Some(EnglishCommand::Close(name.into()));
+    }
+    if let Some(c) = EN_OPEN.captures(t) {
+        let name = c[1].trim();
+        if name.contains(" and ") || name.contains(" then ") { return None; }
+        return Some(EnglishCommand::Open(name.into()));
+    }
+    None
+}
+
+fn try_handle_en(text: &str, apps: &AppIndex) -> Option<String> {
+    match english_command(text)? {
+        EnglishCommand::Time => {
+            let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+            Some(format!("It is {:02}:{:02}, {}-{:02}-{:02}.", t.wHour, t.wMinute, t.wYear, t.wMonth, t.wDay))
+        }
+        EnglishCommand::Lock => {
+            unsafe { windows::Win32::System::Shutdown::LockWorkStation() }.ok()?;
+            Some("Screen locked.".into())
+        }
+        EnglishCommand::Desktop => { system::show_desktop(); Some("Done.".into()) }
+        EnglishCommand::Volume(percent) => {
+            system::set_volume(Some(percent), None).ok()?;
+            Some(format!("Volume set to {percent} percent."))
+        }
+        EnglishCommand::Media(action) => {
+            let (key, times, reply) = match action {
+                "mute" | "unmute" => {
+                    system::set_volume(None, Some(action == "mute")).ok()?;
+                    return Some(if action == "mute" { "Muted." } else { "Unmuted." }.into());
+                }
+                "volume_up" => (MediaKey::VolumeUp, 5, "Volume increased."),
+                "volume_down" => (MediaKey::VolumeDown, 5, "Volume decreased."),
+                "next" => (MediaKey::Next, 1, "Next track."),
+                "previous" => (MediaKey::Previous, 1, "Previous track."),
+                _ => (MediaKey::PlayPause, 1, "Done."),
+            };
+            sys::press_media_key(key, times);
+            Some(reply.into())
+        }
+        EnglishCommand::Search(query, engine) => {
+            sys::shell_open(&apps::search_url(&query, &engine)).then(|| format!("Searched {engine} for {query}."))
+        }
+        EnglishCommand::Open(name) => {
+            if let Match::One(app) = apps.best(&name) {
+                if apps::launch(&app) { return Some(format!("Opened {}.", app.name)); }
+            }
+            None
+        }
+        EnglishCommand::Close(name) => match process::close(&name, apps, true) {
+            Closed::Done(text) => Some(format!("{text}.")),
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,8 +287,8 @@ mod tests {
     #[test]
     fn deictic_close_goes_to_model() {
         let apps = AppIndex::load_cached();
-        assert_eq!(try_handle("关闭当前直播", &apps), None);
-        assert_eq!(try_handle("把这个网页关掉", &apps), None);
+        assert_eq!(try_handle_zh("关闭当前直播", &apps), None);
+        assert_eq!(try_handle_zh("把这个网页关掉", &apps), None);
     }
 
     #[test]
@@ -200,5 +306,34 @@ mod tests {
         assert_eq!(parse("淘宝搜机械键盘"), Some(("taobao", "机械键盘".into())));
         assert_eq!(parse("搜索明天的天气"), None); // 没说网站，交给普通搜索
         assert_eq!(parse("打开记事本"), None);
+    }
+
+    #[test]
+    fn english_phrases() {
+        assert_eq!(english_command("Please launch Calculator!"), Some(EnglishCommand::Open("Calculator".into())));
+        assert_eq!(english_command("quit Notepad please."), Some(EnglishCommand::Close("Notepad".into())));
+        assert_eq!(english_command("set the volume to 30 percent"), Some(EnglishCommand::Volume(30)));
+        assert_eq!(english_command("volume to 101"), None);
+        assert_eq!(english_command("mute"), Some(EnglishCommand::Media("mute")));
+        assert_eq!(english_command("unmute"), Some(EnglishCommand::Media("unmute")));
+        assert_eq!(english_command("lock the screen"), Some(EnglishCommand::Lock));
+        assert_eq!(english_command("show desktop"), Some(EnglishCommand::Desktop));
+        assert_eq!(english_command("what time is it?"), Some(EnglishCommand::Time));
+        for site in ["YouTube", "Google", "Amazon", "Reddit", "Spotify", "Wikipedia"] {
+            assert_eq!(english_command(&format!("search Rust tutorials on {site}")), Some(EnglishCommand::Search("Rust tutorials".into(), site.to_lowercase())));
+        }
+        assert_eq!(english_command("search weather tomorrow"), Some(EnglishCommand::Search("weather tomorrow".into(), "google".into())));
+        assert_eq!(english_command("close this window"), None);
+        assert_eq!(english_command("open Calculator and type 5"), None);
+        assert_eq!(english_command("打开记事本"), None);
+        assert_eq!(english_command("搜索天气"), None);
+        assert_eq!(english_command("请问现在几时"), None);
+    }
+
+    #[test]
+    fn dispatches_only_the_selected_language() {
+        let apps = AppIndex::load_cached();
+        assert_eq!(try_handle("what time is it", &apps).is_some(), !crate::locale::is_zh());
+        assert_eq!(try_handle("现在几点", &apps).is_some(), crate::locale::is_zh());
     }
 }

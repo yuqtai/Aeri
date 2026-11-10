@@ -27,7 +27,7 @@ pub fn serve() -> anyhow::Result<()> {
                 "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "voice_desktop", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "操作用户 Windows 电脑的工具。桌面软件：先 desktop_snapshot 拿控件编号（窗口不用在前台），然后 desktop_click、desktop_set_value、desktop_select、desktop_check 操作，这些不抢焦点、会确认结果；界面变了要重新 desktop_snapshot。必须模拟键盘时先 desktop_focus 再用 desktop_type / desktop_keys。用户屏幕上正在看的内容用 screen_read 读，复制文字用 clipboard_write 直接写剪贴板。文件操作用 file_ 开头的工具（改名、查找、打开、移动复制、删除进回收站、查看信息；不填路径就用资源管理器里选中的）。系统：volume_set、system_setting、screenshot、power、window_arrange、system_info、calc、clipboard_history。网页：用 browser_ 开头的工具，在独立的 Edge 窗口里打开网页、读页面结构（browser_snapshot）、点击、填写；这个窗口没有用户的登录状态。只是想让用户在自己的浏览器里看某个网站的搜索结果时，用 web_search 一步完成。操作思源、记事本等具体软件前，先用 plugin_guide 读它的插件说明书，照着做（常常是用 local_http 调软件的本机接口，比点界面快得多）。"
+                "instructions": "Tools for the user's Windows computer. Reply in the language the user speaks. Desktop apps: get references with desktop_snapshot (no foreground focus needed), then use desktop_click, desktop_set_value, desktop_select, desktop_check, which do not steal focus and verify results; refresh the snapshot after UI changes. For simulated keyboard input, desktop_focus first, then desktop_type / desktop_keys. Read what the user is viewing with screen_read; write copied text directly with clipboard_write. Use file_ tools for rename, find, open, move/copy, Recycle Bin deletion and information; omit paths to use Explorer selections. System tools: volume_set, system_setting, screenshot, power, window_arrange, system_info, calc, clipboard_history. For webpages use browser_ tools in a separate Edge window: navigate, browser_snapshot, click, fill; this window has no user login session. For search results the user wants to view in their own browser, use web_search in one step. Before operating specific software (SiYuan, Notepad, etc.), first read plugin_guide and follow it, often using local_http for its local API rather than clicking the UI."
             }),
             "ping" => json!({}),
             "tools/list" => json!({"tools": tools.definitions().iter().map(to_mcp_tool).collect::<Vec<_>>()}),
@@ -38,7 +38,7 @@ pub fn serve() -> anyhow::Result<()> {
                 json!({"content": [{"type": "text", "text": text}], "isError": is_error})
             }
             other => {
-                reply(&mut stdout, json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("不支持的方法：{other}")}}))?;
+                reply(&mut stdout, json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("Unsupported method: {other}")}}))?;
                 continue;
             }
         };

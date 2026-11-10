@@ -225,13 +225,13 @@ pub fn close(keyword: &str, apps: &AppIndex, strict: bool) -> Closed {
 
     let remaining: Vec<u32> = pids.iter().copied().filter(|&p| alive(p)).collect();
     if remaining.is_empty() {
-        return Closed::Done(format!("已关闭 {exe}"));
+        return Closed::Done(crate::locale::pick(&format!("Closed {exe}"), &format!("已关闭 {exe}")).to_string());
     }
     if let Some(w) = windows().into_iter().find(|w| remaining.contains(&w.pid)) {
-        return Closed::Done(format!(
-            "已请求关闭 {exe}，但它还有窗口“{}”（可能在问是否保存），没有强行结束，请用户自己处理",
-            w.title
-        ));
+        return Closed::Done(crate::locale::pick(
+            &format!("Requested closing {exe}, but window \"{}\" remains (possibly a Save prompt); it was not force-terminated. Please handle it manually", w.title),
+            &format!("已请求关闭 {exe}，但它还有窗口“{}”（可能在问是否保存），没有强行结束，请用户自己处理", w.title),
+        ).to_string());
     }
     let mut denied = 0;
     for &pid in &remaining {
@@ -251,11 +251,11 @@ pub fn close(keyword: &str, apps: &AppIndex, strict: bool) -> Closed {
         }
     }
     if denied == remaining.len() {
-        Closed::Done(format!("{exe} 结束失败，可能需要管理员权限"))
+        Closed::Done(crate::locale::pick(&format!("Could not terminate {exe}; administrator permissions may be needed"), &format!("{exe} 结束失败，可能需要管理员权限")).to_string())
     } else if denied > 0 {
-        Closed::Done(format!("已结束 {exe} 的后台进程，其中 {denied} 个没有权限结束"))
+        Closed::Done(crate::locale::pick(&format!("Terminated background processes for {exe}, except {denied} without sufficient permissions"), &format!("已结束 {exe} 的后台进程，其中 {denied} 个没有权限结束")).to_string())
     } else {
-        Closed::Done(format!("已关闭 {exe}（包括后台进程，共 {} 个）", pids.len()))
+        Closed::Done(crate::locale::pick(&format!("Closed {exe}, including background processes ({} total)", pids.len()), &format!("已关闭 {exe}（包括后台进程，共 {} 个）", pids.len())).to_string())
     }
 }
 
@@ -295,12 +295,12 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "close_app",
-            "description": "关闭正在运行的程序，包括缩到托盘或在后台运行的程序。name 可以是开始菜单里的应用名（如 微信、ChatGPT）或进程名（如 ChatGPT.exe）。会先正常关闭窗口，程序还在后台就结束进程；如果程序弹出“是否保存”之类的窗口，会停下来交给用户。系统进程不会被关闭。",
+            "description": "Close a running app, including tray or background apps. name accepts a Start menu name (WeChat, ChatGPT) or process name (ChatGPT.exe). First close normally, then terminate remaining background processes. Stop and leave any Save prompt to the user. System processes are protected.",
             "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
         }),
         json!({
             "name": "list_processes",
-            "description": "列出正在运行的程序（按进程名合并，带窗口标题；没有窗口的是后台运行）。keyword 可选，用来按应用名或进程名过滤。",
+            "description": "List running programs grouped by process name, with window titles; entries without windows are background processes. Optional keyword filters by application or process name.",
             "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}}
         }),
     ]

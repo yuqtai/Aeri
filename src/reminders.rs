@@ -34,21 +34,21 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "reminder_add",
-            "description": "设一个提醒或倒计时，到点时 Aeri 会主动说出来。“十分钟后提醒我喝水”给 minutes=10；“下午三点提醒我开会”给 at=\"15:00\"；“明天早上 9 点”给 at=\"明天的日期 09:00\"（格式 YYYY-MM-DD HH:MM，先用 current_time 确认今天日期）。text 是到点要说的事，倒计时可以写“倒计时结束”。",
+            "description": "Set a reminder or countdown; Aeri announces it when due. For remind me to drink water in ten minutes use minutes=10; for 3 PM use at=\"15:00\"; for tomorrow at 9 AM use at=\"tomorrow-date 09:00\" in YYYY-MM-DD HH:MM format (first use current_time to check today). text is the announcement, for example Countdown finished.",
             "input_schema": {"type": "object", "properties": {
-                "minutes": {"type": "number", "description": "多少分钟后，可以是小数（0.5 = 30 秒）"},
-                "at": {"type": "string", "description": "HH:MM（今天，已过就算明天）或 YYYY-MM-DD HH:MM"},
+                "minutes": {"type": "number", "description": "Minutes from now, including fractions (0.5 = 30 seconds)."},
+                "at": {"type": "string", "description": "HH:MM (today, or tomorrow if already past) or YYYY-MM-DD HH:MM."},
                 "text": {"type": "string"}
             }, "required": ["text"]}
         }),
         json!({
             "name": "reminder_list",
-            "description": "查看还没到点的提醒。",
+            "description": "List reminders that are not yet due.",
             "input_schema": {"type": "object", "properties": {}}
         }),
         json!({
             "name": "reminder_cancel",
-            "description": "取消提醒。给 id 取消一个；不给 id 取消全部。",
+            "description": "Cancel a reminder by id, or omit id to cancel all reminders.",
             "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}}}
         }),
     ]
@@ -79,19 +79,19 @@ impl Reminders {
 
     pub fn add(self: &Arc<Self>, minutes: Option<f64>, at: &str, text: &str) -> Result<String, String> {
         let text = text.trim();
-        let text = if text.is_empty() { "时间到了" } else { text };
+        let text = if text.is_empty() { crate::locale::pick("Time is up", "时间到了") } else { text };
         let now = now_secs();
         let due = match (minutes, at.trim()) {
             (Some(m), _) if m > 0.0 => now + (m * 60.0).round().max(1.0) as u64,
             (_, at) if !at.is_empty() => parse_at(at)?,
-            _ => return Err("要给出 minutes 或 at".into()),
+            _ => return Err(crate::locale::pick("Provide minutes or at", "要给出 minutes 或 at").into()),
         };
         if due <= now {
-            return Err("这个时间已经过去了".into());
+            return Err(crate::locale::pick("That time is already in the past", "这个时间已经过去了").into());
         }
         let id = self.list.lock().unwrap().iter().map(|r| r.id).max().unwrap_or(0) + 1;
         self.schedule(Reminder { id, due, text: text.to_string() });
-        Ok(format!("好的，{}（{}）提醒：{text}，编号 {id}", when_text(due), local_text(due)))
+        Ok(crate::locale::pick(&format!("Reminder set for {} ({}): {text}, id {id}", when_text(due), local_text(due)), &format!("好的，{}（{}）提醒：{text}，编号 {id}", when_text(due), local_text(due))).to_string())
     }
 
     fn schedule(self: &Arc<Self>, r: Reminder) {
@@ -112,7 +112,7 @@ impl Reminders {
                 me.save();
                 crate::sys::beep(988, 180);
                 let late = now_secs().saturating_sub(r.due);
-                let text = if late > 120 { format!("{}（本来是 {} 提醒，当时 Aeri 没在运行）", r.text, local_text(r.due)) } else { r.text };
+                let text = if late > 120 { crate::locale::pick(&format!("{} (originally due at {}; Aeri was not running then)", r.text, local_text(r.due)), &format!("{}（本来是 {} 提醒，当时 Aeri 没在运行）", r.text, local_text(r.due))).to_string() } else { r.text };
                 let _ = me.tx.send(TaskDone { id: r.id, ok: true, text, reminder: true });
             }
         });
@@ -121,7 +121,7 @@ impl Reminders {
     fn describe(&self) -> String {
         let mut list = self.list.lock().unwrap().clone();
         if list.is_empty() {
-            return "现在没有提醒".into();
+            return crate::locale::pick("There are no reminders", "现在没有提醒").into();
         }
         list.sort_by_key(|r| r.due);
         list.iter().map(|r| format!("{}. {}（{}）：{}", r.id, local_text(r.due), when_text(r.due), r.text)).collect::<Vec<_>>().join("\n")
@@ -135,14 +135,14 @@ impl Reminders {
                     let before = list.len();
                     list.retain(|r| r.id != id);
                     if list.len() == before {
-                        return Err(format!("没有编号 {id} 的提醒"));
+                        return Err(crate::locale::pick(&format!("There is no reminder with id {id}"), &format!("没有编号 {id} 的提醒")).to_string());
                     }
-                    format!("已取消提醒 {id}")
+                    crate::locale::pick(&format!("Cancelled reminder {id}"), &format!("已取消提醒 {id}")).to_string()
                 }
                 None => {
                     let n = list.len();
                     list.clear();
-                    format!("已取消全部 {n} 个提醒")
+                    crate::locale::pick(&format!("Cancelled all {n} reminders"), &format!("已取消全部 {n} 个提醒")).to_string()
                 }
             }
         };
@@ -171,7 +171,7 @@ fn now_secs() -> u64 {
 
 /// “HH:MM”（今天，已过就明天）或“YYYY-MM-DD HH:MM”，本地时间 → Unix 秒
 fn parse_at(at: &str) -> Result<u64, String> {
-    let bad = || format!("时间格式不对：「{at}」，要写成 HH:MM 或 YYYY-MM-DD HH:MM");
+    let bad = || crate::locale::pick(&format!("Invalid time: {at}; use HH:MM or YYYY-MM-DD HH:MM"), &format!("时间格式不对：「{at}」，要写成 HH:MM 或 YYYY-MM-DD HH:MM")).to_string();
     let at = at.replace('：', ":").replace('/', "-").replace('T', " ");
     let (date, time) = match at.trim().split_once(' ') {
         Some((d, t)) => (Some(d.trim().to_string()), t.trim().to_string()),
@@ -220,16 +220,16 @@ fn local_text(unix: u64) -> String {
     if (local.wYear, local.wMonth, local.wDay) == (today.wYear, today.wMonth, today.wDay) {
         format!("{:02}:{:02}", local.wHour, local.wMinute)
     } else {
-        format!("{}月{}日 {:02}:{:02}", local.wMonth, local.wDay, local.wHour, local.wMinute)
+        crate::locale::pick(&format!("{}/{}, {:02}:{:02}", local.wMonth, local.wDay, local.wHour, local.wMinute), &format!("{}月{}日 {:02}:{:02}", local.wMonth, local.wDay, local.wHour, local.wMinute)).to_string()
     }
 }
 
 fn when_text(due: u64) -> String {
     let s = due.saturating_sub(now_secs());
     match s {
-        0..60 => format!("{s} 秒后"),
-        60..3600 => format!("{} 分钟后", (s + 30) / 60),
-        _ => format!("{} 小时 {} 分钟后", s / 3600, (s % 3600 + 30) / 60),
+        0..60 => crate::locale::pick(&format!("in {s} seconds"), &format!("{s} 秒后")).to_string(),
+        60..3600 => crate::locale::pick(&format!("in {} minutes", (s + 30) / 60), &format!("{} 分钟后", (s + 30) / 60)).to_string(),
+        _ => crate::locale::pick(&format!("in {} hours {} minutes", s / 3600, (s % 3600 + 30) / 60), &format!("{} 小时 {} 分钟后", s / 3600, (s % 3600 + 30) / 60)).to_string(),
     }
 }
 
@@ -245,7 +245,7 @@ mod tests {
         assert!(parse_at("25:00").is_err());
         assert!(parse_at("下午三点").is_err());
         let d = parse_at("2030-01-02 09:30").unwrap();
-        assert!(local_text(d).contains("1月2日 09:30"));
+        assert!(local_text(d).contains(crate::locale::pick("1/2, 09:30", "1月2日 09:30")));
         assert_eq!(local_to_unix(&unsafe { GetLocalTime() }).unwrap().abs_diff(now) < 3, true);
     }
 

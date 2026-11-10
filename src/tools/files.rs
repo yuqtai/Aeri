@@ -56,31 +56,31 @@ struct Found {
     modified: String,
 }
 
-const PATH_DESC: &str = "完整路径、常用文件夹（桌面、下载、文档、图片、视频、音乐）或当前资源管理器文件夹里的文件名；不填就用资源管理器里选中的";
+const PATH_DESC: &str = "Full path, common folder (Desktop, Downloads, Documents, Pictures, Videos, Music), or a file name in the current Explorer folder; omit for selected Explorer items.";
 
 pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "file_rename",
-            "description": "给文件或文件夹改名，一步完成，不要用资源管理器里按 F2 的方式。用户说“把这个文件改名”时不填 path，自动用资源管理器里选中的那一项。new_name 只写新名字，不带扩展名时保留原来的扩展名。目标名字已存在时不会覆盖。",
+            "description": "Rename a file or folder directly; do not press F2 in Explorer. Omit path for the item selected in Explorer when the user says this file. new_name is only the new name; omitting an extension preserves the existing one. Never overwrites an existing target.",
             "input_schema": {"type": "object", "properties": {
                 "path": {"type": "string", "description": PATH_DESC},
-                "new_name": {"type": "string", "description": "新名字，例如“开发程序员”或“开发程序员.pdf”"}
+                "new_name": {"type": "string", "description": "New name, for example Report or Report.pdf."}
             }, "required": ["new_name"]}
         }),
         json!({
             "name": "file_find",
-            "description": "在电脑上查找文件（Windows 搜索索引，一般不到一秒），按修改时间从新到旧最多返回 20 个。用户说“找一下上周的合同”“最近下载的图片”时用。",
+            "description": "Find files using the Windows search index, usually under a second. Returns at most 20, newest modified first. Use for requests such as last week's contract or recently downloaded pictures.",
             "input_schema": {"type": "object", "properties": {
-                "keyword": {"type": "string", "description": "文件名里包含的文字，可不填"},
-                "kind": {"type": "string", "enum": ["document", "picture", "video", "music", "folder", "program"], "description": "文件类型，可不填"},
-                "days": {"type": "integer", "description": "只找最近几天修改过的，可不填"},
-                "folder": {"type": "string", "description": "只在这个文件夹里找（完整路径或桌面、下载等），可不填"}
+                "keyword": {"type": "string", "description": "Optional text contained in the file name."},
+                "kind": {"type": "string", "enum": ["document", "picture", "video", "music", "folder", "program"], "description": "Optional file type."},
+                "days": {"type": "integer", "description": "Optional number of recent days in which the file was modified."},
+                "folder": {"type": "string", "description": "Optional folder to search: full path or a common folder such as Desktop or Downloads."}
             }}
         }),
         json!({
             "name": "file_open",
-            "description": "用默认程序打开文件，或在资源管理器里打开文件夹（“打开下载文件夹”）。reveal 为 true 时不打开文件，而是在资源管理器里定位并选中它。",
+            "description": "Open a file in its default application, or a folder in Explorer (for example Downloads). reveal=true locates and selects the file in Explorer instead of opening it.",
             "input_schema": {"type": "object", "properties": {
                 "path": {"type": "string", "description": PATH_DESC},
                 "reveal": {"type": "boolean"}
@@ -88,21 +88,21 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "file_move",
-            "description": "把文件或文件夹移动（copy 为 true 时复制）到另一个文件夹，不会覆盖同名文件。不填 path 时用资源管理器里选中的（可以多个）。",
+            "description": "Move a file or folder (copy=true copies) into another folder without overwriting existing names. Omit path to use selected Explorer items, possibly multiple.",
             "input_schema": {"type": "object", "properties": {
                 "path": {"type": "string", "description": PATH_DESC},
-                "to": {"type": "string", "description": "目标文件夹：完整路径或桌面、下载、文档等"},
+                "to": {"type": "string", "description": "Destination folder: full path or Desktop, Downloads, Documents, etc."},
                 "copy": {"type": "boolean"}
             }, "required": ["to"]}
         }),
         json!({
             "name": "file_delete",
-            "description": "把文件或文件夹移到回收站（可以从回收站找回）。只有用户明确说要删除时才用。不填 path 时用资源管理器里选中的（可以多个）。",
+            "description": "Move files or folders to the Recycle Bin, where they can be restored. Only use when the user explicitly requests deletion. Omit path for selected Explorer items, possibly multiple.",
             "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": PATH_DESC}}}
         }),
         json!({
             "name": "file_info",
-            "description": "查看文件或文件夹的信息：完整路径、大小、类型、修改时间。用户问“这个文件多大”“是什么格式”时用；不填 path 时看资源管理器里选中的（可以多个），什么都没选时返回当前打开的文件夹。",
+            "description": "Get full path, size, type and modification time for files/folders. Use for questions about size or format. Omit path for Explorer selections (possibly multiple); with no selection returns the currently open folder.",
             "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": PATH_DESC}}}
         }),
     ]

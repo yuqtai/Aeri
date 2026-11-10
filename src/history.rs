@@ -198,11 +198,11 @@ const VIEWER: &str = include_str!("history_viewer.html");
 pub fn definitions() -> Vec<Value> {
     vec![json!({
         "name": "history_search",
-        "description": "查之前的对话和后台任务记录（保留 30 天）。用户问“我昨天让你做了什么”“上周那个任务结果是什么”“之前说过的 XX”时用。date 是 YYYY-MM-DD（先用 current_time 确认今天），query 是关键词；都不给就返回最近的记录。",
+        "description": "Search previous conversations and background task records, retained for 30 days. Use for what the user asked yesterday, last week's task results or something said earlier. date is YYYY-MM-DD (use current_time first to check today); query is a keyword. Omit both for recent records.",
         "input_schema": {"type": "object", "properties": {
-            "date": {"type": "string", "description": "YYYY-MM-DD，只看这一天"},
-            "query": {"type": "string", "description": "关键词，匹配对话内容、任务要求和结果"},
-            "tasks_only": {"type": "boolean", "description": "只看后台任务"}
+            "date": {"type": "string", "description": "YYYY-MM-DD; restrict to this day."},
+            "query": {"type": "string", "description": "Keyword matching conversation content, task requests and results."},
+            "tasks_only": {"type": "boolean", "description": "Only background tasks."}
         }}
     })]
 }

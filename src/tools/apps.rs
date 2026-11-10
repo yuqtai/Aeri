@@ -113,6 +113,12 @@ pub fn search_url(query: &str, engine: &str) -> String {
         "jd" => format!("https://search.jd.com/Search?keyword={q}"),
         "youtube" => format!("https://www.youtube.com/results?search_query={q}"),
         "github" => format!("https://github.com/search?q={q}"),
+        "amazon" => format!("https://www.amazon.com/s?k={q}"),
+        "reddit" => format!("https://www.reddit.com/search/?q={q}"),
+        "x" => format!("https://x.com/search?q={q}"),
+        "wikipedia" => format!("https://en.wikipedia.org/w/index.php?search={q}"),
+        "spotify" => format!("https://open.spotify.com/search/{q}"),
+        _ if !crate::locale::is_zh() => format!("https://www.google.com/search?q={q}"),
         _ => format!("https://www.bing.com/search?q={q}"),
     }
 }
@@ -132,6 +138,11 @@ pub fn site_engine(name: &str) -> Option<&'static str> {
         "谷歌" | "google" => "google",
         "youtube" | "油管" => "youtube",
         "github" => "github",
+        "amazon" | "亚马逊" => "amazon",
+        "reddit" => "reddit",
+        "x" | "twitter" | "推特" => "x",
+        "wikipedia" | "维基百科" => "wikipedia",
+        "spotify" => "spotify",
         _ => return None,
     })
 }
@@ -140,38 +151,38 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "launch_app",
-            "description": "启动本机已安装的应用（来自开始菜单），例如 记事本、计算器、微信、Microsoft Edge。名称不确定时先用 find_apps。",
-            "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "应用名称，尽量用开始菜单里的完整名称"}}, "required": ["name"]}
+            "description": "Launch an installed Start menu app, such as Notepad, Calculator, WeChat or Microsoft Edge. Use find_apps first if unsure of its name.",
+            "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "Application name, preferably its full Start menu name."}}, "required": ["name"]}
         }),
         json!({
             "name": "find_apps",
-            "description": "按关键词模糊查找本机已安装的应用名称。",
+            "description": "Find installed application names by a fuzzy keyword search.",
             "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}
         }),
         json!({
             "name": "web_search",
-            "description": "在用户自己的默认浏览器里（带着用户的登录状态）打开某个网站的搜索结果页，一步完成，读不到页面内容。用户说“在抖音/B站/小红书/淘宝/京东/知乎/YouTube/GitHub 上搜 X”或“打开抖音搜 X”时用对应的 engine；只说“搜一下 X”用 bing。",
+            "description": "Open a site's search results in the user's default browser with their signed-in session, in one step. This does not read page content. Choose the requested site engine (including Google, Amazon, Reddit, X, Wikipedia, Spotify and the Chinese sites). Without a specified site, omit engine: English defaults to google, Chinese to bing.",
             "input_schema": {"type": "object", "properties": {
                 "query": {"type": "string"},
-                "engine": {"type": "string", "enum": ["bing", "baidu", "google", "bilibili", "zhihu", "douyin", "xiaohongshu", "taobao", "jd", "youtube", "github"]}
+                "engine": {"type": "string", "enum": ["bing", "baidu", "google", "bilibili", "zhihu", "douyin", "xiaohongshu", "taobao", "jd", "youtube", "github", "amazon", "reddit", "x", "wikipedia", "spotify"]}
             }, "required": ["query"]}
         }),
         json!({
             "name": "open_url",
-            "description": "在用户的默认浏览器里打开网址，读不到页面内容。",
+            "description": "Open a URL in the user's default browser. This does not read page content.",
             "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}
         }),
         json!({
             "name": "current_time",
-            "description": "获取当前本地日期、星期和时间。",
+            "description": "Get the current local date, day of week and time.",
             "input_schema": {"type": "object", "properties": {}}
         }),
         json!({
             "name": "media_control",
-            "description": "调节系统音量或控制媒体播放。",
+            "description": "Adjust system volume or control media playback.",
             "input_schema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["volume_up", "volume_down", "mute", "play_pause", "next", "previous"]},
-                "times": {"type": "integer", "description": "按几次，音量每次约 2%，默认 5"}
+                "times": {"type": "integer", "description": "Number of key presses; each volume press changes about 2 percent; default 5."}
             }, "required": ["action"]}
         }),
     ]
@@ -199,7 +210,7 @@ pub fn call(index: &AppIndex, name: &str, input: &Value) -> Option<(String, bool
             }
         }
         "web_search" => {
-            let engine = input["engine"].as_str().unwrap_or("bing");
+            let engine = input["engine"].as_str().unwrap_or(crate::locale::pick("google", "bing"));
             let ok = sys::shell_open(&search_url(&s("query"), engine));
             (if ok { format!("已在默认浏览器搜索：{}", s("query")) } else { "打开浏览器失败".into() }, !ok)
         }
@@ -232,4 +243,29 @@ pub fn call(index: &AppIndex, name: &str, input: &Value) -> Option<(String, bool
         }
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_sites_encode_queries_and_preserve_aliases() {
+        for (site, prefix) in [
+            ("google", "https://www.google.com/search?q="),
+            ("amazon", "https://www.amazon.com/s?k="),
+            ("reddit", "https://www.reddit.com/search/?q="),
+            ("x", "https://x.com/search?q="),
+            ("wikipedia", "https://en.wikipedia.org/w/index.php?search="),
+            ("spotify", "https://open.spotify.com/search/"),
+        ] {
+            assert_eq!(site_engine(site), Some(site));
+            assert_eq!(search_url("a &b", site), format!("{prefix}a%20%26b"));
+        }
+        assert_eq!(site_engine("Twitter"), Some("x"));
+        assert_eq!(site_engine("抖音"), Some("douyin"));
+        assert_eq!(site_engine("B站"), Some("bilibili"));
+        assert_eq!(site_engine("淘宝"), Some("taobao"));
+        assert!(search_url("test", "").starts_with(crate::locale::pick("https://www.google.com/", "https://www.bing.com/")));
+    }
 }

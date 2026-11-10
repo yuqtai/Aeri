@@ -232,7 +232,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
     };
     a.apply_config();
     if let Err(e) = a.restart_ear() {
-        a.chat(Role::System, format!("语音唤醒不可用：{e:#}"));
+        a.chat(Role::System, crate::locale::pick(&format!("Voice wake-up unavailable: {e:#}"), &format!("语音唤醒不可用：{e:#}")).to_string());
     }
     a.go_idle();
     let mut mic_retry = tokio::time::interval(MIC_RETRY);
@@ -280,9 +280,9 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
                         let was_ok = a.ear.is_some();
                         a.ear = None; // 先释放旧的
                         match a.restart_ear() {
-                            Ok(name) if !was_ok => a.chat(Role::System, format!("麦克风已恢复：{name}")),
+                            Ok(name) if !was_ok => a.chat(Role::System, crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string()),
                             Ok(_) => {}
-                            Err(_) => a.chat(Role::System, "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。"),
+                            Err(_) => a.chat(Role::System, crate::locale::pick("Microphone disconnected. It will recover when reconnected; you can type for now.", "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。")),
                         }
                         a.go_idle();
                     }
@@ -302,7 +302,7 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
             }
             _ = mic_retry.tick(), if a.ear.is_none() && a.mic_missing => {
                 if let Ok(name) = a.restart_ear() {
-                    a.chat(Role::System, format!("麦克风已恢复：{name}"));
+                    a.chat(Role::System, crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string());
                     a.go_idle();
                 }
             }
@@ -360,7 +360,7 @@ impl Assistant {
         match Llm::new(&c.llm_provider, &c.llm_base_url, key, &c.llm_model, c.llm_thinking, &c.llm_effort) {
             Ok(llm) => Some(Agent::front(llm, self.front_tools.clone(), c.new_conversation_after_secs)),
             Err(e) => {
-                self.chat(Role::System, format!("大模型初始化失败：{e}"));
+                self.chat(Role::System, crate::locale::pick(&format!("Could not initialize the language model: {e}"), &format!("大模型初始化失败：{e}")).to_string());
                 None
             }
         }
@@ -382,13 +382,13 @@ impl Assistant {
                 self.ear = Some(ear);
                 self.emit(UiEvent::Mic(name.clone()));
                 for p in problems {
-                    self.chat(Role::System, format!("唤醒词问题：{p}"));
+                    self.chat(Role::System, crate::locale::pick(&format!("Wake-word problem: {p}"), &format!("唤醒词问题：{p}")).to_string());
                 }
                 Ok(name)
             }
             Err(e) => {
                 self.mic_missing = audio::is_mic_unavailable(&e);
-                self.emit(UiEvent::Mic("麦克风不可用".into()));
+                self.emit(UiEvent::Mic(crate::locale::pick("Microphone unavailable", "麦克风不可用").into()));
                 Err(e)
             }
         }
@@ -403,7 +403,7 @@ impl Assistant {
         self.apply_config();
         if ear_changed {
             if let Err(e) = self.restart_ear() {
-                self.chat(Role::System, format!("语音唤醒不可用：{e:#}"));
+                self.chat(Role::System, crate::locale::pick(&format!("Voice wake-up unavailable: {e:#}"), &format!("语音唤醒不可用：{e:#}")).to_string());
             }
         }
         self.go_idle();
@@ -427,7 +427,7 @@ impl Assistant {
                 // 用户点了停止：不提示错误、不降级、不再听
                 Err(_) if self.turn.cancelled() => {}
                 Err(e) => {
-                    self.chat(Role::System, format!("{e:#}；这次改用“识别 + 大模型”。"));
+                    self.chat(Role::System, crate::locale::pick(&format!("{e:#}; using speech recognition and the language model for this turn."), &format!("{e:#}；这次改用“识别 + 大模型”。")).to_string());
                     if let Some(text) = notice {
                         self.speak(&text).await;
                     } else {
@@ -478,11 +478,11 @@ impl Assistant {
             return None;
         }
         if self.ear.is_none() && !self.phone {
-            self.chat(Role::System, "麦克风不可用，可以在下方输入文字命令。");
+            self.chat(Role::System, crate::locale::pick("Microphone unavailable. You can type a command below.", "麦克风不可用，可以在下方输入文字命令。"));
             return None;
         }
         let Some(api_key) = config::asr_key(&self.cfg) else {
-            self.chat(Role::System, "Set an API key for the selected speech recognition provider in Settings.");
+            self.chat(Role::System, crate::locale::pick("Speech recognition needs an API key for the selected provider. Add it in Settings and select Save.", "还没有设置所选语音识别服务的 API Key：请在“设置”页填写后点“保存并应用”。"));
             return None;
         };
         let settings = AsrSettings {
@@ -554,18 +554,18 @@ impl Assistant {
                 Some(Ok(r)) => r,
                 Some(Err(e)) => {
                     (self.ui)(UiEvent::Chat(Role::System, format!("{e:#}")));
-                    format!("这次没能确认完成：{e}。")
+                    crate::locale::pick(&format!("I could not confirm completion: {e}."), &format!("这次没能确认完成：{e}。")).to_string()
                 }
                 None => {
                     // 中途停下时对话历史可能不完整（有工具调用没有结果），丢掉以免下一轮出错
                     agent.clear();
-                    self.chat(Role::System, "（已停止）");
+                    self.chat(Role::System, crate::locale::pick("(Stopped)", "（已停止）"));
                     return false;
                 }
             }
         } else {
-            self.chat(Role::System, "还没有设置大模型的 API Key：请在“设置”页填写 DeepSeek 的 key，点“保存并应用”。");
-            "还没有配置大模型。".into()
+            self.chat(Role::System, crate::locale::pick("No language model API key is configured. Enter your provider key in Settings and select Save and apply.", "还没有设置大模型的 API Key：请在“设置”页填写 DeepSeek 的 key，点“保存并应用”。"));
+            crate::locale::pick("No language model is configured yet.", "还没有配置大模型。").into()
         };
         if self.turn.cancelled() {
             return false;
@@ -594,7 +594,7 @@ impl Assistant {
                     if self.mode() == Mode::Capture {
                         self.tts.stop();
                         (&mut speaking).await;
-                        self.chat(Role::System, "（已打断）");
+                        self.chat(Role::System, crate::locale::pick("(Interrupted)", "（已打断）"));
                         return true;
                     }
                 }
@@ -610,9 +610,9 @@ impl Assistant {
 
     async fn realtime_conversation(&mut self, notice: Option<&str>, origin: Origin) -> anyhow::Result<()> {
         if self.ear.is_none() && notice.is_none() && origin != Origin::Phone {
-            anyhow::bail!("麦克风不可用");
+            anyhow::bail!(crate::locale::pick("Microphone unavailable", "麦克风不可用"));
         }
-        let api_key = config::realtime_key(&self.cfg).ok_or_else(|| anyhow::anyhow!("Realtime voice requires an API key for the selected provider"))?;
+        let api_key = config::realtime_key(&self.cfg).ok_or_else(|| anyhow::anyhow!(crate::locale::pick("Realtime voice needs an API key for the selected provider", "实时语音需要所选服务的 API Key")))?;
         // 设置了自己的大模型（比如 DeepSeek）时，实时语音模型只负责听和说，判断、调工具都交给那个大模型；
         // 没设置时才让实时语音模型自己当大脑
         let local = self.agent.is_some();
@@ -635,7 +635,7 @@ impl Assistant {
         let player = turn.guard(tokio::task::spawn_blocking(Player::open)).await;
         let mut player = match player {
             None => return Err(Cancelled.into()),
-            Some(r) => r.map_err(|e| anyhow::anyhow!("打开扬声器失败：{e}"))??,
+            Some(r) => r.map_err(|e| anyhow::anyhow!(crate::locale::pick(&format!("Could not open the speaker: {e}"), &format!("打开扬声器失败：{e}")).to_string()))??,
         };
         // 连接 + 配置确认整体有截止时间（Session::connect 内部有），期间可以停止
         let Some(session) = turn.guard(realtime::Session::connect(&settings)).await else {
@@ -742,8 +742,8 @@ impl Assistant {
         let mut transcript_due: Option<Instant> = None;
 
         if let Some(text) = notice {
-            self.chat(Role::System, format!("（通知）{text}"));
-            let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
+            self.chat(Role::System, crate::locale::pick(&format!("(Notification) {text}"), &format!("（通知）{text}")).to_string());
+            let text = format!("(System notification, not a user message) {text}. Tell the user this result in one or two conversational sentences. Reply in the language the user speaks.");
             if local {
                 self.think(thinking, &text);
             } else {
@@ -880,7 +880,7 @@ impl Assistant {
                                 responding = false;
                                 watch.finish();
                                 if status == "failed" {
-                                    self.chat(Role::System, "实时语音这一轮播报失败了");
+                                    self.chat(Role::System, crate::locale::pick("Realtime voice playback failed for this turn.", "实时语音这一轮播报失败了"));
                                 }
                             }
                             if !responding && !to_speak.is_empty() {
@@ -904,7 +904,7 @@ impl Assistant {
                             }
                             transcript.clear();
                             if status == "failed" {
-                                self.chat(Role::System, "实时语音这一轮回复失败了");
+                                self.chat(Role::System, crate::locale::pick("Realtime voice response failed for this turn.", "实时语音这一轮回复失败了"));
                             }
                             if !calls.is_empty() {
                                 // 执行工具，把结果交回去让模型接着说
@@ -930,7 +930,7 @@ impl Assistant {
                             }
                         }
                         realtime::Event::Error(message) => {
-                            self.chat(Role::System, format!("实时语音请求出错：{message}"));
+                            self.chat(Role::System, crate::locale::pick(&format!("Realtime voice request failed: {message}"), &format!("实时语音请求出错：{message}")).to_string());
                             // 正在等的回复还一点没出来就报错，多半不会再来了：结束等待，别一直“思考中”
                             if responding && !watch.seen_progress() {
                                 responding = false;
@@ -952,14 +952,14 @@ impl Assistant {
                                 Some(Ok(reply)) => Some(reply),
                                 Some(Err(e)) => {
                                     self.chat(Role::System, format!("{e:#}"));
-                                    Some(format!("这次没能确认完成：{e}。"))
+                                    Some(crate::locale::pick(&format!("I could not confirm completion: {e}."), &format!("这次没能确认完成：{e}。")).to_string())
                                 }
                                 None => None,
                             }
                         }
                         Err(e) => {
                             self.agent = self.build_agent();
-                            Some(format!("这次出错了：{e}。"))
+                            Some(crate::locale::pick(&format!("An error occurred: {e}."), &format!("这次出错了：{e}。")).to_string())
                         }
                     };
                     if let Some(reply) = reply {
@@ -981,8 +981,8 @@ impl Assistant {
                 done = self.done_rx.recv() => {
                     if let Some(done) = done {
                         let text = done.message();
-                        self.chat(Role::System, format!("（{}）{text}", if done.reminder { "提醒" } else { "后台任务通知" }));
-                        let text = format!("（这是系统通知，不是用户说的话）{text}。请用一两句话口语化地告诉用户这个结果。");
+                        self.chat(Role::System, format!("（{}）{text}", if done.reminder { crate::locale::pick("Reminder", "提醒") } else { crate::locale::pick("Background task notification", "后台任务通知") }));
+                        let text = format!("(System notification, not a user message) {text}. Tell the user this result in one or two conversational sentences. Reply in the language the user speaks.");
                         if local {
                             if thinking.job.is_some() {
                                 to_think.push(text);
@@ -1007,7 +1007,7 @@ impl Assistant {
                             responding = false;
                             watch.finish();
                         }
-                        self.chat(Role::System, "（已打断）");
+                        self.chat(Role::System, crate::locale::pick("(Interrupted)", "（已打断）"));
                         sys::beep(880, 80);
                         self.emit(UiEvent::Status(Status::Listening));
                         last_activity = Instant::now();
@@ -1020,7 +1020,7 @@ impl Assistant {
                     if let Some(reason) = watch.expired(now) {
                         player.clear();
                         session.cancel_response().await;
-                        self.chat(Role::System, format!("实时语音{reason}，这一轮先结束了，可以再说一次。"));
+                        self.chat(Role::System, crate::locale::pick(&format!("Realtime voice {reason}. This turn has ended; please try again."), &format!("实时语音{reason}，这一轮先结束了，可以再说一次。")).to_string());
                         break;
                     }
                     if speaking_due.is_some_and(|t| now >= t) {
@@ -1028,7 +1028,7 @@ impl Assistant {
                         user_speaking = false;
                         last_activity = now;
                         self.emit(UiEvent::Partial(String::new()));
-                        self.chat(Role::System, "很久没等到这句话说完，先不等了。");
+                        self.chat(Role::System, crate::locale::pick("Timed out waiting for the end of your sentence.", "很久没等到这句话说完，先不等了。"));
                     }
                     if transcript_due.is_some_and(|t| now >= t) {
                         transcript_due = None;
@@ -1036,7 +1036,7 @@ impl Assistant {
                         if let Some(reply) = held_reply.take() {
                             self.chat(Role::Assistant, reply);
                         }
-                        self.chat(Role::System, "没拿到刚才那句话的识别文字。");
+                        self.chat(Role::System, crate::locale::pick("No transcript was received for that sentence.", "没拿到刚才那句话的识别文字。"));
                     }
                     let playing = player.is_playing();
                     // 播放中、自己的大模型还在想或还有回复没读：都是正常进展，不算空闲。
@@ -1093,7 +1093,7 @@ struct Cancelled;
 
 impl std::fmt::Display for Cancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("已停止")
+        f.write_str(crate::locale::pick("Stopped", "已停止"))
     }
 }
 
@@ -1137,8 +1137,8 @@ impl ResponseWatch {
     /// 超时时返回给用户看的原因
     fn expired(&self, now: Instant) -> Option<&'static str> {
         match self.state? {
-            (since, None) if now.duration_since(since) > RESPONSE_FIRST_DEADLINE => Some("一直没有开始回复"),
-            (_, Some(last)) if now.duration_since(last) > RESPONSE_STALL_DEADLINE => Some("回复中途卡住了"),
+            (since, None) if now.duration_since(since) > RESPONSE_FIRST_DEADLINE => Some(crate::locale::pick("did not start responding", "一直没有开始回复")),
+            (_, Some(last)) if now.duration_since(last) > RESPONSE_STALL_DEADLINE => Some(crate::locale::pick("stalled during the response", "回复中途卡住了")),
             _ => None,
         }
     }
@@ -1183,76 +1183,76 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         let short: String = v.chars().take(40).collect();
         if short.chars().count() < v.chars().count() { format!("{short}…") } else { short }
     };
-    let with = |verb: &str, value: String| if value.is_empty() { verb.to_string() } else { format!("{verb}：{value}") };
+    let with = |verb: &str, value: String| if value.is_empty() { verb.to_string() } else { crate::locale::pick(&format!("{verb}: {value}"), &crate::locale::pick(&format!("{verb}: {value}"), &format!("{verb}：{value}")).to_string()).to_string() };
     match name {
         "start_task" | "resume_task" | "cancel_task" => String::new(),
-        "task_status" => "查看后台任务进度".into(),
-        "launch_app" => with("打开应用", arg("name")),
-        "find_apps" => with("查找应用", arg("keyword")),
-        "web_search" => with("搜索", arg("query")),
-        "open_url" | "browser_navigate" => with("打开网页", arg("url")),
-        "current_time" => "查看时间".into(),
+        "task_status" => crate::locale::pick("Check background progress", "查看后台任务进度").into(),
+        "launch_app" => with(crate::locale::pick("Open app", "打开应用"), arg("name")),
+        "find_apps" => with(crate::locale::pick("Find app", "查找应用"), arg("keyword")),
+        "web_search" => with(crate::locale::pick("Search", "搜索"), arg("query")),
+        "open_url" | "browser_navigate" => with(crate::locale::pick("Open webpage", "打开网页"), arg("url")),
+        "current_time" => crate::locale::pick("Check time", "查看时间").into(),
         "media_control" => match input["action"].as_str().unwrap_or("") {
-            "volume_up" => "调大音量".into(),
-            "volume_down" => "调小音量".into(),
-            "mute" => "静音".into(),
-            "play_pause" => "播放 / 暂停".into(),
-            "next" => "下一首".into(),
-            "previous" => "上一首".into(),
-            _ => "控制媒体播放".into(),
+            "volume_up" => crate::locale::pick("Increase volume", "调大音量").into(),
+            "volume_down" => crate::locale::pick("Decrease volume", "调小音量").into(),
+            "mute" => crate::locale::pick("Mute", "静音").into(),
+            "play_pause" => crate::locale::pick("Play / pause", "播放 / 暂停").into(),
+            "next" => crate::locale::pick("Next track", "下一首").into(),
+            "previous" => crate::locale::pick("Previous track", "上一首").into(),
+            _ => crate::locale::pick("Control media", "控制媒体播放").into(),
         },
-        "close_app" => with("关闭", arg("name")),
-        "list_processes" => with("查看正在运行的程序", arg("keyword")),
-        "desktop_windows" => "查看打开的窗口".into(),
-        "desktop_focus" => with("切换到窗口", arg("name")),
-        "desktop_snapshot" => with("读取窗口内容", arg("window")),
-        "screen_read" => "看看屏幕上的内容".into(),
-        "file_rename" => with("改名为", arg("new_name")),
-        "file_find" => with("查找文件", arg("keyword")),
-        "file_open" => with("打开文件", arg("path")),
-        "file_move" => with(if input["copy"].as_bool() == Some(true) { "复制到" } else { "移动到" }, arg("to")),
-        "file_delete" => with("删除到回收站", arg("path")),
-        "file_info" => with("查看文件信息", arg("path")),
-        "volume_set" => if input["mute"].as_bool() == Some(true) { "静音".into() } else { with("音量设为", input["percent"].as_u64().map(|p| format!("{p}%")).unwrap_or_default()) },
-        "system_setting" => with("系统设置", arg("setting")),
-        "screenshot" => "截图".into(),
-        "power" => with("电源", arg("action")),
-        "window_arrange" => with("排列窗口", arg("action")),
-        "system_info" => "查看电脑状态".into(),
-        "calc" => with("计算", arg("expression")),
-        "clipboard_history" => "查看剪贴板历史".into(),
-        "reminder_add" => with("设提醒", arg("text")),
-        "reminder_list" => "查看提醒".into(),
-        "plugin_guide" => with("读插件说明", arg("id")),
-        "local_http" => with("调用本机接口", input["url"].as_str().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()),
-        "plugin_market" => match input["action"].as_str() { Some("install") => with("安装插件", arg("id")), Some("remove") => with("卸载插件", arg("id")), _ => "查看插件市场".into() },
-        "history_search" => match input["query"].as_str().or(input["date"].as_str()) { Some(q) => with("查历史记录", q.to_string()), None => "查历史记录".into() },
-        "reminder_cancel" => "取消提醒".into(),
-        "app_update" => if input["action"] == "install" { "更新 Aeri".into() } else { "检查更新".into() },
-        "clipboard_write" => "复制到剪贴板".into(),
-        "clipboard_read" => "读取剪贴板".into(),
-        "desktop_click" => if input["double"].as_bool() == Some(true) { "双击".into() } else { "点击".into() },
-        "desktop_set_value" => with("填写", arg("value")),
-        "desktop_select" => with("选择", arg("option")),
+        "close_app" => with(crate::locale::pick("Close", "关闭"), arg("name")),
+        "list_processes" => with(crate::locale::pick("List running apps", "查看正在运行的程序"), arg("keyword")),
+        "desktop_windows" => crate::locale::pick("List open windows", "查看打开的窗口").into(),
+        "desktop_focus" => with(crate::locale::pick("Switch to window", "切换到窗口"), arg("name")),
+        "desktop_snapshot" => with(crate::locale::pick("Read window", "读取窗口内容"), arg("window")),
+        "screen_read" => crate::locale::pick("Read screen", "看看屏幕上的内容").into(),
+        "file_rename" => with(crate::locale::pick("Rename to", "改名为"), arg("new_name")),
+        "file_find" => with(crate::locale::pick("Find files", "查找文件"), arg("keyword")),
+        "file_open" => with(crate::locale::pick("Open file", "打开文件"), arg("path")),
+        "file_move" => with(if input["copy"].as_bool() == Some(true) { crate::locale::pick("Copy to", "复制到") } else { crate::locale::pick("Move to", "移动到") }, arg("to")),
+        "file_delete" => with(crate::locale::pick("Move to Recycle Bin", "删除到回收站"), arg("path")),
+        "file_info" => with(crate::locale::pick("View file information", "查看文件信息"), arg("path")),
+        "volume_set" => if input["mute"].as_bool() == Some(true) { crate::locale::pick("Mute", "静音").into() } else { with(crate::locale::pick("Set volume to", "音量设为"), input["percent"].as_u64().map(|p| format!("{p}%")).unwrap_or_default()) },
+        "system_setting" => with(crate::locale::pick("System settings", "系统设置"), arg("setting")),
+        "screenshot" => crate::locale::pick("Take screenshot", "截图").into(),
+        "power" => with(crate::locale::pick("Power", "电源"), arg("action")),
+        "window_arrange" => with(crate::locale::pick("Arrange window", "排列窗口"), arg("action")),
+        "system_info" => crate::locale::pick("Check computer status", "查看电脑状态").into(),
+        "calc" => with(crate::locale::pick("Calculate", "计算"), arg("expression")),
+        "clipboard_history" => crate::locale::pick("View clipboard history", "查看剪贴板历史").into(),
+        "reminder_add" => with(crate::locale::pick("Set reminder", "设提醒"), arg("text")),
+        "reminder_list" => crate::locale::pick("View reminders", "查看提醒").into(),
+        "plugin_guide" => with(crate::locale::pick("Read plugin guide", "读插件说明"), arg("id")),
+        "local_http" => with(crate::locale::pick("Call local API", "调用本机接口"), input["url"].as_str().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()),
+        "plugin_market" => match input["action"].as_str() { Some("install") => with(crate::locale::pick("Install plugin", "安装插件"), arg("id")), Some("remove") => with(crate::locale::pick("Remove plugin", "卸载插件"), arg("id")), _ => crate::locale::pick("View plugin market", "查看插件市场").into() },
+        "history_search" => match input["query"].as_str().or(input["date"].as_str()) { Some(q) => with(crate::locale::pick("Search history", "查历史记录"), q.to_string()), None => crate::locale::pick("Search history", "查历史记录").into() },
+        "reminder_cancel" => crate::locale::pick("Cancel reminder", "取消提醒").into(),
+        "app_update" => if input["action"] == "install" { crate::locale::pick("Update Aeri", "更新 Aeri").into() } else { crate::locale::pick("Check for updates", "检查更新").into() },
+        "clipboard_write" => crate::locale::pick("Copy to clipboard", "复制到剪贴板").into(),
+        "clipboard_read" => crate::locale::pick("Read clipboard", "读取剪贴板").into(),
+        "desktop_click" => if input["double"].as_bool() == Some(true) { crate::locale::pick("Double-click", "双击").into() } else { crate::locale::pick("Click", "点击").into() },
+        "desktop_set_value" => with(crate::locale::pick("Fill", "填写"), arg("value")),
+        "desktop_select" => with(crate::locale::pick("Select", "选择"), arg("option")),
         "desktop_check" => match input["checked"].as_bool() {
-            Some(true) => "勾选".into(),
-            Some(false) => "取消勾选".into(),
-            None => "切换开关".into(),
+            Some(true) => crate::locale::pick("Check", "勾选").into(),
+            Some(false) => crate::locale::pick("Uncheck", "取消勾选").into(),
+            None => crate::locale::pick("Toggle switch", "切换开关").into(),
         },
-        "desktop_scroll" => "滚动".into(),
-        "desktop_type" | "browser_type" => with("输入", arg("text")),
-        "desktop_keys" | "browser_press_key" => with("按键", arg(if name == "desktop_keys" { "keys" } else { "key" })),
-        "browser_navigate_back" => "网页后退".into(),
-        "browser_snapshot" => "读取网页内容".into(),
-        "browser_click" => with("点击网页", arg("element")),
-        "browser_hover" => with("指向", arg("element")),
-        "browser_fill_form" => "填写表单".into(),
-        "browser_select_option" => with("选择", arg("element")),
-        "browser_find" => with("在网页里查找", arg("text")),
-        "browser_tabs" => "切换浏览器标签页".into(),
-        "browser_wait_for" => "等待网页加载".into(),
-        "browser_handle_dialog" => "处理网页弹窗".into(),
-        "browser_close" => "关闭浏览器".into(),
+        "desktop_scroll" => crate::locale::pick("Scroll", "滚动").into(),
+        "desktop_type" | "browser_type" => with(crate::locale::pick("Type", "输入"), arg("text")),
+        "desktop_keys" | "browser_press_key" => with(crate::locale::pick("Press key", "按键"), arg(if name == "desktop_keys" { "keys" } else { "key" })),
+        "browser_navigate_back" => crate::locale::pick("Go back", "网页后退").into(),
+        "browser_snapshot" => crate::locale::pick("Read webpage", "读取网页内容").into(),
+        "browser_click" => with(crate::locale::pick("Click webpage", "点击网页"), arg("element")),
+        "browser_hover" => with(crate::locale::pick("Hover", "指向"), arg("element")),
+        "browser_fill_form" => crate::locale::pick("Fill form", "填写表单").into(),
+        "browser_select_option" => with(crate::locale::pick("Select", "选择"), arg("element")),
+        "browser_find" => with(crate::locale::pick("Find on page", "在网页里查找"), arg("text")),
+        "browser_tabs" => crate::locale::pick("Switch browser tab", "切换浏览器标签页").into(),
+        "browser_wait_for" => crate::locale::pick("Wait for page", "等待网页加载").into(),
+        "browser_handle_dialog" => crate::locale::pick("Handle webpage dialog", "处理网页弹窗").into(),
+        "browser_close" => crate::locale::pick("Close browser", "关闭浏览器").into(),
         _ => {
             let args: String = input.to_string().chars().take(60).collect();
             format!("{name} {args}")
@@ -1366,9 +1366,9 @@ mod tests {
 
     #[test]
     fn tool_descriptions_are_readable() {
-        assert_eq!(describe_tool("launch_app", &json!({"name": "计算器"})), "打开应用：计算器");
-        assert_eq!(describe_tool("media_control", &json!({"action": "volume_up"})), "调大音量");
-        assert_eq!(describe_tool("browser_snapshot", &json!({})), "读取网页内容");
+        assert_eq!(describe_tool("launch_app", &json!({"name": "计算器"})), crate::locale::pick("Open app: 计算器", "打开应用：计算器"));
+        assert_eq!(describe_tool("media_control", &json!({"action": "volume_up"})), crate::locale::pick("Increase volume", "调大音量"));
+        assert_eq!(describe_tool("browser_snapshot", &json!({})), crate::locale::pick("Read webpage", "读取网页内容"));
         // 后台任务自己会报告，不重复显示
         assert_eq!(describe_tool("start_task", &json!({"task": "整理桌面"})), "");
         let long = describe_tool("desktop_type", &json!({"text": "字".repeat(60)}));

@@ -161,22 +161,22 @@ fn task_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "resume_task",
-            "description": "继续、重试或修改已结束的后台任务，自动带上原任务和完整结果。不填 id 时使用最近任务。用户说接着做、修改刚才结果时优先使用。运行中的任务须先取消。",
+            "description": "Continue, retry or modify a finished background task with its original request and complete result. Omit id for the latest task. Prefer this when the user asks to continue or revise a previous result. Cancel running tasks before changing them.",
             "input_schema": {"type": "object", "properties": {"id": {"type": "integer", "minimum": 1}, "instruction": {"type": "string"}}, "required": ["instruction"]}
         }),
         json!({
             "name": "start_task",
-            "description": "把需要多步操作的任务交给后台智能体去做（操作软件或网页、查资料并总结、读写文件、整理东西等），立即返回，不用等它做完。task 要写成完整、独立能看懂的说明，包含用户的原话要点。",
+            "description": "Delegate a multi-step task to a background agent (software or web operations, research and summaries, reading/writing or organizing files). Returns immediately. task must be a complete standalone instruction including the key points of the original request.",
             "input_schema": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}
         }),
         json!({
             "name": "task_status",
-            "description": "查看后台任务的进度。",
+            "description": "Check background task progress.",
             "input_schema": {"type": "object", "properties": {}}
         }),
         json!({
             "name": "cancel_task",
-            "description": "取消后台任务。不给 id 时取消最近一个正在进行的任务。",
+            "description": "Cancel a background task. Omit id to cancel the most recent running task.",
             "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}}}
         }),
     ]
