@@ -113,6 +113,12 @@ impl Session {
     }
 
     async fn connect_inner(s: &RealtimeSettings) -> anyhow::Result<Self> {
+        if s.url.contains("/api-ws/v1/inference") {
+            bail!("{}", crate::locale::pick(
+                "This address is Alibaba speech recognition, not a realtime voice service. Switch the mode to Standard, pick Alibaba DashScope under Speech recognition, and enter this address and model there.",
+                "这个地址是阿里的语音识别服务，不是实时语音。请把对话方式换成“标准”，语音识别选“阿里云百炼”，在那里填这个地址和模型。",
+            ));
+        }
         let url = session_url(&s.url, &s.model);
         let mut request = url.as_str().into_client_request()?;
         if s.provider == Provider::Azure {

@@ -207,6 +207,9 @@ component TextField inherits Rectangle {
         spacing: 2px;
         Rectangle {
             horizontal-stretch: 1;
+            min-width: 0px;
+            preferred-width: 0px;
+            clip: true;
             // 占位文字放在输入框下面，点击会落到输入框上
             if root.text == "": Text {
                 width: parent.width;
@@ -1721,6 +1724,12 @@ export component AppWindow inherits Window {
                                 Text { text: root.local-model-status; color: Theme.ink-3; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap; }
                                 Btn { text: @tr("Delete downloaded model"); clicked => { root.delete-local-model(); } }
                             }
+                        }
+                        if root.frontend-index == 1 && root.asr-provider-index == 3: FieldBlock {
+                            title: @tr("Base URL and model");
+                            hint: @tr("Alibaba streaming recognition, e.g. fun-asr-realtime or qwen-audio-3.1-asr-flash-streaming. For Qwen on qianwenai.com use wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference.");
+                            TextField { text <=> root.asr-url; }
+                            TextField { text <=> root.asr-model; }
                         }
                         if root.frontend-index == 1 && root.asr-provider-index == 8: FieldBlock {
                             title: @tr("Base URL and model");

@@ -129,6 +129,15 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Debug only: VA_UI_PAGE="settings-sub:key text" opens that settings page with the voice key field filled
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("VA_UI_PAGE") {
+        if let Some((sub, key)) = v.split_once(':') {
+            window.set_page(1);
+            window.set_settings_sub(sub.parse().unwrap_or(1));
+            window.set_asr_key_input(key.into());
+        }
+    }
     wire_chat(&window, &cmd_tx);
     wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
     wire_update(&window, runtime.handle().clone(), cfg.auto_update);

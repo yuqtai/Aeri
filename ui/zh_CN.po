@@ -870,3 +870,6 @@ msgstr "任何实现了 OpenAI Realtime 接口的服务都可以，API Key 可�
 
 msgid "Custom"
 msgstr "自定义"
+
+msgid "Alibaba streaming recognition, e.g. fun-asr-realtime or qwen-audio-3.1-asr-flash-streaming. For Qwen on qianwenai.com use wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference."
+msgstr "阿里流式语音识别，比如 fun-asr-realtime、qwen-audio-3.1-asr-flash-streaming。用千问平台（qianwenai.com）时地址填 wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference。"

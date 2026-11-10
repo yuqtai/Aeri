@@ -327,7 +327,16 @@ fn dpapi(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
 
 /// 加密 key，返回可以写进配置文件的十六进制字符串；失败返回 None
 pub fn protect_key(plain: &str) -> Option<String> {
-    dpapi(plain.trim().as_bytes(), true).map(|b| b.iter().map(|x| format!("{x:02x}")).collect())
+    let key = clean_key(plain);
+    if key.is_empty() {
+        return None;
+    }
+    dpapi(key.as_bytes(), true).map(|b| b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// API keys are printable ASCII without spaces. Anything after that (a note pasted along, a line break) is dropped.
+pub fn clean_key(text: &str) -> String {
+    text.trim().chars().take_while(|c| c.is_ascii_graphic()).collect()
 }
 
 pub(crate) fn unprotect_key(stored: &str) -> Option<String> {
@@ -335,7 +344,7 @@ pub(crate) fn unprotect_key(stored: &str) -> Option<String> {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..stored.len()).step_by(2).map(|i| u8::from_str_radix(&stored[i..i + 2], 16).ok()).collect();
-    String::from_utf8(dpapi(&bytes?, false)?).ok().filter(|k| !k.is_empty())
+    String::from_utf8(dpapi(&bytes?, false)?).ok().map(|k| clean_key(&k)).filter(|k| !k.is_empty())
 }
 
 /// 读取环境变量里的 key；从注册表兜底读取用户级变量（setx 设置后不用重启已打开的程序）
@@ -601,5 +610,16 @@ mod wake_word_tests {
         assert_eq!(repair_wake_words(v(&["Hey Aeri"])), v(&["Hey Aeri"]));
         assert_eq!(repair_wake_words(v(&["你好电脑", "小爱同学"])), v(&["你好电脑", "小爱同学"]));
         assert_eq!(repair_wake_words(v(&["Hey"])), v(&["Hey"]));
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    #[test]
+    fn drops_text_pasted_after_the_key() {
+        assert_eq!(super::clean_key("  sk-abc.DEF_1  "), "sk-abc.DEF_1");
+        assert_eq!(super::clean_key("sk-abc这是怎么调用的？"), "sk-abc");
+        assert_eq!(super::clean_key("sk-abc\nnext line"), "sk-abc");
+        assert_eq!(super::clean_key("中文"), "");
     }
 }
