@@ -109,8 +109,8 @@ fn legacy_version() -> u32 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            // 四个音节的唤醒词最不容易误触发；“小助手”这类三字词会被“小猪手套”误唤醒
-            wake_words: vec!["你好电脑".into()],
+            // Defaults follow the interface language; saved wake words remain unchanged.
+            wake_words: vec![crate::locale::pick("Hey Aeri", "你好电脑").into()],
             kws_threshold: 0.25,
             kws_score: 1.5,
             input_device: String::new(),

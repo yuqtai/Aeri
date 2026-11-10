@@ -193,7 +193,7 @@ pub fn launch_apply(new: &Path) -> anyhow::Result<()> {
 pub fn definition() -> Value {
     json!({
         "name": "app_update",
-        "description": "Aeri 自己的软件更新。check：看 GitHub 上有没有新版本；install：下载新版本并重启完成更新（设置会保留，用户说“更新软件”“升级到最新版”时用）。",
+        "description": "Update Aeri itself. check looks for a new version on GitHub; install downloads and restarts to update while preserving settings. Use when the user asks to update or upgrade Aeri.",
         "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["check", "install"]}}, "required": ["action"]}
     })
 }

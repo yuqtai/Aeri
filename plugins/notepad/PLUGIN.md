@@ -1,15 +1,15 @@
 ---
 id: notepad
-name: 记事本
-version: 1.0.0
-description: 在记事本里写字、读取内容、保存
+name: Notepad
+version: 1.1.0
+description: Write, read and save text in Notepad
 match: Notepad.exe
 keywords: 记事本, notepad
 author: Aeri
 ---
-Windows 11 的记事本窗口标题是英文的，形如“无标题 - Notepad”或“文件名.txt - Notepad”，找窗口时用“Notepad”。
+Windows 11 Notepad window titles include "Notepad", for example "Untitled - Notepad" or "filename.txt - Notepad". Use "Notepad" to find the window.
 
-- **写入内容**：没打开就先 launch_app 打开“记事本”。然后 desktop_snapshot 这个窗口，找角色是 Document（或 Edit）的编辑区，用 desktop_set_value 一次写进去，不要一个字一个字地打。set_value 会替换全部内容；要接在原文后面，就先读出原文，把新内容拼在后面一起写。
-- **读取内容**：desktop_snapshot 里编辑区的 value 就是全文，不用全选复制。
-- **保存**：desktop_focus 切到这个窗口后按 ctrl+s。没保存过的新文件会弹出“另存为”对话框，问用户存到哪里、叫什么名字，不要自己乱起名。
-- 一个记事本窗口里可能有好几个标签页，操作前先确认当前标签页是不是用户要的那个。
+- **Write:** If it is closed, first launch_app with "Notepad". Take desktop_snapshot, find the Document (or Edit) editor and use desktop_set_value to write the entire text at once instead of typing character by character. set_value replaces all content; to append, read the existing text and write the combined text.
+- **Read:** The editor's value in desktop_snapshot contains the full text; do not Select All and copy.
+- **Save:** Use desktop_focus, then ctrl+s. A new unsaved file opens Save As: ask the user for the location and file name rather than inventing them.
+- A window can contain multiple tabs. Before acting, verify that the current tab is the one the user wants.

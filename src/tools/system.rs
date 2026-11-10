@@ -40,15 +40,15 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "volume_set",
-            "description": "把系统音量设成指定的百分比（“音量调到 30”），或静音 / 取消静音。只想调大调小一点时用 media_control。",
+            "description": "Set system volume to a percentage (for example, volume to 30), or mute/unmute. Use media_control for small increases or decreases.",
             "input_schema": {"type": "object", "properties": {
                 "percent": {"type": "integer", "minimum": 0, "maximum": 100},
-                "mute": {"type": "boolean", "description": "true 静音，false 取消静音"}
+                "mute": {"type": "boolean", "description": "true to mute, false to unmute."}
             }}
         }),
         json!({
             "name": "system_setting",
-            "description": "改系统设置：brightness 屏幕亮度（value 0-100，只支持笔记本等内置屏幕）；dark_mode 深色模式、wifi、bluetooth（on true/false）；night_light 夜间模式、do_not_disturb 勿扰、display 显示、sound 声音这几项 Windows 不让程序直接改，会打开对应的设置页让用户点一下。",
+            "description": "Change system settings: brightness uses value 0-100 (built-in displays such as laptops only); dark_mode, wifi and bluetooth use on true/false. Windows prevents direct changes to night_light, do_not_disturb, display and sound: these open the corresponding settings page for the user to change.",
             "input_schema": {"type": "object", "properties": {
                 "setting": {"type": "string", "enum": ["brightness", "dark_mode", "wifi", "bluetooth", "night_light", "do_not_disturb", "display", "sound"]},
                 "on": {"type": "boolean"},
@@ -57,12 +57,12 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "screenshot",
-            "description": "截图，保存到“图片\\Screenshots”并复制到剪贴板（可以直接粘贴）。target 为 window 时只截用户正在看的窗口，默认截全部屏幕。",
+            "description": "Save a screenshot to Pictures\\Screenshots and copy it to the clipboard for pasting. target=window captures only the window the user is viewing; default captures all screens.",
             "input_schema": {"type": "object", "properties": {"target": {"type": "string", "enum": ["screen", "window"]}}}
         }),
         json!({
             "name": "power",
-            "description": "锁屏 lock、睡眠 sleep、关机 shutdown、重启 restart、取消关机或重启 cancel。关机和重启会关掉所有程序：必须先问用户确认，用户确认后再带上 confirmed=true 调用；执行后有 30 秒可以用 cancel 取消。",
+            "description": "Power actions: lock, sleep, shutdown, restart, cancel (cancel shutdown/restart). Shutdown and restart close all programs: first ask the user to confirm, then call with confirmed=true only after confirmation. There are 30 seconds to cancel after scheduling.",
             "input_schema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["lock", "sleep", "shutdown", "restart", "cancel"]},
                 "confirmed": {"type": "boolean"}
@@ -70,7 +70,7 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "window_arrange",
-            "description": "排列窗口：maximize 最大化、minimize 最小化、restore 还原、left 放到屏幕左半边、right 右半边、next_monitor 移到另一块屏幕、show_desktop 显示桌面（最小化全部）。window 是窗口标题里的文字，不填就是用户正在看的窗口。",
+            "description": "Arrange a window: maximize, minimize, restore, left/right half of screen, next_monitor, show_desktop (minimize all). window is part of its title; omit for the window the user is viewing.",
             "input_schema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["maximize", "minimize", "restore", "left", "right", "next_monitor", "show_desktop"]},
                 "window": {"type": "string"}
@@ -78,17 +78,17 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "system_info",
-            "description": "查看电脑状态。overview：电量、内存、各磁盘剩余空间、开机时长；cpu：CPU 占用和最占资源的程序；network：网络连接、Wi-Fi 名称和信号。",
+            "description": "Inspect computer status. overview: battery, memory, free disk space and uptime; cpu: CPU usage and top resource-consuming processes; network: connections, Wi-Fi name and signal.",
             "input_schema": {"type": "object", "properties": {"topic": {"type": "string", "enum": ["overview", "cpu", "network"]}}}
         }),
         json!({
             "name": "calc",
-            "description": "精确计算数学表达式，算数一律用它，不要心算。支持 + - * / % ^、括号、sqrt abs round floor ceil ln log sin cos tan（角度制）、pi、e。单位换算也写成表达式，例如 5*1.609。",
+            "description": "Calculate mathematical expressions accurately. Always use this for arithmetic instead of mental calculation. Supports + - * / % ^, parentheses, sqrt abs round floor ceil ln log sin cos tan (degrees), pi and e. Express unit conversions as calculations, for example 5*1.609.",
             "input_schema": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}
         }),
         json!({
             "name": "clipboard_history",
-            "description": "查看最近复制过的文字（Aeri 启动后记录，最多 20 条，第 1 条最新）。给 restore 时把第几条重新放回剪贴板，用户就能粘贴“刚才复制的上一条”。",
+            "description": "Read recently copied text (recorded since Aeri started, up to 20 entries, newest first). Set restore to an entry number to put it back on the clipboard so the user can paste a previous copy.",
             "input_schema": {"type": "object", "properties": {"restore": {"type": "integer", "minimum": 1}}}
         }),
     ]

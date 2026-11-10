@@ -382,7 +382,7 @@ fn normalize_keys(keys: &str) -> String {
 
 pub fn definitions() -> Vec<Value> {
     let by_ref = |desc: &str, extra: Value, required: &[&str]| {
-        let mut props = json!({"ref": {"type": "string", "description": "desktop_snapshot 里的控件编号，比如 e3"}});
+        let mut props = json!({"ref": {"type": "string", "description": "Control reference from desktop_snapshot, such as e3."}});
         props.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
         let mut req = vec!["ref"];
         req.extend_from_slice(required);
@@ -391,27 +391,27 @@ pub fn definitions() -> Vec<Value> {
     let mut defs = vec![
         json!({
             "name": "desktop_windows",
-            "description": "列出当前打开的窗口（标题和程序名）。",
+            "description": "List open windows with titles and program names.",
             "input_schema": {"type": "object", "properties": {}}
         }),
         json!({
             "name": "desktop_focus",
-            "description": "把标题包含 name 的窗口切到前台（最小化的会先还原）。也可以填程序名，比如 notepad。注意窗口标题可能是英文（如记事本叫 Notepad）。",
+            "description": "Bring a window whose title contains name to the foreground, restoring it if minimized. Program names such as notepad also work. Titles may be English (for example Notepad).",
             "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
         }),
         json!({
             "name": "desktop_snapshot",
-            "description": "读取窗口里的控件列表：每行是编号、类型、名称、当前值和状态。不填 window 时读用户正在看的窗口；窗口在后面也能读，不用先切到前台。操作控件前先调用它拿编号，界面变化后要重新读。",
-            "input_schema": {"type": "object", "properties": {"window": {"type": "string", "description": "窗口标题的一部分，可选"}}}
+            "description": "Read window controls: each line gives reference, role, name, current value and state. Omit window for the window the user is viewing. Background windows can be read without focusing. Get references before acting; take a new snapshot after the interface changes.",
+            "input_schema": {"type": "object", "properties": {"window": {"type": "string", "description": "Optional part of a window title."}}}
         }),
     ];
     for (name, desc, extra, required) in [
-        ("desktop_click", "点击控件（按钮、链接、菜单项、标签页等）。默认不移动鼠标、不抢焦点；double 为 true 时会真的移动鼠标双击。", json!({"double": {"type": "boolean", "description": "是否双击"}}), &[][..]),
-        ("desktop_type", "在输入框里模拟键盘输入文字（支持中文），会把窗口切到前台。要整体替换输入框内容优先用 desktop_set_value。", json!({"text": {"type": "string"}}), &["text"][..]),
-        ("desktop_set_value", "直接把输入框的内容设为 value（替换原有内容），不需要切到前台，比模拟键盘可靠。", json!({"value": {"type": "string"}}), &["value"][..]),
-        ("desktop_select", "在下拉框或列表里选中名为 option 的一项。", json!({"option": {"type": "string"}}), &["option"][..]),
-        ("desktop_check", "勾选或取消勾选复选框、开关：checked 为 true 勾选，false 取消，不填就切换。", json!({"checked": {"type": "boolean"}}), &[][..]),
-        ("desktop_scroll", "滚动控件（列表、文档、网页区域），direction 为 up/down/left/right，amount 为滚动格数（默认 3）。", json!({"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "amount": {"type": "integer"}}), &[][..]),
+        ("desktop_click", "Click a control (button, link, menu item, tab). Does not move the pointer or steal focus by default; double=true performs a real pointer double-click.", json!({"double": {"type": "boolean", "description": "Double-click if true."}}), &[][..]),
+        ("desktop_type", "Simulate typing text, including Chinese, into an input, bringing the window to the foreground. Prefer desktop_set_value to replace the whole value.", json!({"text": {"type": "string"}}), &["text"][..]),
+        ("desktop_set_value", "Set an input to value, replacing existing content without focusing the window; more reliable than simulated typing.", json!({"value": {"type": "string"}}), &["value"][..]),
+        ("desktop_select", "Select the item named option in a dropdown or list.", json!({"option": {"type": "string"}}), &["option"][..]),
+        ("desktop_check", "Set checkbox/switch state: checked=true checks, false unchecks, omitted toggles.", json!({"checked": {"type": "boolean"}}), &[][..]),
+        ("desktop_scroll", "Scroll a control (list, document or web area). direction is up/down/left/right; amount is the number of scroll steps, default 3.", json!({"direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "amount": {"type": "integer"}}), &[][..]),
     ] {
         let (desc, schema) = by_ref(desc, extra, required);
         defs.push(json!({"name": name, "description": desc, "input_schema": schema}));
@@ -419,17 +419,17 @@ pub fn definitions() -> Vec<Value> {
     defs.extend([
         json!({
             "name": "desktop_keys",
-            "description": "向前台窗口按快捷键或特殊键，例如 ctrl+s、ctrl+shift+t、enter、esc、tab、f5。关闭窗口、锁屏、切换窗口这类系统快捷键会被拒绝，关闭程序请用 close_app。",
+            "description": "Press shortcut or special keys in the foreground window: ctrl+s, ctrl+shift+t, enter, esc, tab, f5. System shortcuts that close windows, lock the screen or switch windows are rejected; use close_app to close programs.",
             "input_schema": {"type": "object", "properties": {"keys": {"type": "string"}}, "required": ["keys"]}
         }),
         json!({
             "name": "clipboard_write",
-            "description": "把文字直接放进剪贴板，用户随后就能粘贴。复制屏幕上的某部分内容时，先 screen_read 拿到文字，挑出用户要的那部分写进来，比模拟全选、复制准确。",
+            "description": "Write text directly to the clipboard for the user to paste. To copy part of the screen, first use screen_read, select only the requested text and write it here; more accurate than simulated Select All/Copy.",
             "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
         }),
         json!({
             "name": "clipboard_read",
-            "description": "读取剪贴板里的文字，比如用户说“我刚复制的这段”。",
+            "description": "Read text from the clipboard, for example what the user just copied.",
             "input_schema": {"type": "object", "properties": {}}
         }),
     ]);

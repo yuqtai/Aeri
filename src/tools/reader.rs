@@ -240,8 +240,8 @@ fn clip(text: &str, max: usize) -> String {
 pub fn definitions() -> Vec<Value> {
     vec![json!({
         "name": "screen_read",
-        "description": "看用户正在看的窗口（助手自己的窗口除外）：返回选中的文字、鼠标所指的那一块内容（比如一条帖子、一条评论）、屏幕上能看到的全部文字。用户提到屏幕上的东西（这个、当前、这条、这段、正在看的）时，先用它看清楚是什么再做。",
-        "input_schema": {"type": "object", "properties": {"window": {"type": "string", "description": "要看别的窗口时填窗口标题的一部分；不填就是用户正在看的窗口"}}}
+        "description": "Read the window the user is viewing, excluding Aeri: selected text, content under the pointer (such as a post or comment), and all visible text. When the user refers to this, current, this item, this passage or what they are viewing, read it before acting.",
+        "input_schema": {"type": "object", "properties": {"window": {"type": "string", "description": "Part of another window title; omit to read the window the user is viewing."}}}
     })]
 }
 
