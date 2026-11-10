@@ -76,7 +76,9 @@ One Rust process, no browser engine, no GPU use. The wake word runs locally; aud
 3. Open **Settings → Language model**, paste an **OpenAI API key**, and click **Save**. That is the only key you need: speech recognition runs locally on your PC (the model downloads once, the first time), and replies are spoken with Windows voices.
 4. Say **"Hey Aeri"**.
 
-Prefer another provider? Aeri also works with Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, a local Ollama model, or any OpenAI-compatible endpoint. Pick it in **Settings → LLM**.
+Prefer another provider? Aeri also works with Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, a local Ollama model, or any OpenAI-compatible endpoint. Pick it in **Settings → Language model**.
+
+Voice is just as open. Speech recognition: built-in offline models (Moonshine, Whisper, SenseVoice, Parakeet), any local server with the OpenAI transcription API (Qwen3-ASR, faster-whisper…), or OpenAI, Groq, Deepgram, ElevenLabs, Azure, Gemini. Speech output: Windows voices, or OpenAI, ElevenLabs, Azure. Optional realtime voice: OpenAI or Alibaba DashScope.
 
 New versions install from inside the app (Settings → Updates).
 
