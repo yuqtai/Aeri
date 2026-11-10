@@ -18,9 +18,6 @@ pub const VOICE_PROMPT: &str = "你是语音播报员，只负责把文字读出
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider { DashScope, OpenAi, Azure, Xai, Custom }
 
-/// Ids in the order shown in Settings
-pub const IDS: [&str; 5] = ["dashscope", "openai", "azure", "xai", "custom"];
-
 impl Provider {
     pub fn from_id(id: &str) -> Self {
         match id {

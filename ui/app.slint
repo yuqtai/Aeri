@@ -708,6 +708,38 @@ component FieldBlock inherits VerticalLayout {
     }
 }
 
+component ModeOption inherits Rectangle {
+    in property <string> title;
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    horizontal-stretch: 1;
+    border-radius: 10px;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? Theme.signal : ta.has-hover ? Theme.hairline-strong : Theme.hairline;
+    background: root.selected ? Theme.signal-soft : Theme.inset;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        Text {
+            text: root.title;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.ink;
+        }
+        Text {
+            text: root.text;
+            font-size: 12px;
+            color: Theme.ink-3;
+            wrap: word-wrap;
+        }
+    }
+}
+
 component KeyBlock inherits VerticalLayout {
     in property <string> test-label: @tr("Test");
     in property <int> state;
@@ -1040,6 +1072,8 @@ export component AppWindow inherits Window {
     in-out property <float> kws-score: 1.5;
     in-out property <bool> follow-up;
     in-out property <bool> talk-barge: true;
+    // 0 talk to interrupt, 1 wake word only, 2 never
+    in-out property <int> interrupt-index;
     in-out property <bool> duck-others;
     // 软件更新：update-action 0 检查、1 有新版本可安装、2 正在进行
     in-out property <bool> auto-update;
@@ -1569,10 +1603,10 @@ export component AppWindow inherits Window {
                         NavRow {
                             icon: Icons.nav-voice;
                             title: @tr("Voice chat");
-                            summary: (root.frontend-index == 0 ? @tr("Realtime voice") + @tr(" · ") + (root.realtime-provider-index == 1 ? "OpenAI" : root.realtime-provider-index == 2 ? "Azure OpenAI" : root.realtime-provider-index == 3 ? "xAI Grok" : root.realtime-provider-index == 4 ? @tr("Custom") : @tr("Alibaba DashScope"))
-                                    : @tr("Standard") + @tr(" · ") + (root.asr-provider-index == 0 ? @tr("Local recognition") : root.asr-provider-index == 1 ? "OpenAI" : root.asr-provider-index == 2 ? "Groq" : @tr("Alibaba DashScope")))
-                                + @tr(" · ") + (root.asr-key-state == 0 ? @tr("Needs a key") : root.asr-key-state == 4 ? @tr("Key test failed") : @tr("Ready"));
-                            warn: root.asr-key-state == 0 || root.asr-key-state == 4;
+                            summary: (root.frontend-index == 0 ? @tr("Realtime voice") + @tr(" · ") + (root.realtime-provider-index == 0 ? "OpenAI" : root.realtime-provider-index == 1 ? "Azure OpenAI" : root.realtime-provider-index == 2 ? "xAI Grok" : @tr("Custom"))
+                                    : @tr("Standard") + @tr(" · ") + (root.asr-provider-index == 0 ? @tr("Local recognition") : root.asr-provider-index == 1 ? "OpenAI" : root.asr-provider-index == 2 ? "Groq" : root.asr-provider-index == 3 ? "Deepgram" : root.asr-provider-index == 4 ? "ElevenLabs" : root.asr-provider-index == 5 ? "Azure" : root.asr-provider-index == 6 ? "Gemini" : @tr("Custom")))
+                                + @tr(" · ") + (root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("Ready") : root.asr-key-state == 0 ? @tr("Needs a key") : root.asr-key-state == 4 ? @tr("Key test failed") : @tr("Ready"));
+                            warn: !(root.frontend-index == 1 && root.asr-provider-index == 0) && (root.asr-key-state == 0 || root.asr-key-state == 4);
                             clicked => { root.show-settings(1); }
                         }
                         Divider { padding-left: 50px; }
@@ -1674,17 +1708,27 @@ export component AppWindow inherits Window {
                     alignment: start;
                     spacing: 8px;
                     SectionLabel { text: @tr("Mode"); }
-                    Card {
-                        SettingRow {
-                            title: @tr("Conversation mode");
-                            description: root.frontend-index == 0 ? @tr("Realtime voice: streaming conversation, needs a provider key") : @tr("Recognition, your language model, then your chosen voice");
-                            VerticalLayout {
-                                alignment: center;
-                                Segmented {
-                                    width: 280px;
-                                    options: [@tr("Realtime"), @tr("Standard (recommended)")];
-                                    current <=> root.frontend-index;
-                                    changed current => { root.voice-mode-changed(self.current); }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        ModeOption {
+                            title: @tr("Standard (recommended)");
+                            text: @tr("Your speech becomes text, your language model answers, and the reply is read aloud. Can be free and offline.");
+                            selected: root.frontend-index == 1;
+                            clicked => {
+                                if (root.frontend-index != 1) {
+                                    root.frontend-index = 1;
+                                    root.voice-mode-changed(1);
+                                }
+                            }
+                        }
+                        ModeOption {
+                            title: @tr("Realtime voice");
+                            text: @tr("One service listens and speaks. More natural and easy to interrupt, but costs more.");
+                            selected: root.frontend-index == 0;
+                            clicked => {
+                                if (root.frontend-index != 0) {
+                                    root.frontend-index = 0;
+                                    root.voice-mode-changed(0);
                                 }
                             }
                         }
@@ -1693,23 +1737,27 @@ export component AppWindow inherits Window {
                     Card {
                         FieldBlock {
                             title: root.frontend-index == 1 ? @tr("Speech recognition") : @tr("Voice provider");
-                            hint: root.frontend-index == 1 ? @tr("Local is free and works offline after a one-time verified model download.") : @tr("Realtime models listen and speak; your language model handles tools.");
+                            hint: root.frontend-index == 1 ? (root.asr-provider-index == 0 ? @tr("Local is free and works offline after a one-time verified model download.") : "") : @tr("Listens and speaks; your language model still decides what to do.");
                             if root.frontend-index == 0: Select {
-                                options: [@tr("Alibaba DashScope"), @tr("OpenAI"), @tr("Azure OpenAI"), @tr("xAI Grok"), @tr("Custom (OpenAI Realtime-compatible)")];
+                                options: [@tr("OpenAI"), @tr("Azure OpenAI"), @tr("xAI Grok"), @tr("Custom")];
                                 current <=> root.realtime-provider-index;
                                 selected(index) => { root.realtime-provider-changed(index); }
                             }
-                        }
-                        if root.frontend-index == 0 && (root.realtime-provider-index == 2 || root.realtime-provider-index == 4): FieldBlock {
-                            title: root.realtime-provider-index == 2 ? @tr("Azure endpoint and deployment") : @tr("Service URL and model");
-                            hint: root.realtime-provider-index == 2 ? @tr("Replace YOUR-RESOURCE with your Azure OpenAI resource name; the model is your realtime deployment name.") : @tr("Any server that implements the OpenAI Realtime API. API key is optional.");
-                            TextField { text <=> root.realtime-url; }
-                            TextField { text <=> root.realtime-model; }
                             if root.frontend-index == 1: Select {
-                                options: [@tr("Local (offline)"), @tr("OpenAI"), @tr("Groq Whisper"), @tr("Alibaba DashScope"), @tr("Deepgram"), @tr("ElevenLabs"), @tr("Azure AI Speech"), @tr("Google Gemini"), @tr("Custom (OpenAI-compatible)")];
+                                options: [@tr("Local (offline)"), @tr("OpenAI"), @tr("Groq Whisper"), @tr("Deepgram"), @tr("ElevenLabs"), @tr("Azure AI Speech"), @tr("Google Gemini"), @tr("Custom")];
                                 current <=> root.asr-provider-index;
                                 selected(index) => { root.asr-provider-changed(index); }
                             }
+                        }
+                        if root.frontend-index == 0 && (root.realtime-provider-index == 1 || root.realtime-provider-index == 3): FieldBlock {
+                            title: @tr("Service URL");
+                            hint: root.realtime-provider-index == 1 ? @tr("Replace YOUR-RESOURCE with your Azure OpenAI resource name.") : @tr("OpenAI Realtime API, or Alibaba / Qwen realtime (…/api-ws/v1/realtime).");
+                            TextField { text <=> root.realtime-url; }
+                        }
+                        if root.frontend-index == 0: FieldBlock {
+                            title: root.realtime-provider-index == 1 ? @tr("Deployment and voice") : @tr("Model and voice");
+                            TextField { text <=> root.realtime-model; }
+                            TextField { text <=> root.realtime-voice; }
                         }
                         if root.frontend-index == 1 && root.asr-provider-index == 0: FieldBlock {
                             title: @tr("Local model");
@@ -1725,30 +1773,24 @@ export component AppWindow inherits Window {
                                 Btn { text: @tr("Delete downloaded model"); clicked => { root.delete-local-model(); } }
                             }
                         }
-                        if root.frontend-index == 1 && root.asr-provider-index == 3: FieldBlock {
+                        if root.frontend-index == 1 && root.asr-provider-index == 7: FieldBlock {
                             title: @tr("Base URL and model");
-                            hint: @tr("Alibaba streaming recognition, e.g. fun-asr-realtime or qwen-audio-3.1-asr-flash-streaming. For Qwen on qianwenai.com use wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference.");
+                            hint: @tr("https:// = OpenAI transcription API; wss://…/api-ws/… = Alibaba / Qwen streaming.");
                             TextField { text <=> root.asr-url; }
                             TextField { text <=> root.asr-model; }
                         }
-                        if root.frontend-index == 1 && root.asr-provider-index == 8: FieldBlock {
-                            title: @tr("Base URL and model");
-                            hint: @tr("Any server that implements the OpenAI transcription API, e.g. Qwen3-ASR or faster-whisper. whisper.cpp needs an OpenAI-compatible proxy; its /inference API differs. API key is optional.");
-                            TextField { text <=> root.asr-url; }
-                            TextField { text <=> root.asr-model; }
-                        }
-                        if root.frontend-index == 1 && root.asr-provider-index == 6: FieldBlock {
+                        if root.frontend-index == 1 && root.asr-provider-index == 5: FieldBlock {
                             title: @tr("Azure Speech region");
                             hint: @tr("For example eastus; shared by recognition and speech output. Or set AZURE_SPEECH_REGION.");
                             TextField { text <=> root.azure-region; }
                         }
-                        Divider { }
-                        KeyBlock {
+                        if !(root.frontend-index == 1 && root.asr-provider-index == 0): Divider { }
+                        if !(root.frontend-index == 1 && root.asr-provider-index == 0): KeyBlock {
                             state: root.voice-test-state == 1 ? (root.asr-key-input != "" ? 1 : root.asr-key-state == 0 ? 0 : 1) : root.voice-test-state;
                             detail: root.voice-test-status;
                             test-label: root.frontend-index == 0 ? @tr("Test realtime voice") : @tr("Test speech recognition");
-                            placeholder: root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("No key needed for local speech recognition") : @tr("Provider API key (saved encrypted)");
-                            hint: @tr("Leave empty to reuse a saved key for this provider or its environment variable.");
+                            placeholder: root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("No key needed for local speech recognition") : @tr("Provider API key");
+                            hint: @tr("Stored on this computer. Use the eye button to show it. Leave empty to use the environment variable.");
                             saved: root.asr-key-saved;
                             input <=> root.asr-key-input;
                             test => { root.test-voice(); }
@@ -1783,8 +1825,8 @@ export component AppWindow inherits Window {
                         }
                         if root.tts-provider-index != 0: FieldBlock {
                             title: @tr("Speech output API key");
-                            hint: @tr("Leave empty to reuse a saved key for this provider or its environment variable.");
-                            TextField { text <=> root.tts-key-input; placeholder: @tr("Provider API key (saved encrypted)"); password: true; }
+                            hint: @tr("Stored on this computer. Use the eye button to show it. Leave empty to use the environment variable.");
+                            TextField { text <=> root.tts-key-input; placeholder: @tr("Provider API key"); password: true; }
                             if root.tts-key-saved: Btn { text: @tr("Clear saved key"); clicked => { root.clear-tts-key(); } }
                         }
                         Divider { }
@@ -1829,32 +1871,27 @@ export component AppWindow inherits Window {
                         }
                         Divider { }
                         SettingRow {
-                            title: @tr("Interrupt by talking");
-                            description: @tr("Start talking while Aeri reads a reply and it stops to listen. With speakers, speak a little louder than the reply");
+                            title: @tr("Interrupt a reply");
+                            description: root.interrupt-index == 0 ? @tr("Just start talking. With speakers, speak a little louder than the reply") : root.interrupt-index == 1 ? @tr("Say the wake word to make Aeri stop and listen") : @tr("Replies are always read to the end");
                             VerticalLayout {
                                 alignment: center;
-                                Toggle { checked <=> root.talk-barge; }
+                                Segmented {
+                                    width: 300px;
+                                    options: [@tr("Talk"), @tr("Wake word"), @tr("Never")];
+                                    current <=> root.interrupt-index;
+                                }
                             }
                         }
                         Divider { }
-                        SettingRow {
-                            title: @tr("Interrupt with wake word");
-                            description: @tr("Say the wake word while Aeri speaks to make it stop and listen");
-                            VerticalLayout {
-                                alignment: center;
-                                Toggle { checked <=> root.barge-in; }
-                            }
-                        }
-                        Divider { }
-                        SettingRow {
-                            title: @tr("Interrupt directly with headphones");
-                            description: @tr("Keep the microphone on while speaking. Turn off when using speakers");
+                        if root.frontend-index == 0: SettingRow {
+                            title: @tr("Listen while speaking (headphones)");
+                            description: @tr("Keep the microphone on during realtime replies. Turn off when using speakers");
                             VerticalLayout {
                                 alignment: center;
                                 Toggle { checked <=> root.full-duplex; }
                             }
                         }
-                        Divider { }
+                        if root.frontend-index == 0: Divider { }
                         SettingRow {
                             title: @tr("Lower other audio during chats");
                             description: @tr("Lower video and music volume, then restore it afterwards");
@@ -1865,28 +1902,11 @@ export component AppWindow inherits Window {
                         }
                     }
                     Disclosure { open <=> root.show-advanced; }
-                    if root.show-advanced && root.frontend-index == 0: Card {
-                        FieldBlock {
-                            title: @tr("Voice");
-                            TextField { text <=> root.realtime-voice; }
-                        }
-                        Divider { }
-                        FieldBlock {
-                            title: @tr("Realtime voice model");
-                            hint: @tr("Test again after changing the model or voice");
-                            TextField { text <=> root.realtime-model; }
-                        }
-                        Divider { }
-                        FieldBlock {
-                            title: @tr("Realtime service URL");
-                            TextField { text <=> root.realtime-url; }
-                        }
-                    }
                     if root.show-advanced: SectionLabel { text: @tr("Speech recognition"); }
                     if root.show-advanced: Card {
                         if root.frontend-index == 0: FieldBlock {
-                            title: @tr("Recognition service");
-                            hint: @tr("Falls back to Speech + LLM if realtime voice cannot connect. Test recognition separately here");
+                            title: @tr("If realtime voice cannot connect");
+                            hint: @tr("Aeri falls back to Standard mode with the speech recognition chosen there. Test it here.");
                             HorizontalLayout {
                                 spacing: 10px;
                                 Btn {
@@ -1905,16 +1925,6 @@ export component AppWindow inherits Window {
                             }
                         }
                         if root.frontend-index == 0: Divider { }
-                        FieldBlock {
-                            title: @tr("Recognition service URL");
-                            TextField { text <=> root.asr-url; }
-                        }
-                        Divider { }
-                        FieldBlock {
-                            title: @tr("Recognition model");
-                            TextField { text <=> root.asr-model; }
-                        }
-                        Divider { }
                         SettingRow {
                             title: @tr("End-of-sentence silence");
                             description: @tr("How long a pause ends a sentence");

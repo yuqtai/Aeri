@@ -301,7 +301,7 @@ impl Registry {
     }
 
     fn add(&mut self, name: &str, token: &str) -> bool {
-        let Some(protected) = config::protect_key(token) else { return false };
+        let Some(protected) = config::protect_key_dpapi(token) else { return false };
         let paired_at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let stored = StoredDevice { name: name.to_string(), token: protected, paired_at };
         self.devices.push((name.to_string(), token.to_string(), stored));

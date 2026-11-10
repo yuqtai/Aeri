@@ -47,7 +47,37 @@ const MAX_CHAT_ITEMS: usize = 200;
 const EFFORTS: [&str; 3] = ["low", "high", "max"];
 const EXECUTORS: [&str; 3] = ["codex", "claude", "builtin"];
 const ACCESS: [&str; 3] = ["full", "workspace", "readonly"];
-const ASR_PROVIDERS: [&str; 9] = ["local", "openai", "groq", "dashscope", "deepgram", "elevenlabs", "azure", "gemini", "custom"];
+/// Recognition providers in the order shown in Settings. "Custom" covers every other service:
+/// the address decides the format (OpenAI transcription API over https, Alibaba streaming over wss).
+const ASR_PROVIDERS: [&str; 8] = ["local", "openai", "groq", "deepgram", "elevenlabs", "azure", "gemini", "custom"];
+/// Realtime providers in the order shown in Settings; "Custom" also covers Alibaba DashScope / Qwen.
+const RT_PROVIDERS: [&str; 4] = ["openai", "azure", "xai", "custom"];
+
+fn is_alibaba_asr(url: &str) -> bool {
+    url.starts_with("ws") && url.contains("/api-ws/")
+}
+
+fn is_alibaba_realtime(url: &str) -> bool {
+    url.contains("dashscope") || url.contains("/api-ws/")
+}
+
+fn asr_index(id: &str) -> i32 {
+    ASR_PROVIDERS.iter().position(|p| *p == id).unwrap_or(ASR_PROVIDERS.len() - 1) as i32
+}
+
+fn rt_index(id: &str) -> i32 {
+    RT_PROVIDERS.iter().position(|p| *p == id).unwrap_or(RT_PROVIDERS.len() - 1) as i32
+}
+
+fn asr_id(index: i32, url: &str) -> &'static str {
+    let id = ASR_PROVIDERS[index.clamp(0, ASR_PROVIDERS.len() as i32 - 1) as usize];
+    if id == "custom" && is_alibaba_asr(url) { "dashscope" } else { id }
+}
+
+fn rt_id(index: i32, url: &str) -> &'static str {
+    let id = RT_PROVIDERS[index.clamp(0, RT_PROVIDERS.len() as i32 - 1) as usize];
+    if id == "custom" && is_alibaba_realtime(url) { "dashscope" } else { id }
+}
 const TTS_PROVIDERS: [&str; 4] = ["windows", "openai", "elevenlabs", "azure"];
 const FRONTENDS: [&str; 2] = ["realtime", "classic"];
 
@@ -135,7 +165,7 @@ fn main() -> anyhow::Result<()> {
         if let Some((sub, key)) = v.split_once(':') {
             window.set_page(1);
             window.set_settings_sub(sub.parse().unwrap_or(1));
-            window.set_asr_key_input(key.into());
+            if !key.is_empty() { window.set_asr_key_input(key.into()); }
         }
     }
     wire_chat(&window, &cmd_tx);
@@ -403,12 +433,17 @@ fn refresh_key_status(w: &AppWindow, c: &Config) {
     w.set_llm_key_saved(config::has_saved_key(config::llm_protected(c)));
     w.set_asr_key_saved(config::has_saved_key(config::voice_protected(c)));
     w.set_tts_key_saved(c.stt_api_keys_protected.get(&c.tts_provider).is_some_and(|v| config::has_saved_key(v)));
+    // Saved keys are shown (hidden behind the eye button) so you can always check what is stored
+    let shown = |p: &str| slint::SharedString::from(config::unprotect_key(p).unwrap_or_default());
+    w.set_llm_key_input(shown(config::llm_protected(c)));
+    w.set_asr_key_input(shown(config::voice_protected(c)));
+    w.set_tts_key_input(shown(c.stt_api_keys_protected.get(&c.tts_provider).map(String::as_str).unwrap_or("")));
 }
 
 fn ui_key_status(protected: &str, env_name: &str) -> String {
     let status = config::key_status(protected, env_name);
     match status.as_str() {
-        "已保存（加密存放在本机）" => locale::pick("Saved (encrypted on this computer)", "已保存（加密存放在本机）").into(),
+        "已保存在本机" => locale::pick("Saved on this computer", "已保存在本机").into(),
         "未设置" => locale::pick("Not set", "未设置").into(),
         _ if status.starts_with("正在使用系统环境变量 ") => {
             ui_format!("Using environment variable {env_name}", "正在使用系统环境变量 {env_name}")
@@ -421,8 +456,8 @@ fn ui_key_status(protected: &str, env_name: &str) -> String {
 fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_llm_providers(ModelRc::from(Rc::new(VecModel::from(llm::PRESETS.iter().map(|p| slint::SharedString::from(p.name)).collect::<Vec<_>>()))));
     w.set_llm_provider_index(llm::PRESETS.iter().position(|p| p.id == c.llm_provider).unwrap_or(7) as i32);
-    w.set_asr_provider_index(ASR_PROVIDERS.iter().position(|p| *p == c.asr_provider).unwrap_or(3) as i32);
-    w.set_realtime_provider_index(realtime::IDS.iter().position(|p| *p == c.realtime_provider).unwrap_or(0) as i32);
+    w.set_asr_provider_index(asr_index(&c.asr_provider));
+    w.set_realtime_provider_index(rt_index(&c.realtime_provider));
     w.set_llm_key_input("".into());
     w.set_llm_base_url(c.llm_base_url.as_str().into());
     w.set_llm_model(c.llm_model.as_str().into());
@@ -477,6 +512,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_barge_in(c.barge_in);
     w.set_full_duplex(c.full_duplex);
     w.set_talk_barge(c.talk_barge);
+    w.set_interrupt_index(if c.talk_barge { 0 } else if c.barge_in { 1 } else { 2 });
     w.set_remote_enabled(c.remote_enabled);
     w.set_language_index(locale::PREFERENCES.iter().position(|l| *l == c.language).unwrap_or(0) as i32);
     w.global::<Theme>().set_scheme(THEMES.iter().position(|t| *t == c.theme).unwrap_or(0) as i32);
@@ -502,8 +538,8 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     let provider = &llm::PRESETS[w.get_llm_provider_index().clamp(0, 7) as usize];
     if c.llm_provider != provider.id { c.llm_key_env = provider.env.into(); }
     c.llm_provider = provider.id.into();
-    c.asr_provider = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize].into();
-    c.realtime_provider = realtime::IDS[w.get_realtime_provider_index().clamp(0, realtime::IDS.len() as i32 - 1) as usize].into();
+    c.asr_provider = asr_id(w.get_asr_provider_index(), w.get_asr_url().trim()).into();
+    c.realtime_provider = rt_id(w.get_realtime_provider_index(), w.get_realtime_url().trim()).into();
     c.llm_base_url = text(w.get_llm_base_url());
     c.llm_model = text(w.get_llm_model());
     c.llm_thinking = w.get_llm_thinking();
@@ -546,7 +582,9 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.realtime_voice = text(w.get_realtime_voice());
     c.barge_in = w.get_barge_in();
     c.full_duplex = w.get_full_duplex();
-    c.talk_barge = w.get_talk_barge();
+    let interrupt = w.get_interrupt_index();
+    c.talk_barge = interrupt == 0;
+    c.barge_in = interrupt <= 1;
     c.remote_enabled = w.get_remote_enabled();
     c.theme = THEMES[w.global::<Theme>().get_scheme().clamp(0, 2) as usize].into();
 }
@@ -946,7 +984,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let weak = window.as_weak();
     window.on_realtime_provider_changed(move |index| {
         let Some(w) = weak.upgrade() else { return };
-        let defaults = realtime::Provider::defaults(realtime::IDS[index.clamp(0, realtime::IDS.len() as i32 - 1) as usize]);
+        let defaults = realtime::Provider::defaults(RT_PROVIDERS[index.clamp(0, RT_PROVIDERS.len() as i32 - 1) as usize]);
         w.set_realtime_url(defaults.0.into());
         w.set_realtime_model(defaults.1.into());
         w.set_realtime_voice(defaults.2.into());
@@ -961,12 +999,12 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let defaults = match index {
             1 => ("https://api.openai.com/v1", "gpt-transcribe"),
             2 => ("https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
-            4 => ("wss://api.deepgram.com/v1/listen", "nova-3"),
-            5 => ("https://api.elevenlabs.io/v1", "scribe_v2"),
-            6 => ("", "azure-speech"),
-            7 => ("https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash"),
-            8 => ("http://localhost:8000/v1", "Qwen/Qwen3-ASR-1.7B"),
-            _ => ("wss://dashscope.aliyuncs.com/api-ws/v1/inference", "fun-asr-realtime"),
+            3 => ("wss://api.deepgram.com/v1/listen", "nova-3"),
+            4 => ("https://api.elevenlabs.io/v1", "scribe_v2"),
+            5 => ("", "azure-speech"),
+            6 => ("https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash"),
+            7 => ("http://localhost:8000/v1", "Qwen/Qwen3-ASR-1.7B"),
+            _ => ("", ""),
         };
         w.set_asr_url(defaults.0.into());
         w.set_asr_model(defaults.1.into());
@@ -1063,13 +1101,13 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                     Some(protected) => {
                         if llm { *config::llm_key_slot(&mut c) = protected; } else { *config::voice_key_slot(&mut c) = protected; }
                     }
-                    None => { set_note(&w, NOTE_ERROR, locale::pick("Could not encrypt and save the key", "key 加密保存失败")); return; }
+                    None => { set_note(&w, NOTE_ERROR, locale::pick("Could not save the key", "key 保存失败")); return; }
                 }
             }
         }
         if !w.get_tts_key_input().trim().is_empty() {
             let Some(protected) = config::protect_key(w.get_tts_key_input().as_str()) else {
-                set_note(&w,NOTE_ERROR,locale::pick("Could not encrypt and save the key", "key 加密保存失败")); return;
+                set_note(&w,NOTE_ERROR,locale::pick("Could not save the key", "key 保存失败")); return;
             };
             c.stt_api_keys_protected.insert(c.tts_provider.clone(),protected);
         }
@@ -1143,13 +1181,13 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             let mut c = config::load();
             if asr {
                 if w.get_frontend_index() == 0 {
-                    match w.get_realtime_provider_index() {
-                        1 => c.realtime_openai_api_key_protected.clear(),
-                        0 => c.asr_api_key_protected.clear(),
-                        i => { c.stt_api_keys_protected.remove(&format!("realtime-{}", realtime::IDS[(i as usize).min(realtime::IDS.len() - 1)])); }
+                    match rt_id(w.get_realtime_provider_index(), w.get_realtime_url().trim()) {
+                        "openai" => c.realtime_openai_api_key_protected.clear(),
+                        "dashscope" => c.asr_api_key_protected.clear(),
+                        id => { c.stt_api_keys_protected.remove(&format!("realtime-{id}")); }
                     }
                 } else {
-                    let id = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize];
+                    let id = asr_id(w.get_asr_provider_index(), w.get_asr_url().trim());
                     if id == "dashscope" { c.asr_api_key_protected.clear(); }
                     else { c.stt_api_keys_protected.remove(id); }
                 }

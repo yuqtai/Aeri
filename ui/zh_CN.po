@@ -873,3 +873,69 @@ msgstr "自定义"
 
 msgid "Alibaba streaming recognition, e.g. fun-asr-realtime or qwen-audio-3.1-asr-flash-streaming. For Qwen on qianwenai.com use wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference."
 msgstr "阿里流式语音识别，比如 fun-asr-realtime、qwen-audio-3.1-asr-flash-streaming。用千问平台（qianwenai.com）时地址填 wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/inference。"
+
+msgid "Your speech becomes text, your language model answers, and the reply is read aloud. Can be free and offline."
+msgstr "先把你说的话识别成文字，大模型来回答，再读出来。可以完全免费、离线。"
+
+msgid "One service listens and speaks. More natural and easy to interrupt, but costs more."
+msgstr "一家服务同时负责听和说，更自然、更容易打断，但比较贵。"
+
+msgid "Listens and speaks; your language model still decides what to do."
+msgstr "负责听和说；具体做什么仍由你的大模型决定。"
+
+msgid "Service URL"
+msgstr "服务地址"
+
+msgid "Replace YOUR-RESOURCE with your Azure OpenAI resource name."
+msgstr "把 YOUR-RESOURCE 换成你的 Azure OpenAI 资源名。"
+
+msgid "OpenAI Realtime API, or Alibaba / Qwen realtime (…/api-ws/v1/realtime)."
+msgstr "OpenAI Realtime 接口，或阿里 / 千问实时语音（…/api-ws/v1/realtime）"
+
+msgid "Deployment and voice"
+msgstr "部署名和声音"
+
+msgid "Model and voice"
+msgstr "模型和声音"
+
+msgid "https:// = OpenAI transcription API; wss://…/api-ws/… = Alibaba / Qwen streaming."
+msgstr "https:// 是 OpenAI 转写接口，wss://…/api-ws/… 是阿里 / 千问流式识别"
+
+msgid "Interrupt a reply"
+msgstr "打断播报"
+
+msgid "Just start talking. With speakers, speak a little louder than the reply"
+msgstr "直接开口说话就行。用外放时说话声音要比播报大一些"
+
+msgid "Say the wake word to make Aeri stop and listen"
+msgstr "说唤醒词让 Aeri 停下来听你说"
+
+msgid "Replies are always read to the end"
+msgstr "回复总是完整读完"
+
+msgid "Talk"
+msgstr "说话"
+
+msgid "Wake word"
+msgstr "唤醒词"
+
+msgid "Never"
+msgstr "不打断"
+
+msgid "Listen while speaking (headphones)"
+msgstr "边说边听（戴耳机时）"
+
+msgid "Keep the microphone on during realtime replies. Turn off when using speakers"
+msgstr "实时语音回复时麦克风保持打开。用外放时请关闭"
+
+msgid "If realtime voice cannot connect"
+msgstr "实时语音连不上时"
+
+msgid "Aeri falls back to Standard mode with the speech recognition chosen there. Test it here."
+msgstr "Aeri 会改用“标准”模式，用那里选的语音识别。可以在这里测试。"
+
+msgid "Provider API key"
+msgstr "服务商的 API Key"
+
+msgid "Stored on this computer. Use the eye button to show it. Leave empty to use the environment variable."
+msgstr "保存在本机，点眼睛图标可以显示。留空则使用环境变量。"

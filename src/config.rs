@@ -1,5 +1,5 @@
 //! 配置：保存在 %APPDATA%\VoiceAssistant\config.json，全部可以在界面“设置”页修改。
-//! API key 用 Windows DPAPI 加密后保存，只有当前 Windows 用户能解密；也兼容系统环境变量。
+//! API keys are saved as plain text in config.json so Settings can show them (older DPAPI-encrypted keys are converted on load); environment variables also work.
 
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ pub struct Config {
     pub stt_api_keys_protected: std::collections::BTreeMap<String, String>,
     pub asr_url: String,
     pub asr_model: String,
-    /// DPAPI 加密后的 key（十六进制）
+    /// "plain:<key>" (older versions: DPAPI-encrypted hex)
     pub asr_api_key_protected: String,
     /// 没在界面填 key 时，从这个环境变量读取
     pub asr_key_env: String,
@@ -240,6 +240,19 @@ pub fn load() -> Config {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     cfg.wake_words = repair_wake_words(std::mem::take(&mut cfg.wake_words));
+    // Encrypted keys from older versions become plain text so Settings can show them
+    let plain = |v: &mut String| {
+        if !v.is_empty() && !v.starts_with(PLAIN) {
+            if let Some(k) = unprotect_key(v) {
+                *v = format!("{PLAIN}{k}");
+            }
+        }
+    };
+    plain(&mut cfg.asr_api_key_protected);
+    plain(&mut cfg.llm_api_key_protected);
+    plain(&mut cfg.realtime_openai_api_key_protected);
+    cfg.stt_api_keys_protected.values_mut().for_each(plain);
+    cfg.llm_api_keys_protected.values_mut().for_each(plain);
     cfg
 }
 
@@ -326,11 +339,20 @@ fn dpapi(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
 }
 
 /// 加密 key，返回可以写进配置文件的十六进制字符串；失败返回 None
+/// Keys are stored as plain text ("plain:<key>") so they can be shown in Settings.
+/// Keys saved by older versions (DPAPI-encrypted hex) are still read, and converted on load.
 pub fn protect_key(plain: &str) -> Option<String> {
     let key = clean_key(plain);
     if key.is_empty() {
         return None;
     }
+    Some(format!("{PLAIN}{key}"))
+}
+
+const PLAIN: &str = "plain:";
+
+/// Still used for the phone pairing token, which the user never needs to read.
+pub(crate) fn protect_key_dpapi(key: &str) -> Option<String> {
     dpapi(key.as_bytes(), true).map(|b| b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
@@ -340,6 +362,9 @@ pub fn clean_key(text: &str) -> String {
 }
 
 pub(crate) fn unprotect_key(stored: &str) -> Option<String> {
+    if let Some(key) = stored.strip_prefix(PLAIN) {
+        return Some(clean_key(key)).filter(|k| !k.is_empty());
+    }
     if stored.is_empty() || stored.len() % 2 != 0 {
         return None;
     }
@@ -489,7 +514,7 @@ pub fn has_saved_key(protected: &str) -> bool {
 
 pub fn key_status(protected: &str, env_name: &str) -> String {
     if unprotect_key(protected).is_some() {
-        "已保存（加密存放在本机）".into()
+        "已保存在本机".into()
     } else if env_key(env_name).is_some() {
         format!("正在使用系统环境变量 {env_name}")
     } else {
@@ -584,7 +609,6 @@ mod tests {
     #[test]
     fn key_roundtrip() {
         let stored = protect_key("  sk-test-123  ").unwrap();
-        assert!(!stored.contains("sk-test")); // 文件里看不到明文
         assert_eq!(unprotect_key(&stored).as_deref(), Some("sk-test-123"));
         assert_eq!(unprotect_key("zz"), None);
         assert_eq!(unprotect_key(""), None);
@@ -615,6 +639,15 @@ mod wake_word_tests {
 
 #[cfg(test)]
 mod key_tests {
+    #[test]
+    fn keys_are_plain_and_old_ones_still_read() {
+        let stored = super::protect_key(" sk-1 ").unwrap();
+        assert_eq!(stored, "plain:sk-1");
+        assert_eq!(super::unprotect_key(&stored).as_deref(), Some("sk-1"));
+        let old = super::protect_key_dpapi("sk-old").unwrap();
+        assert_eq!(super::unprotect_key(&old).as_deref(), Some("sk-old"));
+    }
+
     #[test]
     fn drops_text_pasted_after_the_key() {
         assert_eq!(super::clean_key("  sk-abc.DEF_1  "), "sk-abc.DEF_1");
