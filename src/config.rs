@@ -208,6 +208,11 @@ pub fn app_dir() -> PathBuf {
     base.join("VoiceAssistant")
 }
 
+/// No settings saved yet: this is the first run (the main window opens so the user can set things up)
+pub fn first_run() -> bool {
+    !config_path().exists()
+}
+
 fn config_path() -> PathBuf {
     app_dir().join("config.json")
 }

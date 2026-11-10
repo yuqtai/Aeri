@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
     // 软件渲染：不创建 GPU 上下文，窗口打开时也只多占几 MB
     slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
 
+    let first_run = config::first_run();
     let cfg = config::load();
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -176,7 +177,7 @@ fn main() -> anyhow::Result<()> {
     memory_timer.start(slint::TimerMode::Repeated, Duration::from_secs(2), move || {
         if let Some(w) = weak.upgrade() {
             if w.window().is_visible() {
-                w.set_memory(ui_format!("Memory {:.0} MB", "内存 {:.0} MB", sys::private_memory_mb()).into());
+                w.set_memory(ui_format!("Memory in use: {:.0} MB", "当前内存 {:.0} MB", sys::private_memory_mb()).into());
                 sync_title_bar(&w);
                 hook_native_window(&w);
             }
@@ -185,7 +186,8 @@ fn main() -> anyhow::Result<()> {
 
     // 开机自启时只在后台运行（悬浮球 / 托盘），不弹主界面
     let launched_at_login = args.iter().any(|a| a == "--autostart");
-    if cfg.show_window_on_start && !launched_at_login {
+    // First run: always open the main window so the user can enter a key and try a command
+    if (cfg.show_window_on_start || first_run) && !launched_at_login {
         show_window(&window);
     } else {
         ball::show_if_enabled();

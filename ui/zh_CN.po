@@ -708,3 +708,15 @@ msgstr "填写你账号可用的模型；Ollama 本地模型要先下载。"
 
 msgid "Provider base URL; Custom uses the OpenAI Chat Completions format"
 msgstr "服务的接口地址；自定义服务使用 OpenAI Chat Completions 格式"
+
+msgid "Standard"
+msgstr "标准"
+
+msgid "Local recognition"
+msgstr "本地识别"
+
+msgid "Needs a key"
+msgstr "缺少 key"
+
+msgid "Ready"
+msgstr "已就绪"
