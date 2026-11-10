@@ -180,13 +180,13 @@ pub fn open_viewer() -> Result<(), String> {
     for day in days() {
         data.push(json!({"day": day, "items": read_day(&day)}));
     }
-    let html = VIEWER.replace("__DATA__", &serde_json::to_string(&data).unwrap_or_else(|_| "[]".into()).replace("</", "<\\/"));
+    let html = VIEWER.replace("__LANG__", crate::locale::code()).replace("__DATA__", &serde_json::to_string(&data).unwrap_or_else(|_| "[]".into()).replace("</", "<\\/"));
     let path = config::app_dir().join("history.html");
-    std::fs::write(&path, html).map_err(|e| format!("写入失败：{e}"))?;
+    std::fs::write(&path, html).map_err(|e| format!("{}{e}", crate::locale::pick("Could not write history: ", "写入失败：")))?;
     if crate::sys::shell_open(&path.to_string_lossy()) {
         Ok(())
     } else {
-        Err("打不开浏览器".into())
+        Err(crate::locale::pick("Could not open browser", "打不开浏览器").into())
     }
 }
 

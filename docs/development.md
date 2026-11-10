@@ -107,3 +107,21 @@ cd D:\code\voice-assistant\android; .\gradlew.bat assembleRelease
 
 
 [← 返回 README](../README.md)
+
+
+## UI translations
+
+The Slint UI uses concise English source strings in `@tr()`. Keep values inside placeholders, for example `@tr("Current version {}", root.app-version)`, so translators can reorder them. Chinese wording lives in `ui/zh_CN.po`; keep existing translations unchanged when changing English copy.
+
+Install the matching extractor once (`cargo install slint-tr-extractor --version 1.18.1`), then extract and merge with GNU gettext (or open the POT in a PO editor):
+
+```powershell
+slint-tr-extractor --no-default-translation-context -d aeri -o ui/aeri.pot ui/app.slint
+msgmerge --update --backup=none ui/zh_CN.po ui/aeri.pot
+```
+
+Review new or fuzzy entries, supply their Chinese `msgstr`, and remove fuzzy flags only after review. The POT is an intermediate file; commit `app.slint` and the updated PO. New catalogs should follow the same flat `ui/<locale>.po` convention and be staged by `build.rs` into `<locale>/LC_MESSAGES/aeri.po` in `OUT_DIR`. No MO files or runtime translation files are needed. `build.rs` disables default component contexts and bundles the catalog using `with_bundled_translations`; see the [Slint translation guide](https://docs.slint.dev/latest/docs/slint/guide/development/translations/).
+
+After creating the first Slint component, startup explicitly selects `zh_CN` when `crate::locale::is_zh()` is true, or the English source bundle otherwise. Rust UI copy uses `crate::locale::pick(en, zh)`; `ui_format!` keeps formatted copy checked by Rust. The history viewer receives `crate::locale::code()` during page generation and selects text in JavaScript. `AERI_LANG=en` and `AERI_LANG=zh` override Windows UI language for testing. These language choices never migrate saved configuration values.
+
+Verify with `powershell -ExecutionPolicy Bypass -File build.ps1 -Test` and a debug build using `powershell -ExecutionPolicy Bypass -File build.ps1`. Review chat, each settings category, and expanded advanced options in both languages. Use a temporary APPDATA config with `listen_on_start=false`, `remote_enabled=false`, and `show_window_on_start=true`; stop the installed single-instance app only during testing and restart it afterwards.

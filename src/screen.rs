@@ -107,11 +107,11 @@ fn is_fullscreen(hwnd: HWND) -> bool {
 }
 
 fn label(w: &Window) -> String {
-    let mut s = format!("「{}」", w.title);
+    let mut s = format!("\"{}\"", w.title);
     match (w.exe.is_empty(), w.fullscreen) {
-        (false, true) => s.push_str(&format!("（{}，全屏）", w.exe)),
-        (false, false) => s.push_str(&format!("（{}）", w.exe)),
-        (true, true) => s.push_str("（全屏）"),
+        (false, true) => s.push_str(&format!(" ({}, fullscreen)", w.exe)),
+        (false, false) => s.push_str(&format!(" ({})", w.exe)),
+        (true, true) => s.push_str(" (fullscreen)"),
         (true, false) => {}
     }
     s
@@ -142,10 +142,10 @@ pub fn exes() -> Vec<String> {
 pub fn context() -> Option<String> {
     let windows = visible_windows(MORE_WINDOWS + 1);
     let (front, rest) = windows.split_first()?;
-    let mut text = format!("前台窗口{}", label(front));
+    let mut text = format!("foreground window {}", label(front));
     if !rest.is_empty() {
         let rest: Vec<String> = rest.iter().map(label).collect();
-        text.push_str(&format!("；后面还开着{}", rest.join("、")));
+        text.push_str(&format!("; also open behind it: {}", rest.join(", ")));
     }
     Some(text)
 }
@@ -154,7 +154,7 @@ pub fn context() -> Option<String> {
 pub fn hint() -> String {
     match context() {
         Some(ctx) => format!(
-            "【屏幕上下文，系统自动读取，不是用户说的话】用户说话时屏幕上：{ctx}。用户说“当前、这个、正在放的、这里”而没指明是哪个时，就是指前台窗口；要知道里面具体是什么内容，用 screen_read 看。"
+            "[Screen context, read automatically by the system, not said by the user] When the user spoke, the screen showed: {ctx}. When the user says \"this\", \"current\", \"what's playing\" or \"here\" without naming it, they mean the foreground window; use screen_read to see what it contains."
         ),
         None => String::new(),
     }

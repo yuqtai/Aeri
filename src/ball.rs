@@ -131,7 +131,7 @@ pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEven
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             w!("VoiceAssistantBall"),
-            w!("Aeri 悬浮球"),
+            if crate::locale::is_zh() { w!("Aeri 悬浮球") } else { w!("Aeri floating orb") },
             WS_POPUP,
             0,
             0,
@@ -562,13 +562,13 @@ unsafe fn show_menu(hwnd: HWND) {
     let (listening, busy) = with_ball(|b| (b.listening, (1..=4).contains(&b.mode))).unwrap_or((true, false));
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(menu, MF_STRING, 1, w!("打开主界面"));
+        let _ = AppendMenuW(menu, MF_STRING, 1, if crate::locale::is_zh() { w!("打开主界面") } else { w!("Open Aeri") });
         // 正在听/思考/回答时，这一项变成停止（和点主界面光球一样）
-        let _ = AppendMenuW(menu, MF_STRING, 2, if busy { w!("停止") } else { w!("开始说话") });
-        let _ = AppendMenuW(menu, MF_STRING, 3, if listening { w!("暂停语音唤醒") } else { w!("恢复语音唤醒") });
+        let _ = AppendMenuW(menu, MF_STRING, 2, if busy { if crate::locale::is_zh() { w!("停止") } else { w!("Stop") } } else { if crate::locale::is_zh() { w!("开始说话") } else { w!("Start talking") } });
+        let _ = AppendMenuW(menu, MF_STRING, 3, if listening { if crate::locale::is_zh() { w!("暂停语音唤醒") } else { w!("Pause voice wake") } } else { if crate::locale::is_zh() { w!("恢复语音唤醒") } else { w!("Resume voice wake") } });
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, 4, w!("隐藏悬浮球"));
-        let _ = AppendMenuW(menu, MF_STRING, 5, w!("退出"));
+        let _ = AppendMenuW(menu, MF_STRING, 4, if crate::locale::is_zh() { w!("隐藏悬浮球") } else { w!("Hide floating orb") });
+        let _ = AppendMenuW(menu, MF_STRING, 5, if crate::locale::is_zh() { w!("退出") } else { w!("Quit") });
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         // 先成为前台窗口，点别处时菜单才会自动关闭

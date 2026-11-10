@@ -1,13 +1,19 @@
 ﻿# Current-user installation; rerun to update. Settings in APPDATA are preserved.
 param([string]$Source = (Join-Path $PSScriptRoot 'dist'), [switch]$Launch)
 $ErrorActionPreference = 'Stop'
+$uiLanguage = if ($env:AERI_LANG) { $env:AERI_LANG } else { [Globalization.CultureInfo]::CurrentUICulture.Name }
+$isChinese = $uiLanguage.Trim().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
+function Get-UiText([string]$English, [string]$Chinese) {
+    if ($isChinese) { return $Chinese }
+    return $English
+}
 $installRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Programs\VoiceAssistant'))
 $sourceRoot = [IO.Path]::GetFullPath($Source)
 $marker = Join-Path $installRoot 'installation.json'
-if ($sourceRoot -eq $installRoot) { throw '安装来源不能是安装目录本身。' }
+if ($sourceRoot -eq $installRoot) { throw (Get-UiText 'The source cannot be the installation directory.' '安装来源不能是安装目录本身。') }
 $sourceExe = Join-Path $sourceRoot 'aeri.exe'
-if (!(Test-Path -LiteralPath $sourceExe) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe')) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'models\kws\tokens.txt'))) { throw '发布文件不完整，请先编译发布版。' }
-if ((Test-Path -LiteralPath $installRoot) -and !(Test-Path -LiteralPath $marker)) { throw '安装目录已存在但不是本程序管理的安装，停止覆盖。' }
+if (!(Test-Path -LiteralPath $sourceExe) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe')) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'models\kws\tokens.txt'))) { throw (Get-UiText 'Release files are incomplete. Build a release first.' '发布文件不完整，请先编译发布版。') }
+if ((Test-Path -LiteralPath $installRoot) -and !(Test-Path -LiteralPath $marker)) { throw (Get-UiText 'The destination exists and is not managed by this installer. Stopping.' '安装目录已存在但不是本程序管理的安装，停止覆盖。') }
 $stage = Join-Path $env:TEMP ('VoiceAssistant-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
@@ -19,7 +25,7 @@ try {
     $androidSrc = Join-Path $sourceRoot 'android'
     if (Test-Path -LiteralPath $androidSrc) { Copy-Item -LiteralPath $androidSrc -Destination $stage -Recurse }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uninstall.ps1') -Destination $stage
-    if ((Get-FileHash -LiteralPath $sourceExe).Hash -ne (Get-FileHash -LiteralPath (Join-Path $stage 'aeri.exe')).Hash) { throw '安装文件校验失败。' }
+    if ((Get-FileHash -LiteralPath $sourceExe).Hash -ne (Get-FileHash -LiteralPath (Join-Path $stage 'aeri.exe')).Hash) { throw (Get-UiText 'Installation file verification failed.' '安装文件校验失败。') }
     $exe = Join-Path $installRoot 'aeri.exe'
     $portableExe = Join-Path $sourceRoot 'aeri.exe'
     # 改名前的程序和快捷方式：voice-assistant.exe /“语音助手”，voa.exe /“VOA”
@@ -53,7 +59,7 @@ try {
         $link.TargetPath = $exe
         $link.WorkingDirectory = $installRoot
         $link.IconLocation = "$exe,0"
-        $link.Description = 'Aeri 语音助手'
+        $link.Description = (Get-UiText 'Aeri voice assistant' 'Aeri 语音助手')
         $link.Save()
     }
     $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\VoiceAssistant'
@@ -73,7 +79,7 @@ try {
         Set-ItemProperty -Path $runKey -Name VoiceAssistant -Value ('"' + $exe + '" --autostart')
     }
     if ($Launch -or $wasRunning) { Start-Process -FilePath $exe -WorkingDirectory $installRoot -WindowStyle Hidden }
-    Write-Host "已安装/更新：$exe"
+    Write-Host ((Get-UiText "Installed/updated: {0}" "已安装/更新：{0}") -f $exe)
 } finally {
     $resolvedStage = [IO.Path]::GetFullPath($stage)
     $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
