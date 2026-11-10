@@ -128,7 +128,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 const ZH = "__LANG__" === "zh-CN";
 const pick = (en, zh) => ZH ? zh : en;
 document.documentElement.lang = ZH ? "zh-CN" : "en";
-document.title = "Aeri · " + pick("History", "历史记录");
+document.title = pick("Aeri · History", "Aeri 历史记录");
 const COPY = {"History": "历史记录", "Search chats and tasks": "搜索对话和任务", "All": "全部", "Chats": "对话", "Tasks": "任务", "Failed tasks": "失败的任务", "Copied": "已复制"};
 document.querySelectorAll("[data-i18n]").forEach(el => {
   el.textContent = pick(el.dataset.i18n, COPY[el.dataset.i18n]);
