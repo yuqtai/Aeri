@@ -56,7 +56,7 @@
 |---|---|
 | Idle memory | about **60 MB** |
 | Idle CPU | **under 0.2%** of the whole machine |
-| Download | **24 MB**, unzip and run, no admin rights |
+| Download | **27 MB**, unzip and run, no admin rights |
 | Local actions | under **1 ms** (excluding network and model thinking) |
 | In-app update | about **9 s** |
 
