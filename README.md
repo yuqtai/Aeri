@@ -86,9 +86,16 @@ Built in: apps, windows, files, volume, brightness, Wi-Fi, screenshots, reminder
 - No telemetry. Conversation history stays on your PC for 30 days, and you can turn it off or clear it.
 - Plugins can only call local APIs on `127.0.0.1`. App tokens they need are read on your PC and never sent to the model.
 
-## Status
+## Docs
 
-Aeri started as a Chinese-language project and is moving to English first. The app follows your Windows display language (English or Chinese). Some in-depth docs under `docs/` are still Chinese only; translations are on the way.
+- [User guide](docs/guide.md): setup, voice modes, providers, settings, history, and phone control
+- [Performance](docs/performance.md): architecture and versioned measurements
+- [Safety and limitations](docs/safety.md): access, privacy, and open verification items
+- [Development](docs/development.md): architecture, builds, translations, and releases
+- [Plugins](docs/plugins.md): installation, market, and app guides
+- [State machines](docs/state-machines.md): lifecycle and audio routing
+
+[中文文档](docs/zh-CN/guide.md)
 
 ## License
 

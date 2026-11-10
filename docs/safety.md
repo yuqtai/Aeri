@@ -1,39 +1,44 @@
-# 安全与已知限制
+# Safety and known limitations
 
-## 安全
+Applies to Aeri 0.4.0. [简体中文](zh-CN/safety.md)
 
-- 桌面和浏览器控制可以在设置里分别关掉。
-- 桌面控制默认走无障碍接口，不动鼠标键盘；关闭窗口（Alt+F4）、锁屏、切换窗口、Win+R 这类系统快捷键会被 agent-desktop 拒绝，关闭程序走 close_app。和其他程序一样，它操作不了以管理员身份运行的窗口。
-- 后台智能体默认是**完全访问**（按我的选择）：它可以在电脑上执行任意操作，不再逐项确认，语音听错一句话也可能被执行。可以在设置里改成“工作目录”（Codex 用 workspace-write 沙箱，Claude Code 只自动允许改文件和桌面工具）或“只读”。
-- 交给后台智能体的说明里要求：删除文件、发送消息、付款、提交表单这类不可撤销的操作不做，停下来在结果里说明需要确认什么（这是提示词约束，不是硬性限制）。网页里的指令只当作内容。
-- 任务内容从标准输入传给 Codex / Claude Code，不拼进命令行，避免引号和命令注入问题；取消任务时结束整个进程树。
-- 浏览器控制用的是独立的 Edge 窗口，不会碰你日常浏览器里的登录状态。
-- 手机控制默认关闭。打开后只接受局域网和本机地址；新手机要输入电脑上临时生成的 6 位配对码（5 分钟内有效，输错 5 次作废），配对后用 256 位随机令牌登录，令牌用 DPAPI 加密存在 `%APPDATA%\VoiceAssistant\remote.json`。连接本身不加密（局域网里明文传输），所以不要在不信任的公共 Wi-Fi 上打开。
-- 关闭程序时先正常关闭窗口；程序弹出“是否保存”之类的窗口时不会强行结束，交给你处理；系统进程（资源管理器、svchost 等）一律不关。
-- 系统提示要求模型不要打开任务管理器或命令行敲命令来完成任务，同一个办法连续失败两次就停下来说明原因（这是提示词约束，不是硬性限制）。
+## Access and data
 
-## 已知限制
+- Desktop and browser control can be disabled separately in settings.
+- The background executor defaults to **Full access**. It can change files and run commands without per-action approval. A misheard request can have consequences. Choose **Working directory** or **Read only** to reduce access. Codex uses its sandbox; Claude Code uses its configured tool permissions. These modes do not have identical enforcement across executors.
+- Background instructions tell agents to stop before irreversible actions such as deleting files, sending messages, paying, or submitting forms. This is a prompt constraint, not a security boundary. A task's returned text is not proof that every requested action succeeded.
+- Task requests go to external CLIs over standard input, not through shell interpolation. Cancellation terminates the task process tree.
+- API keys are DPAPI-protected in `%APPDATA%\VoiceAssistant\config.json` and decryptable by the current Windows account. Chat and task history is local, **not DPAPI-encrypted**, and retained for 30 days when enabled. It may contain sensitive request and result text; view, disable, or clear it in **History** settings.
 
-- 语音识别依赖网络和阿里云 key；没有 key 时可以在窗口里打字下命令。
-- 测试时用模拟按键在输入框打字后，第一次点击按钮没有反应，第二次才生效（不打字时单击正常，疑似中文输入法吞掉了点击）；还没确认真人键盘输入或 Ctrl+V 粘贴是否也会这样。
-- 唤醒词是本地模型，安静环境下实测准确；嘈杂环境可以在设置里调低灵敏度。
-- 麦克风拔掉、换成耳机（系统默认麦克风变了）或指定的麦克风重新插上时，几秒内会自动切换，不用重启；拔掉后没有可用麦克风时每 5 秒重试一次。这部分还没有在真实插拔下测过。
-- 点击、填写、勾选不受你动鼠标键盘的影响；但模拟键盘输入（desktop_type）、快捷键和双击仍然是真实的键盘鼠标操作，这时请不要动鼠标键盘，否则可能落到别的窗口。
-- 桌面快照读的是窗口的无障碍控件树：Edge 这类复杂窗口一次约 1.3 秒，简单窗口约 0.4 秒；最小化的窗口读不到内容，要先 desktop_focus 还原。
-- agent-desktop 要求它的数据文件夹（`%USERPROFILE%\.agent-desktop`）只有当前用户能改。Codex 在沙箱里用桌面工具时可能给沙箱账号加上修改权限，导致桌面操作全部失败；Aeri 遇到这个错误会自动删掉多余的权限再重试，第一次会慢 1–2 秒。
-- 有的程序的下拉框（比如 WinForms）选项在单独的弹出窗口里，desktop_select 选不中，会超时并提示改用“点开下拉框再点选项”。
-- 预编译的 sherpa-onnx 静态库需要 VS 17.10+ 的编译器，这里用的是 DLL 版，所以 exe 旁边会有 4 个 DLL。
-- 开机自启只测了注册表项的写入和删除，以及带 `--autostart` 启动时的表现，还没有真正重启电脑验证。
-- 悬浮球只在单显示器上测过；多显示器、各屏缩放比例不同的情况还没测。
-- 夜间模式、勿扰模式 Windows 不让程序直接切换，会打开对应的设置页；亮度只能调笔记本等内置屏幕。Wi-Fi、蓝牙开关、亮度、深色模式、电源操作还没有在真机上实际切换测过。
-- 文件查找用 Windows 搜索索引；没建索引的位置（比如别的盘）会退回到在桌面、文档、下载等常用文件夹里按名字扫描。
-- 剪贴板历史只记 Aeri 运行期间复制的文字，不存到硬盘。
-- 实时语音模式下，直达规则不生效，开关程序这类事由大模型调用工具完成；打字输入仍走“识别+大模型”那一套。
-- 实时语音模型说完话后会自己开始回答，百炼没有关掉它的开关；程序收到后马上取消，只读大模型想好的回复。比“边说边回”多了大模型思考的时间。
-- 说唤醒词打断播报：打断后停止的机制测过（系统播报 0.1 秒内停下），但“播报时真人喊唤醒词”只能靠你实际试；外放音量很大时可能听不清唤醒词。
-- 后台任务在本次运行期间保留原始要求和完整结果；可以说“继续上一个任务，修改第二项”或“重试任务 2”。继续时会创建带历史上下文的新任务；重启程序后不保留任务历史。一次只运行一个后台任务，避免争抢窗口。
-- 异常退出、空回复和超过步骤上限都会明确报错；后台返回文字只表示拿到结果，不代表所有操作已经验证成功。
-- 浏览器控制（Playwright）用的是独立的 Edge 窗口，没有你的登录状态；第一次用要启动 Edge，会慢几秒。“在抖音/B 站/小红书/淘宝/京东/知乎/YouTube/GitHub 搜 X”不走浏览器控制，直接在你自己的浏览器里打开搜索结果。
+Wake-word detection stays local. In Standard mode with local recognition, microphone audio is recognized locally after a one-time model download; recognized text, screen context, and tool results may still go to the configured language model. Cloud recognition and realtime send audio to the selected provider after activation, including follow-up turns. Headphone interruption keeps the microphone active during speech; leave it off with speakers to avoid feedback. Provider billing and data policies apply to those requests.
 
+Plugins are instructions, not executable extensions, but can influence tool use. Install only trusted guides. `local_http` restricts HTTP(S) hosts to loopback; secret placeholders are resolved locally and their values redacted from returned text. This restriction belongs to that tool, not to every tool an agent may use. See [plugins](plugins.md).
 
-[← 返回 README](../README.md)
+## Phone access
+
+Phone control is off by default and accepts only local/LAN addresses when enabled. Pairing uses a six-digit code valid for five minutes; five wrong guesses invalidate it. Paired phones use a random 256-bit token protected on the PC with DPAPI in `remote.json`. The connection itself is **unencrypted**, so audio, commands, and replies must travel only over a trusted private LAN. Revoke all pairings to remove access.
+
+## Desktop and browser limits
+
+- Desktop controls normally use Windows accessibility APIs without moving the pointer. Real keyboard typing, shortcuts, and double-clicks still share your keyboard/mouse; avoid competing input during those operations.
+- A normal app cannot control elevated windows. Minimized windows may require restoring before a controls snapshot can read them. Some custom UI and popup dropdowns are not exposed reliably.
+- The desktop helper rejects certain system shortcuts; dedicated tools handle supported app closing and system actions. Closing an app first requests a normal close; save prompts are left for you. Protected system processes are not closed.
+- The helper requires a user-only writable `%USERPROFILE%\.agent-desktop` directory. If a CLI sandbox adds another writable account, Aeri attempts to repair those extra permissions and retry.
+- Browser automation uses a separate Edge session, without your normal browser logins. It needs Node.js/npx and Playwright MCP. Site-search shortcuts instead open results in your own browser.
+- File search prefers the Windows Search index. Unindexed locations fall back to scanning common folders, not every folder on every drive.
+- Clipboard history contains text copied while Aeri is running and stays in memory. Conversation/task history is a separate, persisted feature.
+- Windows does not expose direct toggles for every setting: Night light and Do not disturb open Settings; brightness control generally needs a built-in display.
+
+## Voice and operational limits
+
+Local recognition needs internet for the first model download, sufficient disk space, and Windows `tar.exe`. Its language follows the app language, not automatic multilingual detection. Standard speech uses SAPI-visible voices: installing a Windows Natural voice does not guarantee SAPI exposes it. Realtime and cloud recognition need their provider's network service and key. You can type when voice is unavailable; model-based chat still needs a working LLM.
+
+Wake detection can miss speech or trigger incorrectly in noise. Adjust sensitivity and use the hotkey when needed. Microphone changes are handled automatically; if none is available the app retries periodically. Realtime spoken requests bypass Standard fast-path rules; typed requests still take the Standard path. The realtime service may begin its own response, which Aeri cancels when using the configured LLM's answer.
+
+Only one background task runs at a time. In-memory task continuation is session-local; persisted history provides old results, not restored running jobs. Failures, empty responses, and step-limit exhaustion are reported, but review important outcomes yourself.
+
+## Checks still needing real hardware or interaction
+
+The earlier project notes did not establish real microphone unplug/replug behavior, startup after an actual reboot, mixed-DPI/multi-monitor orb behavior, or real changes to Wi-Fi, Bluetooth, brightness, theme, and power. They also recorded an intermittent first-click issue after simulated typing and had not established whether physical typing/pasting reproduced it. Wake-word interruption with loud speakers needs a real speaking test. These notes are retained as open verification items, not claims that 0.4.0 was tested on those paths.
+
+[User guide](guide.md) · [← README](../README.md)
