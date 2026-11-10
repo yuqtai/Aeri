@@ -1,0 +1,653 @@
+msgid ""
+msgstr ""
+"Language: zh_CN\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "Not set"
+msgstr "未设置"
+
+msgid "Configured"
+msgstr "已设置"
+
+msgid "Testing…"
+msgstr "测试中…"
+
+msgid "Test passed"
+msgstr "测试通过"
+
+msgid "Test failed"
+msgstr "测试失败"
+
+msgid "Advanced options"
+msgstr "高级选项"
+
+msgid "Test"
+msgstr "测试"
+
+msgid "API Key"
+msgstr "API Key"
+
+msgid "Click again to clear"
+msgstr "再点一次确认清除"
+
+msgid "Clear saved key"
+msgstr "清除已保存的 key"
+
+msgid "Aeri"
+msgstr "Aeri"
+
+msgid "Current voice mode has not been tested"
+msgstr "尚未测试当前语音模式"
+
+msgid "Hello computer"
+msgstr "你好电脑"
+
+msgid "Listening · Tap to stop"
+msgstr "正在听 · 点按停止"
+
+msgid "Thinking · Tap to stop"
+msgstr "思考中 · 点按停止"
+
+msgid "Working · Tap to stop"
+msgstr "正在操作 · 点按停止"
+
+msgid "Speaking · Tap to stop"
+msgstr "正在回答 · 点按停止"
+
+msgid "Voice wake paused. Tap to talk"
+msgstr "语音唤醒已暂停，点按说话"
+
+msgid "Tap to talk"
+msgstr "点按说话"
+
+msgid "Background task running. You can keep chatting"
+msgstr "后台任务进行中，可以接着聊天"
+
+msgid "Preparing microphone…"
+msgstr "正在准备麦克风…"
+
+msgid "How can I help?"
+msgstr "有什么可以帮你？"
+
+msgid "Voice wake paused. "
+msgstr "语音唤醒已暂停，"
+
+msgid "Or tap the orb below"
+msgstr "或者点下方的光球"
+
+msgid "One more step: add an API key"
+msgstr "还差一步：填写 API Key"
+
+msgid "Voice needs a Bailian key. Try typing to check the time or open apps. Chat also needs a language model."
+msgstr "语音需要百炼 key；报时、打开应用可先打字试用，普通聊天还需大模型配置"
+
+msgid "Open settings"
+msgstr "去设置"
+
+msgid "What time is it?"
+msgstr "现在几点了"
+
+msgid "Open Calculator"
+msgstr "打开计算器"
+
+msgid "Search for tomorrow’s weather"
+msgstr "搜索明天的天气"
+
+msgid "Search Bilibili for Python tutorials"
+msgstr "在 B 站搜索 Python 教程"
+
+msgid "Cancel queue"
+msgstr "取消排队"
+
+msgid "Type a command. Enter to send, Esc to hide"
+msgstr "输入命令，回车发送，Esc 收起"
+
+msgid "Voice wake"
+msgstr "语音唤醒"
+
+msgid "Type"
+msgstr "打字"
+
+msgid "Voice chat"
+msgstr "语音对话"
+
+msgid "Wake & microphone"
+msgstr "唤醒与麦克风"
+
+msgid "Language model"
+msgstr "大模型"
+
+msgid "Computer control"
+msgstr "电脑操控"
+
+msgid "Phone control"
+msgstr "手机控制"
+
+msgid "Appearance & startup"
+msgstr "外观与启动"
+
+msgid "Software updates"
+msgstr "软件更新"
+
+msgid "History"
+msgstr "历史记录"
+
+msgid "Plugins"
+msgstr "插件"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Realtime voice"
+msgstr "实时语音"
+
+msgid "Speech + LLM"
+msgstr "识别 + 大模型"
+
+msgid " · "
+msgstr " · "
+
+msgid "No Bailian key yet"
+msgstr "还没有填百炼 key"
+
+msgid "Bailian key test failed"
+msgstr "百炼 key 测试没通过"
+
+msgid "Bailian key ready"
+msgstr "百炼 key 已就绪"
+
+msgid "Microphone unavailable"
+msgstr "麦克风不可用"
+
+msgid "No key; realtime model answers directly"
+msgstr "没填 key，由实时语音模型自己回答"
+
+msgid "No key yet"
+msgstr "还没有填 key"
+
+msgid "Key test failed"
+msgstr "key 测试没通过"
+
+msgid "Key ready"
+msgstr "key 已就绪"
+
+msgid "Codex"
+msgstr "Codex"
+
+msgid "Claude Code"
+msgstr "Claude Code"
+
+msgid "Built-in assistant"
+msgstr "内置助手"
+
+msgid "Full access"
+msgstr "完全访问"
+
+msgid "Workspace only"
+msgstr "只改工作目录"
+
+msgid "Read only"
+msgstr "只读"
+
+msgid " · Desktop and browser disabled"
+msgstr " · 桌面和浏览器都已关闭"
+
+msgid " · Desktop control disabled"
+msgstr " · 桌面控制已关闭"
+
+msgid " · Browser control disabled"
+msgstr " · 浏览器控制已关闭"
+
+msgid "Off"
+msgstr "未开启"
+
+msgid "On · No paired phones"
+msgstr "已开启 · 还没有配对手机"
+
+msgid "Light"
+msgstr "浅色"
+
+msgid "Dark"
+msgstr "深色"
+
+msgid "System"
+msgstr "跟随系统"
+
+msgid "Start at login"
+msgstr "开机自动启动"
+
+msgid "Manual startup"
+msgstr "不开机启动"
+
+msgid " · Floating orb visible"
+msgstr " · 显示悬浮球"
+
+msgid "Update available"
+msgstr "有新版本可以安装"
+
+msgid "Updating…"
+msgstr "正在更新…"
+
+msgid "Check daily"
+msgstr "每天自动检查"
+
+msgid "Auto-check off"
+msgstr "自动检查已关闭"
+
+msgid "Keep chats and tasks for 30 days"
+msgstr "保存最近 30 天的对话和任务"
+
+msgid "Do not save"
+msgstr "不保存"
+
+msgid "Install plugins to teach Aeri more apps"
+msgstr "从插件市场安装，教 Aeri 用更多软件"
+
+msgid "Restore defaults"
+msgstr "恢复默认设置"
+
+msgid "Conversation mode"
+msgstr "对话方式"
+
+msgid "Bailian realtime voice: listen and reply as you speak, with interruptions"
+msgstr "百炼实时语音模型：边说边回，可以插话"
+
+msgid "Transcribe speech, then use the language model and system voice"
+msgstr "先识别成文字，再由大模型回答、系统播报"
+
+msgid "Test realtime voice"
+msgstr "测试实时语音"
+
+msgid "Test speech recognition"
+msgstr "测试语音识别"
+
+msgid "Paste a Bailian key (leave blank to keep the saved key)"
+msgstr "粘贴阿里云百炼 key（留空保留已保存的）"
+
+msgid "Create one at bailian.console.aliyun.com"
+msgstr "在 bailian.console.aliyun.com 创建"
+
+msgid "Speech & interruptions"
+msgstr "播报与打断"
+
+msgid "Speaking rate"
+msgstr "语速"
+
+msgid "Keep listening after replies"
+msgstr "回复后继续聆听"
+
+msgid "Keep talking without saying the wake word again"
+msgstr "接着说话不用再喊唤醒词"
+
+msgid "Interrupt with wake word"
+msgstr "说唤醒词打断播报"
+
+msgid "Say the wake word while Aeri speaks to make it stop and listen"
+msgstr "助手说话时喊一声唤醒词，它就停下来听你说"
+
+msgid "Interrupt directly with headphones"
+msgstr "戴耳机，直接插话"
+
+msgid "Keep the microphone on while speaking. Turn off when using speakers"
+msgstr "播报时麦克风也开着，直接说话就能打断；外放时请关闭"
+
+msgid "Lower other audio during chats"
+msgstr "对话时调低其他声音"
+
+msgid "Lower video and music volume, then restore it afterwards"
+msgstr "把视频、音乐调小，结束后恢复"
+
+msgid "Voice"
+msgstr "音色"
+
+msgid "Realtime voice model"
+msgstr "实时语音模型"
+
+msgid "Test again after changing the model or voice"
+msgstr "改了模型或音色后，建议重新测试一次"
+
+msgid "Realtime service URL"
+msgstr "实时语音服务地址"
+
+msgid "Speech recognition"
+msgstr "语音识别"
+
+msgid "Recognition service"
+msgstr "识别服务"
+
+msgid "Falls back to Speech + LLM if realtime voice cannot connect. Test recognition separately here"
+msgstr "实时语音连不上时会自动改用“识别 + 大模型”，这里单独测试识别服务"
+
+msgid "Recognition service URL"
+msgstr "识别服务地址"
+
+msgid "Recognition model"
+msgstr "识别模型"
+
+msgid "End-of-sentence silence"
+msgstr "断句静音"
+
+msgid "How long a pause ends a sentence"
+msgstr "停顿多久算说完一句"
+
+msgid "ms"
+msgstr "毫秒"
+
+msgid "Wait for speech"
+msgstr "等待开口"
+
+msgid "Stop waiting if you stay silent after waking Aeri"
+msgstr "唤醒后这么久没说话就放弃"
+
+msgid "sec"
+msgstr "秒"
+
+msgid "Microphone"
+msgstr "麦克风"
+
+msgid "Microphone not open yet"
+msgstr "麦克风还没打开"
+
+msgid "Wake words"
+msgstr "唤醒词"
+
+msgid "Separate with commas. Choose distinctive phrases to avoid accidental wakes"
+msgstr "多个用逗号分隔；四个字的词最不容易误唤醒"
+
+msgid "Sensitivity"
+msgstr "灵敏度"
+
+msgid "Higher values wake more easily, including accidental wakes"
+msgstr "越高越容易唤醒，也越容易误唤醒"
+
+msgid "Enable voice wake at startup"
+msgstr "启动时开启语音唤醒"
+
+msgid "Talk with a shortcut"
+msgstr "快捷键说话"
+
+msgid "Wake word weight"
+msgstr "唤醒词加权"
+
+msgid "Higher values detect wake words more easily. Lower in noisy environments"
+msgstr "越大越容易检出唤醒词；嘈杂环境建议调低"
+
+msgid "In realtime mode, a language model handles decisions and tools when configured; realtime voice listens and speaks. Without one, the realtime model answers directly."
+msgstr "实时语音模式下，填了大模型就由它来判断和调用工具，实时语音只负责听和说；不填则由实时语音模型自己回答。"
+
+msgid "Required for Speech + LLM mode."
+msgstr "“识别 + 大模型”模式下必须填写。"
+
+msgid "Paste a new key (leave blank to keep it)"
+msgstr "粘贴新的 key（留空表示不修改）"
+
+msgid "DeepSeek by default: create a key at platform.deepseek.com. Keys are encrypted locally"
+msgstr "默认用 DeepSeek，在 platform.deepseek.com 创建；key 加密保存在本机"
+
+msgid "Model"
+msgstr "模型"
+
+msgid "deepseek-flash is fast and affordable; deepseek-v4-pro is more capable"
+msgstr "deepseek-flash 快且便宜；deepseek-v4-pro 更强"
+
+msgid "Deep thinking"
+msgstr "深度思考"
+
+msgid "More reliable multi-step actions, with little delay for simple commands"
+msgstr "多步操作更稳，简单命令几乎不变慢"
+
+msgid "Thinking effort"
+msgstr "思考强度"
+
+msgid "Low"
+msgstr "低"
+
+msgid "High"
+msgstr "高"
+
+msgid "Max"
+msgstr "最高"
+
+msgid "API URL"
+msgstr "接口地址"
+
+msgid "An Anthropic Messages compatible endpoint"
+msgstr "Anthropic Messages 格式的接口"
+
+msgid "New conversation after"
+msgstr "新对话间隔"
+
+msgid "Forget earlier context after this much silence"
+msgstr "这么久没说话后，忘掉之前的上下文"
+
+msgid "Control desktop apps"
+msgstr "控制桌面软件"
+
+msgid "Read window controls, click, type, and use shortcuts"
+msgstr "读取窗口控件、点击、输入、快捷键"
+
+msgid "Control browser"
+msgstr "控制浏览器"
+
+msgid "Open a separate Edge window when needed. Requires Node.js"
+msgstr "按需打开一个独立的 Edge 窗口，需要 Node.js"
+
+msgid "Delegate longer tasks"
+msgstr "费时的任务交给谁"
+
+msgid "Background agent"
+msgstr "后台智能体"
+
+msgid "Built-in assistant (DeepSeek)"
+msgstr "内置助手（DeepSeek）"
+
+msgid "Permissions"
+msgstr "权限"
+
+msgid "Can do anything without further confirmation. Misheard speech may also be executed"
+msgstr "什么都能做，不再逐项确认；听错一句话也可能被执行"
+
+msgid "Only edit files in the workspace; use built-in tools for desktop actions"
+msgstr "只能改工作目录里的文件，桌面操作走自带工具"
+
+msgid "View and answer only; cannot change anything"
+msgstr "只能查看和回答，不能修改任何东西"
+
+msgid "Working directory"
+msgstr "工作目录"
+
+msgid "Leave blank to use your home folder"
+msgstr "留空使用用户目录"
+
+msgid "For example, D:\\code"
+msgstr "例如 D:\\code"
+
+msgid "Agent model"
+msgstr "智能体用的模型"
+
+msgid "Leave blank to use the agent’s default model"
+msgstr "留空使用智能体自己的默认模型"
+
+msgid "Close idle browser after"
+msgstr "浏览器闲置关闭"
+
+msgid "min"
+msgstr "分钟"
+
+msgid "Playwright package"
+msgstr "Playwright 包"
+
+msgid "Use the Android app on the same Wi-Fi to type, hold to talk, stop, and adjust volume. Local networks only. Allow Private networks when Windows Firewall asks."
+msgstr "同一个 Wi-Fi 下用安卓 App 打字、按住说话、停止和调音量。只接受局域网连接；第一次打开时 Windows 防火墙会询问，请允许“专用网络”。"
+
+msgid "Allow phone control"
+msgstr "允许手机控制"
+
+msgid "Takes effect after saving"
+msgstr "保存后生效"
+
+msgid "Pair phones"
+msgstr "配对手机"
+
+msgid "Pair a new phone"
+msgstr "配对新手机"
+
+msgid "Enter this code in the phone app"
+msgstr "在手机 App 里输入配对码"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Valid for 5 minutes; expires after 5 incorrect attempts"
+msgstr "5 分钟内有效，输错 5 次作废"
+
+msgid "Unpair all phones"
+msgstr "取消全部配对"
+
+msgid "Paired phones will disconnect and need a new pairing code next time"
+msgstr "已配对的手机会断开，下次要重新输入配对码"
+
+msgid "Unpair"
+msgstr "取消配对"
+
+msgid "Appearance"
+msgstr "外观"
+
+msgid "Show floating orb"
+msgstr "显示悬浮球"
+
+msgid "Click the desktop orb to open Aeri. Drag it anywhere"
+msgstr "桌面上的小光球，单击展开主界面，可以拖到任意位置"
+
+msgid "Run in the background when you sign in to Windows"
+msgstr "登录 Windows 后自动在后台运行"
+
+msgid "Open main window at startup"
+msgstr "启动时打开主界面"
+
+msgid "When off, show only the orb. Login startup always stays in the background"
+msgstr "关闭时只显示悬浮球；开机自启时始终不打开"
+
+msgid "Download from GitHub, verify, replace, and restart. Settings and API keys are kept"
+msgstr "从 GitHub 下载新版本，校验后自动替换并重启，设置和 API Key 都会保留"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "Please wait…"
+msgstr "请稍候…"
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Check automatically"
+msgstr "自动检查更新"
+
+msgid "Check daily and notify in chat. Updates are never installed automatically"
+msgstr "每天检查一次，有新版本时在对话里提醒，不会自己安装"
+
+msgid "Plugins teach Aeri the fastest way to use an app. They contain instructions only and do not run programs on your computer."
+msgstr "插件是教 Aeri 用某个软件的说明书：装上后，操作这个软件时 Aeri 会照着用最快的办法做。只是文字说明，不会在电脑上运行程序。"
+
+msgid "Install"
+msgstr "安装"
+
+msgid "Uninstall"
+msgstr "卸载"
+
+msgid "Built-in"
+msgstr "已内置"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "View history"
+msgstr "查看历史记录"
+
+msgid "Browse full chats and background task results by day, with search"
+msgstr "在浏览器里按天查看对话和后台任务的完整结果，可以搜索"
+
+msgid "Open"
+msgstr "打开"
+
+msgid "Save history"
+msgstr "保存历史记录"
+
+msgid "Chats and task results stay on this computer for 30 days. Aeri restores your last chat when reopened"
+msgstr "对话和任务结果只存在这台电脑上，保留 30 天；重新打开 Aeri 时会显示上次的对话"
+
+msgid "Clear history"
+msgstr "清空历史记录"
+
+msgid "Click Confirm clear again to delete. Cancels automatically after 3 seconds"
+msgstr "再点一次“确认清空”就会删除，3 秒后自动取消"
+
+msgid "Permanently delete all saved chats and task records"
+msgstr "删除所有已保存的对话和任务记录，不能恢复"
+
+msgid "Confirm clear"
+msgstr "确认清空"
+
+msgid "Clear"
+msgstr "清空"
+
+msgid "Changes have not been saved"
+msgstr "更改还没有保存"
+
+msgid "Unsaved changes"
+msgstr "有未保存的更改"
+
+msgid "Discard changes"
+msgstr "放弃更改"
+
+msgid "Save & apply"
+msgstr "保存并应用"
+
+msgid "Current version {}"
+msgstr "当前版本 {}"
+
+msgid "Queued {} messages. They will be handled in order"
+msgstr "已接收 {} 条待处理文字，将按顺序处理"
+
+msgid "On · {} paired phones"
+msgstr "已开启 · 已配对 {} 台手机"
+
+msgid "Say “{}” to wake me. "
+msgstr "说“{}”唤醒我，"
+
+msgid "Press {} or tap the orb below"
+msgstr "按 {} 或点下方的光球也可以"
+
+msgid "Using: {}"
+msgstr "正在使用：{}"
+
+msgid "Current {}"
+msgstr "当前{}"
+
+msgid "−"
+msgstr "−"
+
+msgid "+"
+msgstr "+"
+
+msgid "Transcribe + LLM"
+msgstr "识别+大模型"
+
+msgid "{} {}"
+msgstr "{} {}"
+
+msgid "Collapse {}"
+msgstr "收起{}"
+
+msgid "{}%"
+msgstr "{}%"
+
+msgid "{}  · Built-in"
+msgstr "{}  · 内置"
+
+msgid "“{}” · {}"
+msgstr "“{}” · {}"
+
+msgid "{} · {}"
+msgstr "{} · {}"

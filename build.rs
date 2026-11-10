@@ -1,5 +1,13 @@
 fn main() {
-    slint_build::compile("ui/app.slint").expect("编译 Slint 界面失败");
+    println!("cargo:rerun-if-changed=ui/zh_CN.po");
+    let translations = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("translations");
+    let messages = translations.join("zh_CN/LC_MESSAGES");
+    std::fs::create_dir_all(&messages).expect("Could not create translation directory");
+    std::fs::copy("ui/zh_CN.po", messages.join("aeri.po")).expect("Could not copy Chinese translation");
+    let config = slint_build::CompilerConfiguration::new()
+        .with_default_translation_context(slint_build::DefaultTranslationContext::None)
+        .with_bundled_translations(translations);
+    slint_build::compile_with_config("ui/app.slint", config).expect("Could not compile Slint UI");
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=assets/app.rc");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

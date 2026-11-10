@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aeri 历史记录</title>
+<title>Aeri · History</title>
 <style>
 :root{
   --bg:#f6f7fb;--panel:#ffffff;--ink:#111827;--ink2:#374151;--ink3:#6b7280;--ink4:#9ca3af;
@@ -101,7 +101,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 <body>
 <div class="app">
   <aside>
-    <div class="brand">历史记录</div>
+    <div class="brand" data-i18n="History">History</div>
     <div class="stats" id="stats"></div>
     <ul class="days" id="days"></ul>
   </aside>
@@ -109,26 +109,35 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
     <div class="bar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input id="q" placeholder="搜索对话和任务" autocomplete="off">
+        <input id="q" placeholder="Search chats and tasks" autocomplete="off">
         <kbd>/</kbd>
       </div>
       <div class="filters" id="filters">
-        <button class="chip on" data-f="all">全部</button>
-        <button class="chip" data-f="chat">对话</button>
-        <button class="chip" data-f="task">任务</button>
-        <button class="chip" data-f="failed">失败的任务</button>
+        <button class="chip on" data-f="all" data-i18n="All">All</button>
+        <button class="chip" data-f="chat" data-i18n="Chats">Chats</button>
+        <button class="chip" data-f="task" data-i18n="Tasks">Tasks</button>
+        <button class="chip" data-f="failed" data-i18n="Failed tasks">Failed tasks</button>
         <span class="count" id="count"></span>
       </div>
     </div>
     <div id="list"></div>
   </main>
 </div>
-<div class="toast" id="toast">已复制</div>
+<div class="toast" id="toast" data-i18n="Copied">Copied</div>
 <script>
+const ZH = "__LANG__" === "zh-CN";
+const pick = (en, zh) => ZH ? zh : en;
+document.documentElement.lang = ZH ? "zh-CN" : "en";
+document.title = "Aeri · " + pick("History", "历史记录");
+const COPY = {"History": "历史记录", "Search chats and tasks": "搜索对话和任务", "All": "全部", "Chats": "对话", "Tasks": "任务", "Failed tasks": "失败的任务", "Copied": "已复制"};
+document.querySelectorAll("[data-i18n]").forEach(el => {
+  el.textContent = pick(el.dataset.i18n, COPY[el.dataset.i18n]);
+});
+document.getElementById("q").placeholder = pick("Search chats and tasks", "搜索对话和任务");
 const DATA = __DATA__;
 const SESSION_GAP_MIN = 10;
-const STATE = {done: "已完成", failed: "失败", cancelled: "已取消", running: "进行中"};
-const WEEK = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+const STATE = {done: pick("Done", "已完成"), failed: pick("Failed", "失败"), cancelled: pick("Cancelled", "已取消"), running: pick("Running", "进行中")};
+const WEEK = (ZH ? ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"] : ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]);
 let filter = "all";
 
 const $ = id => document.getElementById(id);
@@ -142,15 +151,15 @@ function dayLabel(day) {
   const d = new Date(day + "T00:00:00"), today = new Date();
   today.setHours(0, 0, 0, 0);
   const diff = Math.round((today - d) / 86400000);
-  if (diff === 0) return "今天";
-  if (diff === 1) return "昨天";
+  if (diff === 0) return pick("Today", "今天");
+  if (diff === 1) return pick("Yesterday", "昨天");
   if (diff < 7) return WEEK[d.getDay()];
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return pick(d.toLocaleDateString("en", {month: "short", day: "numeric"}), `${d.getMonth() + 1}月${d.getDate()}日`);
 }
 const minutes = t => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
 function duration(sec) {
   const m = Math.floor(sec / 60), s = sec % 60;
-  return m ? `${m} 分 ${s} 秒` : `${s} 秒`;
+  return m ? pick(`${m} min ${s} sec`, `${m} 分 ${s} 秒`) : pick(`${s} sec`, `${s} 秒`);
 }
 function hay(e) { return (e.text + " " + (e.task ? e.task.description + " " + e.task.result : "")).toLowerCase(); }
 function keep(e, q) {
@@ -179,7 +188,7 @@ function renderItems(items, q) {
   const flush = () => {
     if (!tools.length) return;
     const n = tools.length;
-    html += `<details class="tools"${q && tools.some(t => t.toLowerCase().includes(q.toLowerCase())) ? " open" : ""}><summary>${n === 1 ? esc(tools[0]) : `用了 ${n} 个工具`}</summary>${n > 1 ? "<ul>" + tools.map(t => `<li>${hl(t, q)}</li>`).join("") + "</ul>" : ""}</details>`;
+    html += `<details class="tools"${q && tools.some(t => t.toLowerCase().includes(q.toLowerCase())) ? " open" : ""}><summary>${n === 1 ? esc(tools[0]) : pick(`Used ${n} tools`, `用了 ${n} 个工具`)}</summary>${n > 1 ? "<ul>" + tools.map(t => `<li>${hl(t, q)}</li>`).join("") + "</ul>" : ""}</details>`;
     tools = [];
   };
   for (const e of items) {
@@ -187,15 +196,15 @@ function renderItems(items, q) {
     flush();
     if (e.kind === "task") {
       const t = e.task;
-      html += `<div class="task ${t.state}"><div class="head"><b>任务 #${t.id}</b><span class="tag ${t.state}">${STATE[t.state] || t.state}</span><span class="meta">${e.t.slice(0, 5)} · ${esc(t.executor)} · ${duration(t.secs)}</span></div>
+      html += `<div class="task ${t.state}"><div class="head"><b>${pick("Task", "任务")} #${t.id}</b><span class="tag ${t.state}">${STATE[t.state] || t.state}</span><span class="meta">${e.t.slice(0, 5)} · ${esc(t.executor)} · ${duration(t.secs)}</span></div>
         <div class="desc">${hl(t.description, q)}</div>
-        ${t.result ? `<details${q && t.result.toLowerCase().includes(q.toLowerCase()) ? " open" : ""}><summary>查看结果</summary><div class="result"><button class="icon-btn" data-copy>复制</button><span>${hl(t.result, q)}</span></div></details>` : ""}</div>`;
+        ${t.result ? `<details${q && t.result.toLowerCase().includes(q.toLowerCase()) ? " open" : ""}><summary>${pick("View result", "查看结果")}</summary><div class="result"><button class="icon-btn" data-copy>${pick("Copy", "复制")}</button><span>${hl(t.result, q)}</span></div></details>` : ""}</div>`;
     } else if (e.role === 0) {
       html += `<div class="row u"><div class="bubble">${hl(e.text, q)}</div></div>`;
     } else if (e.role === 3) {
       html += `<div class="sys">${hl(e.text, q)}</div>`;
     } else {
-      html += `<div class="row a"><span class="dot"></span><div class="bubble"><span>${hl(e.text, q)}</span><span class="msg-tools"><button class="icon-btn" data-copy>复制</button></span></div></div>`;
+      html += `<div class="row a"><span class="dot"></span><div class="bubble"><span>${hl(e.text, q)}</span><span class="msg-tools"><button class="icon-btn" data-copy>${pick("Copy", "复制")}</button></span></div></div>`;
     }
   }
   flush();
@@ -218,10 +227,10 @@ function render() {
     html += `</section>`;
   }
   $("days").innerHTML = nav;
-  $("count").textContent = q || filter !== "all" ? `找到 ${shown} 条` : "";
+  $("count").textContent = q || filter !== "all" ? pick(`${shown} results`, `找到 ${shown} 条`) : "";
   $("list").innerHTML = html || (DATA.length
-    ? `<div class="empty"><b>没有找到</b>换个关键词，或者切回“全部”试试</div>`
-    : `<div class="empty"><b>还没有记录</b>和 Aeri 说过的话、交给它的任务会保存在这里，保留 30 天</div>`);
+    ? `<div class="empty"><b>${pick("No results", "没有找到")}</b>${pick("Try another keyword or switch back to All", "换个关键词，或者切回“全部”试试")}</div>`
+    : `<div class="empty"><b>${pick("No history yet", "还没有记录")}</b>${pick("Your chats and tasks will appear here for 30 days", "和 Aeri 说过的话、交给它的任务会保存在这里，保留 30 天")}</div>`);
   spy();
 }
 
@@ -231,7 +240,7 @@ function stats() {
     if (e.kind === "task") tasks++;
     else if (e.role === 0) chats++;
   }
-  $("stats").textContent = DATA.length ? `${DATA.length} 天 · ${chats} 句话 · ${tasks} 个任务` : "";
+  $("stats").textContent = DATA.length ? pick(`${DATA.length} days · ${chats} messages · ${tasks} tasks`, `${DATA.length} 天 · ${chats} 句话 · ${tasks} 个任务`) : "";
 }
 
 /* 滚动时高亮左侧对应的日期 */

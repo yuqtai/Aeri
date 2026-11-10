@@ -47,6 +47,15 @@ const EXECUTORS: [&str; 3] = ["codex", "claude", "builtin"];
 const ACCESS: [&str; 3] = ["full", "workspace", "readonly"];
 const FRONTENDS: [&str; 2] = ["realtime", "classic"];
 
+// Keep format literals checked by Rust while selecting UI copy centrally.
+macro_rules! ui_format {
+    ($en:literal, $zh:literal $(, $arg:expr)* $(,)?) => {{
+        let en = format!($en $(, $arg)*);
+        let zh = format!($zh $(, $arg)*);
+        locale::pick(&en, &zh).to_owned()
+    }};
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--kws-test") {
@@ -73,6 +82,7 @@ fn main() -> anyhow::Result<()> {
 
     let icon = icon_rgba();
     let window = AppWindow::new()?;
+    slint::select_bundled_translation(if locale::is_zh() { "zh_CN" } else { "" })?;
     window.set_messages(ModelRc::from(Rc::new(VecModel::<ChatItem>::default())));
     let devices = Rc::new(RefCell::new(audio::input_device_names()));
     apply_config(&window, &cfg, &devices.borrow());
@@ -123,7 +133,7 @@ fn main() -> anyhow::Result<()> {
         });
     });
     if let Err(e) = created {
-        eprintln!("悬浮球创建失败：{e}");
+        eprintln!("{}", ui_format!("Could not create floating orb: {e}", "悬浮球创建失败：{e}"));
     }
     sync_listening_menus(cfg.listen_on_start);
     apply_hotkey(&window, cfg.hotkey);
@@ -165,7 +175,7 @@ fn main() -> anyhow::Result<()> {
     memory_timer.start(slint::TimerMode::Repeated, Duration::from_secs(2), move || {
         if let Some(w) = weak.upgrade() {
             if w.window().is_visible() {
-                w.set_memory(format!("内存 {:.0} MB", sys::private_memory_mb()).into());
+                w.set_memory(ui_format!("Memory {:.0} MB", "内存 {:.0} MB", sys::private_memory_mb()).into());
                 sync_title_bar(&w);
                 hook_native_window(&w);
             }
@@ -191,10 +201,10 @@ fn kws_test(files: &[String]) -> anyhow::Result<()> {
     let (mut detector, problems) =
         kws::WakeDetector::new(&config::models_dir().join("kws"), &cfg.wake_words, cfg.kws_threshold, cfg.kws_score)?;
     for p in problems {
-        println!("唤醒词问题：{p}");
+        println!("{}", ui_format!("Wake word issue: {p}", "唤醒词问题：{p}"));
     }
     for f in files {
-        let wave = sherpa_onnx::Wave::read(f).ok_or_else(|| anyhow::anyhow!("读取失败：{f}"))?;
+        let wave = sherpa_onnx::Wave::read(f).ok_or_else(|| anyhow::anyhow!(ui_format!("Could not read: {f}", "读取失败：{f}")))?;
         let mut resampler = resample::Resampler::new(wave.sample_rate() as u32);
         // 前后各 1 秒带轻微底噪的安静段，按 10ms 一块喂入，和实际运行走同样的能量门限
         let noise = |n: usize| (0..n).map(|i| ((i * 7919 % 1000) as f32 / 1000.0 - 0.5) * 0.002).collect::<Vec<f32>>();
@@ -209,7 +219,7 @@ fn kws_test(files: &[String]) -> anyhow::Result<()> {
                 hits.extend(detector.accept(&piece));
             }
         }
-        println!("{f}: {}", if hits.is_empty() { "未检测到".into() } else { hits.join("、") });
+        println!("{f}: {}", if hits.is_empty() { locale::pick("Not detected", "未检测到").into() } else { hits.join("、") });
     }
     Ok(())
 }
@@ -217,11 +227,11 @@ fn kws_test(files: &[String]) -> anyhow::Result<()> {
 fn on_ui_event(w: &AppWindow, ev: UiEvent) {
     #[cfg(debug_assertions)]
     match &ev {
-        UiEvent::Status(s) => println!("[状态] {s:?}"),
+        UiEvent::Status(s) => println!("{}", ui_format!("[Status] {s:?}", "[状态] {s:?}")),
         UiEvent::Chat(role, text) => println!("[{role:?}] {text}"),
-        UiEvent::TaskProgress(id, text) => println!("[任务 #{id}] {text}"),
-        UiEvent::TaskRunning(on) => println!("[后台任务进行中] {on}"),
-        UiEvent::Mic(name) => println!("[麦克风] {name}"),
+        UiEvent::TaskProgress(id, text) => println!("{}", ui_format!("[Task #{id}] {text}", "[任务 #{id}] {text}")),
+        UiEvent::TaskRunning(on) => println!("{}", ui_format!("[Background task running] {on}", "[后台任务进行中] {on}")),
+        UiEvent::Mic(name) => println!("{}", ui_format!("[Microphone] {name}", "[麦克风] {name}")),
         UiEvent::Partial(_) => {}
         UiEvent::TextStarted(_) => {}
     }
@@ -231,9 +241,12 @@ fn on_ui_event(w: &AppWindow, ev: UiEvent) {
             ball::set_state(s as i32);
         }
         UiEvent::Partial(p) => w.set_partial(p.into()),
-        UiEvent::Mic(name) => w.set_mic_name(name.into()),
+        UiEvent::Mic(name) => {
+            let name = if name == "麦克风不可用" { locale::pick("Microphone unavailable", "麦克风不可用") } else { &name };
+            w.set_mic_name(name.into());
+        },
         UiEvent::Chat(role, text) => push_chat(w, role as i32, text, None),
-        UiEvent::TaskProgress(id, text) => push_chat(w, assistant::Role::Tool as i32, format!("任务 #{id} · {text}"), Some(id)),
+        UiEvent::TaskProgress(id, text) => push_chat(w, assistant::Role::Tool as i32, ui_format!("Task #{id} · {text}", "任务 #{id} · {text}"), Some(id)),
         UiEvent::TaskRunning(on) => {
             w.set_task_running(on);
             ball::set_task_running(on);
@@ -253,7 +266,7 @@ fn push_chat(w: &AppWindow, role: i32, text: String, replace_task: Option<u32>) 
     let item = ChatItem { role, text: text.into() };
     let last = vm.row_count().checked_sub(1);
     let same_task = |prev: &ChatItem| {
-        replace_task.is_some_and(|id| prev.role == role && prev.text.starts_with(&format!("任务 #{id} · ")))
+        replace_task.is_some_and(|id| prev.role == role && prev.text.starts_with(&ui_format!("Task #{id} · ", "任务 #{id} · ")))
     };
     match last {
         Some(i) if vm.row_data(i).is_some_and(|prev| same_task(&prev)) => vm.set_row_data(i, item),
@@ -288,7 +301,7 @@ fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
             push_chat(&w, assistant::Role::User as i32, text, None);
             w.set_pending_texts(w.get_pending_texts() + 1);
         } else {
-            push_chat(&w, assistant::Role::System as i32, "发送失败，请重新启动助手后重试。".into(), None);
+            push_chat(&w, assistant::Role::System as i32, locale::pick("Could not send. Restart Aeri and try again.", "发送失败，请重新启动助手后重试。").into(), None);
         }
     });
     let weak = window.as_weak();
@@ -296,7 +309,7 @@ fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
         assistant::cancel_pending_texts();
         if let Some(w) = weak.upgrade() {
             w.set_pending_texts(0);
-            push_chat(&w, assistant::Role::System as i32, "已取消尚未开始处理的文字；正在处理的内容可点光球停止。".into(), None);
+            push_chat(&w, assistant::Role::System as i32, locale::pick("Cancelled queued messages. Tap the orb to stop the current request.", "已取消尚未开始处理的文字；正在处理的内容可点光球停止。").into(), None);
         }
     });
     let (tx, weak) = (cmd_tx.clone(), window.as_weak());
@@ -334,7 +347,7 @@ fn threshold_to_sensitivity(t: f32) -> f32 {
 }
 
 fn set_devices(w: &AppWindow, devices: &[String], selected: &str) {
-    let mut items: Vec<slint::SharedString> = vec!["系统默认".into()];
+    let mut items: Vec<slint::SharedString> = vec![locale::pick("System default", "系统默认").into()];
     items.extend(devices.iter().map(|d| d.as_str().into()));
     w.set_devices(ModelRc::from(Rc::new(VecModel::from(items))));
     let idx = devices.iter().position(|d| !selected.is_empty() && d.contains(selected)).map_or(0, |i| i + 1);
@@ -351,12 +364,24 @@ const THEMES: [&str; 3] = ["auto", "light", "dark"];
 
 fn refresh_key_status(w: &AppWindow, c: &Config) {
     VOICE_SAVED_KEY.set(config::asr_key(c));
-    w.set_llm_key_status(config::key_status(&c.llm_api_key_protected, &c.llm_key_env).into());
-    w.set_asr_key_status(config::key_status(&c.asr_api_key_protected, &c.asr_key_env).into());
+    w.set_llm_key_status(ui_key_status(&c.llm_api_key_protected, &c.llm_key_env).into());
+    w.set_asr_key_status(ui_key_status(&c.asr_api_key_protected, &c.asr_key_env).into());
     w.set_llm_key_state(if config::llm_key(c).is_some() { KEY_READY } else { KEY_MISSING });
     w.set_asr_key_state(if config::asr_key(c).is_some() { KEY_READY } else { KEY_MISSING });
     w.set_llm_key_saved(config::has_saved_key(&c.llm_api_key_protected));
     w.set_asr_key_saved(config::has_saved_key(&c.asr_api_key_protected));
+}
+
+fn ui_key_status(protected: &str, env_name: &str) -> String {
+    let status = config::key_status(protected, env_name);
+    match status.as_str() {
+        "已保存（加密存放在本机）" => locale::pick("Saved (encrypted on this computer)", "已保存（加密存放在本机）").into(),
+        "未设置" => locale::pick("Not set", "未设置").into(),
+        _ if status.starts_with("正在使用系统环境变量 ") => {
+            ui_format!("Using environment variable {env_name}", "正在使用系统环境变量 {env_name}")
+        }
+        _ => status,
+    }
 }
 
 /// 配置 -> 界面（key 本身从不显示，只显示状态）
@@ -499,7 +524,7 @@ mod voice_settings_tests {
     fn saving_tested_key_preserves_identity_but_editing_invalidates_it() {
         let tested = effective_voice_key("  test-key  ", None);
         let saved = effective_voice_key("", Some("test-key".into()));
-        assert_eq!(tested, saved, "保存并清空输入后应保留测试结果");
+        assert_eq!(tested, saved, "Keep test results after saving and clearing input");
         assert_ne!(tested, effective_voice_key("different-key", saved));
     }
 
@@ -518,7 +543,7 @@ mod voice_settings_tests {
 fn invalidate_voice_test(w: &AppWindow) {
     w.set_voice_test_epoch(w.get_voice_test_epoch().wrapping_add(1));
     w.set_voice_test_state(KEY_READY);
-    w.set_voice_test_status("尚未测试当前语音模式；连接测试不包含实际录音和出声。".into());
+    w.set_voice_test_status(locale::pick("Current voice mode has not been tested. Connection tests do not record or play audio.", "尚未测试当前语音模式；连接测试不包含实际录音和出声。").into());
     VOICE_TEST_INPUT.set(None);
 }
 
@@ -566,30 +591,30 @@ fn set_note(w: &AppWindow, kind: i32, text: impl Into<slint::SharedString>) {
 /// 设置页“谁来干活”下面的说明：命令行装没装
 fn executor_status() -> String {
     let found = |names: &[&str]| tasks::find_program(names).is_some();
-    let codex = if found(&["codex.exe", "codex.cmd"]) { "已安装" } else { "未安装（npm install -g @openai/codex）" };
-    let claude = if found(&["claude.exe", "claude.cmd"]) { "已安装，第一次用前要在终端运行 claude 登录" } else { "未安装" };
-    format!("复杂任务交给它在后台做，做完会主动告诉你。Codex：{codex}；Claude Code：{claude}。")
+    let codex = if found(&["codex.exe", "codex.cmd"]) { locale::pick("Installed", "已安装") } else { locale::pick("Not installed (npm install -g @openai/codex)", "未安装（npm install -g @openai/codex）") };
+    let claude = if found(&["claude.exe", "claude.cmd"]) { locale::pick("Installed. Run claude in a terminal to sign in before first use", "已安装，第一次用前要在终端运行 claude 登录") } else { locale::pick("Not installed", "未安装") };
+    ui_format!("Longer tasks run in the background and report back when done. Codex: {codex}; Claude Code: {claude}.", "复杂任务交给它在后台做，做完会主动告诉你。Codex：{codex}；Claude Code：{claude}。")
 }
 
 /// 检查必填项，返回问题说明
 fn validate(c: &Config) -> Option<String> {
     if c.wake_words.is_empty() {
-        return Some("请至少填一个唤醒词".into());
+        return Some(locale::pick("Enter at least one wake word", "请至少填一个唤醒词").into());
     }
     if !c.llm_base_url.starts_with("http") {
-        return Some("大模型接口地址应以 http 开头".into());
+        return Some(locale::pick("Language model API URL must start with http", "大模型接口地址应以 http 开头").into());
     }
     if !c.asr_url.starts_with("ws") {
-        return Some("语音识别服务地址应以 wss:// 开头".into());
+        return Some(locale::pick("Speech recognition URL must start with wss://", "语音识别服务地址应以 wss:// 开头").into());
     }
     if c.voice_frontend == "realtime" && !c.realtime_url.starts_with("ws") {
-        return Some("实时语音服务地址应以 wss:// 开头".into());
+        return Some(locale::pick("Realtime voice URL must start with wss://", "实时语音服务地址应以 wss:// 开头").into());
     }
     if c.llm_model.is_empty() || c.asr_model.is_empty() || (c.voice_frontend == "realtime" && c.realtime_model.is_empty()) {
-        return Some("模型名不能为空".into());
+        return Some(locale::pick("Model name cannot be empty", "模型名不能为空").into());
     }
     if !c.agent_workdir.is_empty() && !std::path::Path::new(&c.agent_workdir).is_dir() {
-        return Some("后台智能体的工作目录不存在".into());
+        return Some(locale::pick("The background agent working directory does not exist", "后台智能体的工作目录不存在").into());
     }
     None
 }
@@ -613,8 +638,7 @@ fn set_update(weak: &slint::Weak<AppWindow>, action: i32, status: String) {
 fn found_text(rel: &update::Release) -> String {
     let summary = update::notes_summary(&rel.notes);
     let size = if rel.size > 0 { format!("（{:.1} MB）", rel.size as f64 / 1048576.0) } else { String::new() };
-    if summary.is_empty() { format!("有新版本 v{}{size}", rel.version) } else { format!("有新版本 v{}{size}：
-{summary}", rel.version) }
+    if summary.is_empty() { ui_format!("Update available: v{}{size}", "有新版本 v{}{size}", rel.version) } else { ui_format!("Update available: v{}{size}:\n{summary}", "有新版本 v{}{size}：\n{summary}", rel.version) }
 }
 
 /// 检查更新；manual 为 false 时是自动检查，没有新版本或出错都不打扰
@@ -622,7 +646,7 @@ async fn run_check(weak: slint::Weak<AppWindow>, manual: bool) {
     match update::check().await {
         Ok(Some(rel)) => {
             set_update(&weak, UPDATE_INSTALL, found_text(&rel));
-            let text = format!("发现新版本 v{}，可以在设置页底部点“更新”，或者直接对我说“更新软件”。", rel.version);
+            let text = ui_format!("Aeri v{} is available. Open Software updates in Settings, or say “update Aeri”.", "发现新版本 v{}，可以在设置页底部点“更新”，或者直接对我说“更新软件”。", rel.version);
             update::set_latest(Some(rel));
             let weak2 = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -631,8 +655,8 @@ async fn run_check(weak: slint::Weak<AppWindow>, manual: bool) {
                 }
             });
         }
-        Ok(None) => set_update(&weak, UPDATE_CHECK, format!("已经是最新版本（v{}）", update::CURRENT)),
-        Err(e) if manual => set_update(&weak, UPDATE_CHECK, format!("检查失败：{e:#}")),
+        Ok(None) => set_update(&weak, UPDATE_CHECK, ui_format!("You’re up to date (v{})", "已经是最新版本（v{}）", update::CURRENT)),
+        Err(e) if manual => set_update(&weak, UPDATE_CHECK, ui_format!("Check failed: {e:#}", "检查失败：{e:#}")),
         Err(_) => set_update(&weak, UPDATE_CHECK, String::new()),
     }
 }
@@ -646,7 +670,7 @@ fn restore_history(window: &AppWindow) {
     for (_, e) in items {
         vm.push(ChatItem { role: e.role, text: e.text.into() });
     }
-    vm.push(ChatItem { role: assistant::Role::System as i32, text: format!("以上是之前的对话（{}）", &day[5..]).into() });
+    vm.push(ChatItem { role: assistant::Role::System as i32, text: ui_format!("Previous conversation ({})", "以上是之前的对话（{}）", &day[5..]).into() });
     let weak = window.as_weak();
     slint::Timer::single_shot(Duration::from_millis(300), move || {
         if let Some(w) = weak.upgrade() {
@@ -664,17 +688,34 @@ fn plugin_rows() -> Vec<PluginRow> {
         .map(|p| {
             let update = market.iter().find(|l| l.id == p.id).filter(|l| plugins::newer(&l.version, &p.version));
             let (state, extra) = match (update, p.builtin) {
-                (Some(l), _) => (2, format!(" · 可更新到 v{}", l.version)),
+                (Some(l), _) => (2, ui_format!(" · Update to v{}", " · 可更新到 v{}", l.version)),
                 (None, true) => (3, String::new()),
                 (None, false) => (1, String::new()),
             };
-            PluginRow { id: p.id.clone().into(), name: p.name.clone().into(), summary: format!("v{}{extra} · {}", p.version, p.description).into(), state }
+            PluginRow { id: p.id.clone().into(), name: plugin_name(&p.name).into(), summary: format!("v{}{extra} · {}", p.version, plugin_description(&p.description)).into(), state }
         })
         .collect();
     for l in market.iter().filter(|l| !local.iter().any(|p| p.id == l.id)) {
-        rows.push(PluginRow { id: l.id.clone().into(), name: l.name.clone().into(), summary: format!("v{} · {}", l.version, l.description).into(), state: 0 });
+        rows.push(PluginRow { id: l.id.clone().into(), name: plugin_name(&l.name).into(), summary: format!("v{} · {}", l.version, plugin_description(&l.description)).into(), state: 0 });
     }
     rows
+}
+
+fn plugin_name(name: &str) -> &str {
+    match name {
+        "记事本" => locale::pick("Notepad", name),
+        "思源笔记" => locale::pick("SiYuan", name),
+        _ => name,
+    }
+}
+
+fn plugin_description(description: &str) -> &str {
+    match description {
+        "在记事本里写字、读取内容、保存" => locale::pick("Write, read, and save text in Notepad", description),
+        "新建笔记、追加到每日笔记、打开或搜索笔记，用 Obsidian 自带的链接协议，不用点界面" => locale::pick("Create, append, open, and search notes using Obsidian links", description),
+        "记笔记、追加到今天的日记、新建文档、搜索笔记，直接走思源的本机接口，不用点界面" => locale::pick("Create and search notes, and append to today’s journal using the local SiYuan API", description),
+        _ => description,
+    }
 }
 
 fn wire_plugins(window: &AppWindow, rt: Handle) {
@@ -693,12 +734,12 @@ fn wire_plugins(window: &AppWindow, rt: Handle) {
     window.on_plugins_refresh(move || {
         let Some(w) = weak.upgrade() else { return };
         w.set_plugins_busy("*".into());
-        w.set_plugins_status("正在读取插件市场…".into());
+        w.set_plugins_status(locale::pick("Loading plugin marketplace…", "正在读取插件市场…").into());
         let weak = weak.clone();
         rt2.spawn(async move {
             let status = match plugins::fetch_market().await {
-                Ok(m) => format!("插件市场共 {} 个插件 · github.com/{}", m.len(), plugins::MARKET_REPO),
-                Err(e) => format!("{e}，先显示本机已有的插件"),
+                Ok(m) => ui_format!("{} plugins in the marketplace · github.com/{}", "插件市场共 {} 个插件 · github.com/{}", m.len(), plugins::MARKET_REPO),
+                Err(e) => ui_format!("{e}. Showing locally installed plugins", "{e}，先显示本机已有的插件"),
             };
             show(&weak, status);
         });
@@ -711,7 +752,7 @@ fn wire_plugins(window: &AppWindow, rt: Handle) {
         match state {
             Some(1) => {
                 let status = match plugins::remove(&id) {
-                    Ok(n) => format!("已卸载“{n}”"),
+                    Ok(n) => ui_format!("Uninstalled “{n}”", "已卸载“{n}”"),
                     Err(e) => e,
                 };
                 show(&weak, status);
@@ -721,7 +762,7 @@ fn wire_plugins(window: &AppWindow, rt: Handle) {
                 let weak = weak.clone();
                 rt.spawn(async move {
                     let status = match plugins::install(&id).await {
-                        Ok(p) => format!("已安装“{}” v{}", p.name, p.version),
+                        Ok(p) => ui_format!("Installed “{}” v{}", "已安装“{}” v{}", p.name, p.version),
                         Err(e) => e,
                     };
                     show(&weak, status);
@@ -737,16 +778,16 @@ fn wire_history(window: &AppWindow) {
     window.on_history_open(move || {
         let Some(w) = weak.upgrade() else { return };
         match history::open_viewer() {
-            Ok(()) => w.set_history_status("已在浏览器中打开".into()),
-            Err(e) => w.set_history_status(format!("打开失败：{e}").into()),
+            Ok(()) => w.set_history_status(locale::pick("Opened in your browser", "已在浏览器中打开").into()),
+            Err(e) => w.set_history_status(ui_format!("Could not open: {e}", "打开失败：{e}").into()),
         }
     });
     let weak = window.as_weak();
     window.on_history_clear(move || {
         let Some(w) = weak.upgrade() else { return };
         match history::clear() {
-            Ok(()) => w.set_history_status("已清空全部历史记录".into()),
-            Err(e) => w.set_history_status(format!("清空失败：{e}").into()),
+            Ok(()) => w.set_history_status(locale::pick("All history cleared", "已清空全部历史记录").into()),
+            Err(e) => w.set_history_status(ui_format!("Could not clear: {e}", "清空失败：{e}").into()),
         }
     });
 }
@@ -765,24 +806,24 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
         match w.get_update_action() {
             UPDATE_CHECK => {
                 w.set_update_action(UPDATE_BUSY);
-                w.set_update_status("正在检查…".into());
+                w.set_update_status(locale::pick("Checking…", "正在检查…").into());
                 rt.spawn(run_check(weak, true));
             }
             UPDATE_INSTALL => {
                 let Some(rel) = update::latest() else { return };
                 w.set_update_action(UPDATE_BUSY);
-                w.set_update_status("正在下载…".into());
+                w.set_update_status(locale::pick("Downloading…", "正在下载…").into());
                 rt.spawn(async move {
                     let progress_weak = weak.clone();
                     let version = rel.version.clone();
-                    let r = update::download(&rel, move |p| set_update(&progress_weak, UPDATE_BUSY, format!("正在下载 v{version}：{p}%"))).await;
+                    let r = update::download(&rel, move |p| set_update(&progress_weak, UPDATE_BUSY, ui_format!("Downloading v{version}: {p}%", "正在下载 v{version}：{p}%"))).await;
                     match r.and_then(|dir| update::launch_apply(&dir)) {
                         Ok(()) => {
-                            set_update(&weak, UPDATE_BUSY, "下载完成，正在重启以完成更新…".into());
+                            set_update(&weak, UPDATE_BUSY, locale::pick("Download complete. Restarting to finish the update…", "下载完成，正在重启以完成更新…").into());
                             tokio::time::sleep(Duration::from_millis(800)).await;
                             let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); });
                         }
-                        Err(e) => set_update(&weak, UPDATE_INSTALL, format!("更新失败：{e:#}")),
+                        Err(e) => set_update(&weak, UPDATE_INSTALL, ui_format!("Update failed: {e:#}", "更新失败：{e:#}")),
                     }
                 });
             }
@@ -817,7 +858,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 match config::protect_key(&input) {
                     Some(protected) => *slot = protected,
                     None => {
-                        set_note(&w, NOTE_ERROR, "key 加密保存失败");
+                        set_note(&w, NOTE_ERROR, locale::pick("Could not encrypt and save key", "key 加密保存失败"));
                         return;
                     }
                 }
@@ -831,8 +872,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 ball::set_enabled(c.float_ball);
                 apply_hotkey(&w, c.hotkey);
                 let (kind, note) = match sys::set_autostart(w.get_launch_at_login()) {
-                    Ok(()) => (NOTE_OK, "已保存并生效".to_string()),
-                    Err(e) => (NOTE_ERROR, format!("已保存，但开机自启设置失败：{e}")),
+                    Ok(()) => (NOTE_OK, locale::pick("Saved and applied", "已保存并生效").to_string()),
+                    Err(e) => (NOTE_ERROR, ui_format!("Saved, but could not set startup preference: {e}", "已保存，但开机自启设置失败：{e}")),
                 };
                 w.set_launch_at_login(sys::autostart_enabled());
                 mark_settings_clean(&w);
@@ -841,7 +882,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 history::set_enabled(c.save_history);
                 let _ = tx.send(Command::Reload(c));
             }
-            Err(e) => set_note(&w, NOTE_ERROR, format!("保存失败：{e}")),
+            Err(e) => set_note(&w, NOTE_ERROR, ui_format!("Could not save: {e}", "保存失败：{e}")),
         }
     });
 
@@ -857,7 +898,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         };
         apply_config(&w, &defaults, &devs.borrow());
         update_settings_dirty(&w);
-        set_note(&w, NOTE_INFO, "已恢复默认值（API key 保留），点“保存并应用”生效");
+        set_note(&w, NOTE_INFO, locale::pick("Defaults restored (API keys kept). Click Save & apply to use them", "已恢复默认值（API key 保留），点“保存并应用”生效"));
     });
 
     // 放弃未保存的更改：界面回到已保存的配置
@@ -877,7 +918,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let current = if idx > 0 { devs.borrow().get(idx as usize - 1).cloned().unwrap_or_default() } else { String::new() };
         *devs.borrow_mut() = audio::input_device_names();
         set_devices(&w, &devs.borrow(), &current);
-        set_note(&w, NOTE_INFO, format!("找到 {} 个麦克风", devs.borrow().len()));
+        set_note(&w, NOTE_INFO, ui_format!("Found {} microphones", "找到 {} 个麦克风", devs.borrow().len()));
     });
 
     // 清除已保存的 key
@@ -889,7 +930,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             if asr { c.asr_api_key_protected.clear() } else { c.llm_api_key_protected.clear() }
             if config::save(&c).is_ok() {
                 refresh_key_status(&w, &c);
-                set_note(&w, NOTE_OK, "已清除保存的 key");
+                set_note(&w, NOTE_OK, locale::pick("Saved key cleared", "已清除保存的 key"));
                 let _ = tx.send(Command::Reload(c));
             }
         };
@@ -904,11 +945,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let input = w.get_llm_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { config::llm_key(&c) } else { Some(input) }) else {
             w.set_llm_key_state(KEY_MISSING);
-            w.set_llm_key_status("请先在上面粘贴 key".into());
+            w.set_llm_key_status(locale::pick("Paste a key above first", "请先在上面粘贴 key").into());
             return;
         };
         w.set_llm_key_state(KEY_TESTING);
-        w.set_llm_key_status("正在连接…".into());
+        w.set_llm_key_status(locale::pick("Connecting…", "正在连接…").into());
         let weak = weak.clone();
         rt2.spawn(async move {
             let result = match llm::Llm::new(&c.llm_base_url, key, &c.llm_model, false, &c.llm_effort) {
@@ -916,8 +957,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 Err(e) => Err(e),
             };
             let (state, msg) = match result {
-                Ok(()) => (KEY_OK, format!("测试通过：{} 可以正常调用", c.llm_model)),
-                Err(e) => (KEY_FAILED, format!("测试失败：{e:#}")),
+                Ok(()) => (KEY_OK, ui_format!("Test passed: {} is available", "测试通过：{} 可以正常调用", c.llm_model)),
+                Err(e) => (KEY_FAILED, ui_format!("Test failed: {e:#}", "测试失败：{e:#}")),
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
@@ -937,7 +978,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let input = w.get_asr_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { config::asr_key(&c) } else { Some(input) }) else {
             w.set_voice_test_state(KEY_MISSING);
-            w.set_voice_test_status("请先填写顶部的百炼 key，再测试当前模式。".into());
+            w.set_voice_test_status(locale::pick("Enter a Bailian key above before testing the current mode.", "请先填写顶部的百炼 key，再测试当前模式。").into());
             return;
         };
         let snapshot = voice_test_snapshot(&w);
@@ -945,11 +986,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let epoch = w.get_voice_test_epoch().wrapping_add(1);
         w.set_voice_test_epoch(epoch);
         w.set_voice_test_state(KEY_TESTING);
-        w.set_voice_test_status("正在验证当前语音服务连接和会话参数…".into());
+        w.set_voice_test_status(locale::pick("Checking voice service connection and session settings…", "正在验证当前语音服务连接和会话参数…").into());
         let weak = weak.clone();
         voice_rt.spawn(async move {
             let realtime_mode = c.voice_frontend == "realtime";
-            let label = if realtime_mode { "实时语音" } else { "语音识别" };
+            let label = if realtime_mode { locale::pick("Realtime voice", "实时语音") } else { locale::pick("Speech recognition", "语音识别") };
             let result = tokio::time::timeout(Duration::from_secs(20), async {
                 if realtime_mode {
                     let settings = realtime::RealtimeSettings {
@@ -971,9 +1012,9 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 }
             }).await;
             let (state, msg) = match result {
-                Ok(Ok(())) => (KEY_OK, format!("{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。")),
-                Ok(Err(_)) => (KEY_FAILED, format!("{label}连接失败，请检查凭证、模型/音色是否开通及服务地址，然后重试。")),
-                Err(_) => (KEY_FAILED, format!("{label}连接测试超时，请检查网络与服务地址后重试。")),
+                Ok(Ok(())) => (KEY_OK, ui_format!("{label} connection test passed. Microphone and playback were not tested. Save & apply your changes.", "{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。")),
+                Ok(Err(_)) => (KEY_FAILED, ui_format!("{label} connection failed. Check credentials, model/voice access, and service URL, then retry.", "{label}连接失败，请检查凭证、模型/音色是否开通及服务地址，然后重试。")),
+                Err(_) => (KEY_FAILED, ui_format!("{label} connection timed out. Check your network and service URL, then retry.", "{label}连接测试超时，请检查网络与服务地址后重试。")),
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
@@ -996,11 +1037,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let input = w.get_asr_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { config::asr_key(&c) } else { Some(input) }) else {
             w.set_asr_key_state(KEY_MISSING);
-            w.set_asr_key_status("请先在上面粘贴 key".into());
+            w.set_asr_key_status(locale::pick("Paste a key above first", "请先在上面粘贴 key").into());
             return;
         };
         w.set_asr_key_state(KEY_TESTING);
-        w.set_asr_key_status("正在连接…".into());
+        w.set_asr_key_status(locale::pick("Connecting…", "正在连接…").into());
         let weak = weak.clone();
         rt.spawn(async move {
             let settings = asr::AsrSettings {
@@ -1011,8 +1052,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 speech_timeout: Duration::from_secs(c.asr_speech_timeout_secs),
             };
             let (state, msg) = match asr::check(&settings).await {
-                Ok(()) => (KEY_OK, format!("测试通过：{} 可以正常连接", c.asr_model)),
-                Err(e) => (KEY_FAILED, format!("测试失败：{e:#}")),
+                Ok(()) => (KEY_OK, ui_format!("Test passed: {} connected", "测试通过：{} 可以正常连接", c.asr_model)),
+                Err(e) => (KEY_FAILED, ui_format!("Test failed: {e:#}", "测试失败：{e:#}")),
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
@@ -1183,12 +1224,12 @@ fn talk_or_stop(w: &AppWindow, tx: &UnboundedSender<Command>) {
 /// 注册或取消全局快捷键，结果显示在设置页和空状态提示里
 fn apply_hotkey(w: &AppWindow, on: bool) {
     let ok = ball::set_hotkey(on);
-    w.set_hotkey_label(if on && ok { ball::HOTKEY_LABEL.into() } else { "".into() });
+    w.set_hotkey_label(if on && ok { locale::pick("Ctrl+Alt+Space", ball::HOTKEY_LABEL).into() } else { "".into() });
     w.set_hotkey_note(
         if !ok {
-            format!("{} 已被其他程序占用，没能启用", ball::HOTKEY_LABEL)
+            ui_format!("{} is already used by another app", "{} 已被其他程序占用，没能启用", locale::pick("Ctrl+Alt+Space", ball::HOTKEY_LABEL))
         } else {
-            format!("按 {} 开始说话；听、思考或回答时再按一下停止", ball::HOTKEY_LABEL)
+            ui_format!("Press {} to talk; press again while listening, thinking, or speaking to stop", "按 {} 开始说话；听、思考或回答时再按一下停止", locale::pick("Ctrl+Alt+Space", ball::HOTKEY_LABEL))
         }
         .into(),
     );
@@ -1242,7 +1283,20 @@ fn refresh_remote(w: &AppWindow) {
     w.set_remote_running(info.running);
     w.set_remote_code(info.code.into());
     w.set_remote_paired(info.paired as i32);
-    w.set_remote_status(info.status.into());
+    let status = if locale::is_zh() {
+        info.status
+    } else {
+        info.status.replace("没能打开：", "Could not start: ")
+            .replace("电脑地址 ", "Computer address ")
+            .replace("还没有配对手机", "No paired phones")
+            .replace("已配对 ", "Paired phones: ")
+            .replace(" 台手机，", "; online: ")
+            .replace(" 台手机", "")
+            .replace(" 台在线", "")
+            .replace("正在打开…", "Starting…")
+            .replace("打开开关并保存后，就可以配对手机", "Enable phone control and save to pair a phone")
+    };
+    w.set_remote_status(status.into());
 }
 
 thread_local! {
@@ -1254,7 +1308,7 @@ fn sync_listening_menus(on: bool) {
     ball::set_listening(on);
     TRAY_TOGGLE.with_borrow(|item| {
         if let Some(item) = item {
-            item.set_text(if on { "暂停语音唤醒" } else { "恢复语音唤醒" });
+            item.set_text(if on { locale::pick("Pause voice wake", "暂停语音唤醒") } else { locale::pick("Resume voice wake", "恢复语音唤醒") });
         }
     });
 }
@@ -1299,10 +1353,10 @@ fn create_tray(window: &AppWindow, cmd_tx: UnboundedSender<Command>, icon: Vec<u
     use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     let menu = Menu::new();
-    let open = MenuItem::new("打开主界面", true, None);
-    let toggle = MenuItem::new("暂停语音唤醒", true, None);
-    let show_ball = MenuItem::new("显示悬浮球", true, None);
-    let quit = MenuItem::new("退出", true, None);
+    let open = MenuItem::new(locale::pick("Open Aeri", "打开主界面"), true, None);
+    let toggle = MenuItem::new(locale::pick("Pause voice wake", "暂停语音唤醒"), true, None);
+    let show_ball = MenuItem::new(locale::pick("Show floating orb", "显示悬浮球"), true, None);
+    let quit = MenuItem::new(locale::pick("Quit", "退出"), true, None);
     menu.append_items(&[&open, &toggle, &show_ball, &PredefinedMenuItem::separator(), &quit])?;
     let ids = (open.id().clone(), toggle.id().clone(), show_ball.id().clone(), quit.id().clone());
     TRAY_TOGGLE.set(Some(toggle.clone()));
@@ -1338,7 +1392,7 @@ fn create_tray(window: &AppWindow, cmd_tx: UnboundedSender<Command>, icon: Vec<u
     }));
 
     Ok(TrayIconBuilder::new()
-        .with_tooltip("Aeri 语音助手")
+        .with_tooltip(locale::pick("Aeri voice assistant", "Aeri 语音助手"))
         .with_icon(tray_icon::Icon::from_rgba(icon, 32, 32)?)
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
