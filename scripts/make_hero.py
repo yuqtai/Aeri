@@ -33,7 +33,17 @@ def paste_card(canvas, img, xy, shadow_alpha):
     canvas.alpha_composite(img, (x, y))
 
 
-def make(name, t):
+TEXT = {
+    "zh": {"tagline": "常驻一整天，也感觉不到它在。", "sub": "Windows 上的语音助手 · 说一句，它帮你做完",
+           "chips": ["待机 60 MB", "整机 CPU < 0.2%", "下载 24 MB"], "suffix": "", "bold": FONT_BOLD, "regular": FONT},
+    "en": {"tagline": "Voice that actually gets things done.", "sub": "A lightweight voice assistant for Windows",
+           "chips": ["60 MB idle", "< 0.2% CPU", "24 MB download"], "suffix": "-en",
+           "bold": "C:/Windows/Fonts/segoeuib.ttf", "regular": "C:/Windows/Fonts/segoeui.ttf"},
+}
+
+
+def make(name, t, lang="zh"):
+    tx = TEXT[lang]
     c = Image.new("RGBA", (W * S, H * S), t["bg"] + (255,))
     glow = Image.new("RGBA", c.size, (0, 0, 0, 0))
     ImageDraw.Draw(glow).ellipse((980 * S, -120 * S, 1700 * S, 600 * S), fill=t["glow"])
@@ -44,12 +54,12 @@ def make(name, t):
     logo = Image.open(ROOT / "assets" / "app.png").convert("RGBA").resize((120 * S, 120 * S), Image.LANCZOS)
     c.alpha_composite(logo, (110 * S, 170 * S))
     d.text((110 * S, 315 * S), "Aeri", font=ImageFont.truetype(FONT_BOLD, 96 * S), fill=t["title"])
-    d.text((114 * S, 450 * S), "常驻一整天，也感觉不到它在。", font=ImageFont.truetype(FONT_BOLD, 38 * S), fill=t["text"])
-    d.text((114 * S, 510 * S), "Windows 上的中文语音助手 · 说一句，它帮你做完", font=ImageFont.truetype(FONT, 26 * S), fill=t["sub"])
+    d.text((114 * S, 450 * S), tx["tagline"], font=ImageFont.truetype(tx["bold"], 38 * S), fill=t["text"])
+    d.text((114 * S, 510 * S), tx["sub"], font=ImageFont.truetype(tx["regular"], 26 * S), fill=t["sub"])
 
-    chip_font = ImageFont.truetype(FONT, 22 * S)
+    chip_font = ImageFont.truetype(tx["regular"], 22 * S)
     x = 114 * S
-    for label in ["待机 60 MB", "整机 CPU < 0.2%", "下载 22 MB"]:
+    for label in tx["chips"]:
         w = d.textlength(label, font=chip_font) + 40 * S
         d.rounded_rectangle((x, 580 * S, x + w, 628 * S), 24 * S, fill=t["chip"])
         d.text((x + 20 * S, 590 * S), label, font=chip_font, fill=t["chip_text"])
@@ -60,9 +70,10 @@ def make(name, t):
         img = img.resize((int(img.width * 0.78 * S), int(img.height * 0.78 * S)), Image.LANCZOS)
         paste_card(c, rounded(img, 24 * S), (xy[0] * S, xy[1] * S), t["shadow"])
 
-    c.resize((W, H), Image.LANCZOS).convert("RGB").save(OUT / f"hero-{name}.png", optimize=True)
+    c.resize((W, H), Image.LANCZOS).convert("RGB").save(OUT / f"hero{tx['suffix']}-{name}.png", optimize=True)
 
 
 for n, t in THEMES.items():
-    make(n, t)
+    for lang in TEXT:
+        make(n, t, lang)
 print("done")
