@@ -64,7 +64,7 @@
 |---|---|
 | 待机内存 | 约 **60 MB** |
 | 待机 CPU | 整机 **不到 0.2%** |
-| 下载包 | **24 MB**（含手机 App），解压即用，不要管理员权限 |
+| 下载包 | **27 MB**（含手机 App），解压即用，不要管理员权限 |
 | 常用操作 | 不到 **1 毫秒**（不算网络和大模型思考） |
 | 软件内更新 | 约 **9 秒** |
 
@@ -76,12 +76,9 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 
 1. 到 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 下载 `Aeri-vX.Y.Z-windows-x64.zip`，解压
 2. 双击 `aeri.exe`
-3. 在设置里填两个 API Key，点“保存并应用”
+3. 打开 设置 → 大模型，填一个 API Key（默认 DeepSeek，在 [platform.deepseek.com](https://platform.deepseek.com/api_keys) 创建），点“保存并应用”
 
-| Key | 去哪里拿 | 用途 |
-|---|---|---|
-| DeepSeek | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | 理解你的话、决定做什么 |
-| 阿里云百炼 | [百炼控制台](https://bailian.console.aliyun.com/) | 听和说 |
+只需要这一个 Key：语音识别默认在本机离线完成（第一次使用时自动下载模型），回答用 Windows 自带的声音读出来。想要更自然的实时语音，可以在 设置 → 语音对话 里换成阿里云百炼或 OpenAI 的实时语音。
 
 想用手机操控（可选）：
 

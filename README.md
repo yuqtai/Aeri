@@ -73,7 +73,7 @@ One Rust process, no browser engine, no GPU use. The wake word runs locally; aud
 
 1. Download `Aeri-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/yuqtai/Aeri/releases/latest) and unzip it.
 2. Run `aeri.exe`.
-3. Open **Settings**, paste an **OpenAI API key**, and click **Save**. That one key covers listening, speaking and thinking.
+3. Open **Settings → Language model**, paste an **OpenAI API key**, and click **Save**. That is the only key you need: speech recognition runs locally on your PC (the model downloads once, the first time), and replies are spoken with Windows voices.
 4. Say **"Hey Aeri"**.
 
 Prefer another provider? Aeri also works with Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, a local Ollama model, or any OpenAI-compatible endpoint. Pick it in **Settings → LLM**.
