@@ -205,7 +205,11 @@ pub fn call(index: &AppIndex, name: &str, input: &Value) -> Option<(String, bool
         }
         "open_url" => {
             let mut url = s("url");
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            // obsidian:// 这类软件自己的链接协议原样打开（插件说明书会用到）；file:// 等不行
+            let app_scheme = url.split_once("://").is_some_and(|(s, _)| {
+                s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !matches!(s.to_ascii_lowercase().as_str(), "file" | "ftp" | "javascript" | "data")
+            });
+            if !app_scheme && !url.starts_with("http://") && !url.starts_with("https://") {
                 url = format!("https://{url}");
             }
             let ok = sys::shell_open(&url);

@@ -17,6 +17,7 @@ mod realtime;
 mod reminders;
 mod remote;
 mod history;
+mod plugins;
 mod resample;
 mod screen;
 mod sys;
@@ -105,6 +106,7 @@ fn main() -> anyhow::Result<()> {
     wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
     wire_update(&window, runtime.handle().clone(), cfg.auto_update);
     wire_history(&window);
+    wire_plugins(&window, runtime.handle().clone());
     mark_settings_clean(&window);
     let _tray = create_tray(&window, cmd_tx.clone(), icon)?;
 
@@ -648,6 +650,83 @@ fn restore_history(window: &AppWindow) {
     slint::Timer::single_shot(Duration::from_millis(300), move || {
         if let Some(w) = weak.upgrade() {
             w.invoke_scroll_to_bottom();
+        }
+    });
+}
+
+/// 插件页的列表：本地的（内置 + 已装）和市场里的合在一起
+fn plugin_rows() -> Vec<PluginRow> {
+    let local = plugins::all();
+    let market = plugins::cached_market();
+    let mut rows: Vec<PluginRow> = local
+        .iter()
+        .map(|p| {
+            let update = market.iter().find(|l| l.id == p.id).filter(|l| plugins::newer(&l.version, &p.version));
+            let (state, extra) = match (update, p.builtin) {
+                (Some(l), _) => (2, format!(" · 可更新到 v{}", l.version)),
+                (None, true) => (3, String::new()),
+                (None, false) => (1, String::new()),
+            };
+            PluginRow { id: p.id.clone().into(), name: p.name.clone().into(), summary: format!("v{}{extra} · {}", p.version, p.description).into(), state }
+        })
+        .collect();
+    for l in market.iter().filter(|l| !local.iter().any(|p| p.id == l.id)) {
+        rows.push(PluginRow { id: l.id.clone().into(), name: l.name.clone().into(), summary: format!("v{} · {}", l.version, l.description).into(), state: 0 });
+    }
+    rows
+}
+
+fn wire_plugins(window: &AppWindow, rt: Handle) {
+    window.set_plugins(ModelRc::from(Rc::new(VecModel::from(plugin_rows()))));
+    let show = |weak: &slint::Weak<AppWindow>, status: String| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_plugins(ModelRc::from(Rc::new(VecModel::from(plugin_rows()))));
+                w.set_plugins_status(status.into());
+                w.set_plugins_busy("".into());
+            }
+        });
+    };
+    let (weak, rt2) = (window.as_weak(), rt.clone());
+    window.on_plugins_refresh(move || {
+        let Some(w) = weak.upgrade() else { return };
+        w.set_plugins_busy("*".into());
+        w.set_plugins_status("正在读取插件市场…".into());
+        let weak = weak.clone();
+        rt2.spawn(async move {
+            let status = match plugins::fetch_market().await {
+                Ok(m) => format!("插件市场共 {} 个插件 · github.com/{}", m.len(), plugins::MARKET_REPO),
+                Err(e) => format!("{e}，先显示本机已有的插件"),
+            };
+            show(&weak, status);
+        });
+    });
+    let weak = window.as_weak();
+    window.on_plugin_action(move |id| {
+        let Some(w) = weak.upgrade() else { return };
+        let id = id.to_string();
+        let state = plugin_rows().into_iter().find(|r| r.id == id.as_str()).map(|r| r.state);
+        match state {
+            Some(1) => {
+                let status = match plugins::remove(&id) {
+                    Ok(n) => format!("已卸载“{n}”"),
+                    Err(e) => e,
+                };
+                show(&weak, status);
+            }
+            Some(0) | Some(2) => {
+                w.set_plugins_busy(id.clone().into());
+                let weak = weak.clone();
+                rt.spawn(async move {
+                    let status = match plugins::install(&id).await {
+                        Ok(p) => format!("已安装“{}” v{}", p.name, p.version),
+                        Err(e) => e,
+                    };
+                    show(&weak, status);
+                });
+            }
+            _ => {}
         }
     });
 }

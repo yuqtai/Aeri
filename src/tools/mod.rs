@@ -70,12 +70,14 @@ impl Tools {
         defs.extend(process::definitions());
         defs.extend(files::definitions());
         defs.extend(system::definitions());
+        defs.extend(crate::plugins::definitions());
         if self.tasks.is_some() {
             defs.extend(task_definitions());
         }
         if self.reminders.is_some() {
             defs.extend(reminders::definitions());
             defs.extend(crate::history::definitions());
+            defs.extend(crate::plugins::market_definitions());
             defs.push(crate::update::definition());
         }
         if self.desktop.is_some() {
@@ -118,6 +120,12 @@ impl Tools {
         }
         if let Some(out) = system::call(name, input).await {
             return out;
+        }
+        // 插件市场只给前台（有提醒工具的就是前台）
+        if name != "plugin_market" || self.reminders.is_some() {
+            if let Some(out) = crate::plugins::call(name, input).await {
+                return out;
+            }
         }
         if let Some(r) = &self.reminders {
             if let Some(out) = r.call(name, input) {

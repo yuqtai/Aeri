@@ -37,7 +37,7 @@ try {
     try {
         Get-ChildItem -LiteralPath $stage | Where-Object Name -ne 'backup' | Copy-Item -Destination $installRoot -Recurse -Force
         $oldExes | ForEach-Object { Remove-Item -LiteralPath $_ -ErrorAction SilentlyContinue }
-        @{ installedAt = (Get-Date).ToString('o'); source = $sourceRoot; version = '0.3.6'; sha256 = (Get-FileHash -LiteralPath $exe).Hash } | ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding UTF8
+        @{ installedAt = (Get-Date).ToString('o'); source = $sourceRoot; version = '0.3.7'; sha256 = (Get-FileHash -LiteralPath $exe).Hash } | ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding UTF8
     } catch {
         if (Test-Path -LiteralPath $backup) { Get-ChildItem -LiteralPath $backup | Copy-Item -Destination $installRoot -Recurse -Force }
         if ($wasRunning -and (Test-Path -LiteralPath $exe)) { Start-Process -FilePath $exe -WorkingDirectory $installRoot -WindowStyle Hidden }
@@ -59,7 +59,7 @@ try {
     $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\VoiceAssistant'
     New-Item -Path $reg -Force | Out-Null
     $uninstall = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $installRoot 'uninstall.ps1') + '"'
-    $values = @{ DisplayName = 'Aeri'; DisplayVersion = '0.3.6'; Publisher = 'Aeri'; InstallLocation = $installRoot; DisplayIcon = $exe; UninstallString = $uninstall }
+    $values = @{ DisplayName = 'Aeri'; DisplayVersion = '0.3.7'; Publisher = 'Aeri'; InstallLocation = $installRoot; DisplayIcon = $exe; UninstallString = $uninstall }
     foreach ($name in $values.Keys) { New-ItemProperty -Path $reg -Name $name -Value $values[$name] -PropertyType String -Force | Out-Null }
     foreach ($name in @('NoModify', 'NoRepair')) { New-ItemProperty -Path $reg -Name $name -Value 1 -PropertyType DWord -Force | Out-Null }
     # Notify Explorer that the executable icon and shortcuts have changed.

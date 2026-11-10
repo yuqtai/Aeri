@@ -1131,8 +1131,14 @@ impl ResponseWatch {
 
 /// 带上用户说话时屏幕上在干什么，“关闭当前直播”“复制这条帖子”才知道指哪个
 fn with_screen(text: &str) -> String {
-    let hint = screen::hint();
-    if hint.is_empty() { text.to_string() } else { format!("{text}\n\n{hint}") }
+    let mut out = text.to_string();
+    for extra in [crate::plugins::hint(text, &screen::exes()), screen::hint()] {
+        if !extra.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&extra);
+        }
+    }
+    out
 }
 
 /// 实时语音里正在后台想的大模型：任务拿着 Agent，想完连同结果一起还回来
@@ -1202,6 +1208,9 @@ pub fn describe_tool(name: &str, input: &Value) -> String {
         "clipboard_history" => "查看剪贴板历史".into(),
         "reminder_add" => with("设提醒", arg("text")),
         "reminder_list" => "查看提醒".into(),
+        "plugin_guide" => with("读插件说明", arg("id")),
+        "local_http" => with("调用本机接口", input["url"].as_str().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()),
+        "plugin_market" => match input["action"].as_str() { Some("install") => with("安装插件", arg("id")), Some("remove") => with("卸载插件", arg("id")), _ => "查看插件市场".into() },
         "history_search" => match input["query"].as_str().or(input["date"].as_str()) { Some(q) => with("查历史记录", q.to_string()), None => "查历史记录".into() },
         "reminder_cancel" => "取消提醒".into(),
         "app_update" => if input["action"] == "install" { "更新 Aeri".into() } else { "检查更新".into() },

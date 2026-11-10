@@ -133,6 +133,11 @@ pub fn find_window(name: &str) -> Option<(HWND, String)> {
     visible_windows(usize::MAX).into_iter().find(|w| w.title.to_lowercase().contains(&needle)).map(|w| (w.hwnd, w.title))
 }
 
+/// 前台和后面几个窗口的程序文件名（前台在前），给插件匹配用
+pub fn exes() -> Vec<String> {
+    visible_windows(MORE_WINDOWS + 1).into_iter().map(|w| w.exe).filter(|e| !e.is_empty()).collect()
+}
+
 /// 一句话描述屏幕上正在干什么；读不到时返回 None
 pub fn context() -> Option<String> {
     let windows = visible_windows(MORE_WINDOWS + 1);
