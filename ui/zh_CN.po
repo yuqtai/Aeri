@@ -726,3 +726,117 @@ msgstr "语言"
 
 msgid "Applies right away. “System” follows the Windows display language"
 msgstr "选择后立即生效。“跟随系统”会按 Windows 的显示语言"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "Recognition"
+msgstr "语音识别"
+
+msgid "Recognition, your language model, then your chosen voice"
+msgstr "语音识别、大模型，再用所选音色播报"
+
+msgid "Realtime models listen and speak; your language model handles tools."
+msgstr "实时模型负责听和说，由您的大模型调用工具。"
+
+msgid "OpenAI"
+msgstr "OpenAI"
+
+msgid "Groq Whisper"
+msgstr "Groq Whisper"
+
+msgid "Deepgram"
+msgstr "Deepgram"
+
+msgid "ElevenLabs"
+msgstr "ElevenLabs"
+
+msgid "Azure AI Speech"
+msgstr "Azure AI Speech"
+
+msgid "Google Gemini"
+msgstr "Google Gemini"
+
+msgid "Custom (OpenAI-compatible)"
+msgstr "自定义（兼容 OpenAI）"
+
+msgid "Base URL and model"
+msgstr "接口地址和模型"
+
+msgid "Any server that implements the OpenAI transcription API, e.g. Qwen3-ASR or faster-whisper. whisper.cpp needs an OpenAI-compatible proxy; its /inference API differs. API key is optional."
+msgstr "支持实现 OpenAI 转写接口的服务，例如 Qwen3-ASR 或 faster-whisper。whisper.cpp 的 /inference 接口不同，需要兼容 OpenAI 的代理。API 密钥可选。"
+
+msgid "Azure Speech region"
+msgstr "Azure 语音区域"
+
+msgid "For example eastus; shared by recognition and speech output. Or set AZURE_SPEECH_REGION."
+msgstr "例如 eastus；语音识别和播报共用，也可设置 AZURE_SPEECH_REGION。"
+
+msgid "Provider API key (saved encrypted)"
+msgstr "服务商 API 密钥（加密保存）"
+
+msgid "Leave empty to reuse a saved key for this provider or its environment variable."
+msgstr "留空则使用该服务商已保存的密钥或环境变量。"
+
+msgid "Voice (speech output)"
+msgstr "音色（语音播报）"
+
+msgid "Speech output provider"
+msgstr "语音播报服务"
+
+msgid "Cloud voices use AI-generated speech. If a cloud call fails, Aeri uses Windows speech and shows a note."
+msgstr "云端音色使用 AI 合成语音。云端调用失败时，Aeri 会改用 Windows 语音并显示提示。"
+
+msgid "Windows (offline)"
+msgstr "Windows（离线）"
+
+msgid "Enter a voice ID from your ElevenLabs voice library; the default George voice supports multiple languages."
+msgstr "输入 ElevenLabs 音色库中的音色 ID；默认 George 音色支持多种语言。"
+
+msgid "Use a voice supported by the selected provider. The preset follows your language."
+msgstr "请使用所选服务支持的音色。预设音色跟随您的语言。"
+
+msgid "Speech model"
+msgstr "播报模型"
+
+msgid "Speech output API key"
+msgstr "语音播报 API 密钥"
+
+msgid "Preview voice"
+msgstr "试听音色"
+
+msgid "Stop voice"
+msgstr "停止试听"
+
+msgid "Test voice"
+msgstr "测试音色"
+
+msgid "Local model"
+msgstr "本地模型"
+
+msgid "Downloaded on first use. Moonshine and Parakeet are English-only; Whisper and SenseVoice support multiple languages. Zipformer streams partial text."
+msgstr "首次使用时下载。Moonshine 和 Parakeet 仅支持英语；Whisper 和 SenseVoice 支持多种语言。Zipformer 支持流式显示识别文字。"
+
+msgid "Zipformer (streaming, follows language)"
+msgstr "Zipformer（流式，跟随语言）"
+
+msgid "Moonshine tiny (English, 103 MB)"
+msgstr "Moonshine tiny（英语，103 MB）"
+
+msgid "Whisper tiny (multilingual, 111 MB)"
+msgstr "Whisper tiny（多语言，111 MB）"
+
+msgid "Whisper base (multilingual, 198 MB)"
+msgstr "Whisper base（多语言，198 MB）"
+
+msgid "Whisper small (multilingual, 610 MB)"
+msgstr "Whisper small（多语言，610 MB）"
+
+msgid "SenseVoice (5 languages, 158 MB)"
+msgstr "SenseVoice（5 种语言，158 MB）"
+
+msgid "Parakeet TDT (English, 460 MB)"
+msgstr "Parakeet TDT（英语，460 MB）"
+
+msgid "Delete downloaded model"
+msgstr "删除已下载模型"

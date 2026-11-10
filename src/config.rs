@@ -31,6 +31,7 @@ pub struct Config {
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
     pub asr_provider: String,
+    pub local_asr_model: String,
     pub stt_api_keys_protected: std::collections::BTreeMap<String, String>,
     pub asr_url: String,
     pub asr_model: String,
@@ -86,6 +87,10 @@ pub struct Config {
 
     // 播报与外观
     pub tts_rate: i32,
+    pub tts_provider: String,
+    pub tts_voice: String,
+    pub tts_model: String,
+    pub azure_speech_region: String,
     /// auto（跟随系统）/ light / dark
     pub theme: String,
     /// Interface language: "system" (follow Windows), "en" or "zh"
@@ -131,6 +136,7 @@ impl Config {
             auto_update: true,
             save_history: true,
             asr_provider: "dashscope".into(),
+            local_asr_model: "zipformer".into(),
             stt_api_keys_protected: Default::default(),
             asr_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
             asr_model: "fun-asr-realtime".into(),
@@ -165,6 +171,10 @@ impl Config {
             browser_idle_minutes: 5,
             playwright_mcp: "@playwright/mcp@0.0.83".into(),
             tts_rate: 1,
+            tts_provider: "windows".into(),
+            tts_voice: String::new(),
+            tts_model: String::new(),
+            azure_speech_region: String::new(),
             theme: "auto".into(),
             language: "system".into(),
             float_ball: true,
@@ -190,6 +200,7 @@ impl Config {
         cfg.voice_frontend = "classic".into();
         cfg.asr_provider = "local".into();
         if !zh {
+            cfg.local_asr_model = "moonshine".into();
             let p = crate::llm::preset("openai");
             cfg.llm_provider = p.id.into();
             cfg.llm_key_provider = p.id.into();
@@ -318,7 +329,7 @@ fn env_key(env_name: &str) -> Option<String> {
 /// 优先用界面里保存的 key，其次环境变量
 pub fn llm_key(cfg: &Config) -> Option<String> {
     if cfg.llm_provider == "ollama" { return Some(String::new()); }
-    unprotect_key(llm_protected(cfg)).or_else(|| env_key(&cfg.llm_key_env))
+    unprotect_key(llm_protected(cfg)).or_else(|| shared_provider_key(cfg, &cfg.llm_provider)).or_else(|| env_key(&cfg.llm_key_env))
         .or_else(|| (cfg.llm_provider == "custom").then(String::new))
 }
 
@@ -352,9 +363,10 @@ pub fn realtime_key(cfg: &Config) -> Option<String> {
 pub fn asr_key(cfg: &Config) -> Option<String> {
     match cfg.asr_provider.as_str() {
         "local" => Some(String::new()),
-        "openai" => cfg.stt_api_keys_protected.get("openai").and_then(|v| unprotect_key(v))
-            .or_else(|| openai_key(cfg)),
-        "groq" => cfg.stt_api_keys_protected.get("groq").and_then(|v| unprotect_key(v)).or_else(|| env_key("GROQ_API_KEY")),
+        "custom" => shared_provider_key(cfg, "custom").or_else(|| Some(String::new())),
+        "deepgram" | "elevenlabs" | "azure" | "gemini" => shared_provider_key(cfg, &cfg.asr_provider),
+        "openai" => shared_provider_key(cfg,"openai"),
+        "groq" => shared_provider_key(cfg,"groq"),
         _ => unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env)),
     }
 }
@@ -362,15 +374,41 @@ pub fn asr_key(cfg: &Config) -> Option<String> {
 pub fn voice_key_slot(cfg: &mut Config) -> &mut String {
     if cfg.voice_frontend == "realtime" {
         if cfg.realtime_provider == "openai" { &mut cfg.realtime_openai_api_key_protected } else { &mut cfg.asr_api_key_protected }
-    } else if cfg.asr_provider == "openai" || cfg.asr_provider == "groq" {
+    } else if cfg.asr_provider != "dashscope" {
         cfg.stt_api_keys_protected.entry(cfg.asr_provider.clone()).or_default()
     } else { &mut cfg.asr_api_key_protected }
+}
+
+// Speech keys are shared across recognition and speech output, with fallback to
+// the same provider's LLM slot. Existing OpenAI/DashScope slots stay readable.
+pub fn shared_provider_key(cfg: &Config, provider: &str) -> Option<String> {
+    cfg.stt_api_keys_protected.get(provider).and_then(|v| unprotect_key(v))
+        .or_else(|| {
+            let stored = if cfg.llm_key_provider == provider { &cfg.llm_api_key_protected }
+                else { cfg.llm_api_keys_protected.get(provider).map(String::as_str).unwrap_or("") };
+            unprotect_key(stored)
+        })
+        .or_else(|| if provider == "openai" { unprotect_key(&cfg.realtime_openai_api_key_protected) } else { None })
+        .or_else(|| env_key(match provider {
+            "openai" => "OPENAI_API_KEY", "groq" => "GROQ_API_KEY", "deepgram" => "DEEPGRAM_API_KEY",
+            "elevenlabs" => "ELEVENLABS_API_KEY", "azure" => "AZURE_SPEECH_KEY", "gemini" => "GEMINI_API_KEY", _ => "",
+        }))
+        .or_else(|| if provider == "gemini" { env_key("GOOGLE_API_KEY") } else { None })
+}
+
+pub fn tts_key(cfg: &Config) -> Option<String> {
+    if cfg.tts_provider == "windows" { Some(String::new()) } else { shared_provider_key(cfg, &cfg.tts_provider) }
+}
+
+pub fn azure_region(cfg: &Config) -> String {
+    if cfg.azure_speech_region.trim().is_empty() { env_key("AZURE_SPEECH_REGION").unwrap_or_default() }
+    else { cfg.azure_speech_region.trim().to_string() }
 }
 
 pub fn voice_protected(cfg: &Config) -> &str {
     if cfg.voice_frontend == "realtime" {
         if cfg.realtime_provider == "openai" { &cfg.realtime_openai_api_key_protected } else { &cfg.asr_api_key_protected }
-    } else if cfg.asr_provider == "openai" || cfg.asr_provider == "groq" {
+    } else if cfg.asr_provider != "dashscope" {
         cfg.stt_api_keys_protected.get(&cfg.asr_provider).map(String::as_str).unwrap_or("")
     } else { &cfg.asr_api_key_protected }
 }
@@ -450,6 +488,29 @@ mod tests {
         assert_eq!(llm_key(&cfg).as_deref(), Some("openai-example"));
         cfg.asr_provider = "openai".into();
         assert_eq!(asr_key(&cfg).as_deref(), Some("openai-example"));
+    }
+
+    #[test]
+    fn speech_keys_share_provider_slots_without_changing_legacy_defaults() {
+        let old: Config = serde_json::from_str(r#"{"asr_model":"saved-model"}"#).unwrap();
+        assert_eq!(old.tts_provider,"windows");
+        assert_eq!(old.local_asr_model,"zipformer");
+        assert_eq!(old.asr_model,"saved-model");
+        assert_eq!(Config::new_install(false).local_asr_model,"moonshine");
+        assert_eq!(Config::new_install(true).local_asr_model,"zipformer");
+        let mut cfg = Config::default();
+        cfg.voice_frontend = "classic".into();
+        cfg.asr_provider = "elevenlabs".into();
+        cfg.tts_provider = "elevenlabs".into();
+        *voice_key_slot(&mut cfg) = protect_key("sample-eleven-key").unwrap();
+        assert_eq!(asr_key(&cfg).as_deref(),Some("sample-eleven-key"));
+        assert_eq!(tts_key(&cfg),asr_key(&cfg));
+        cfg.llm_provider = "gemini".into();
+        *llm_key_slot(&mut cfg) = protect_key("sample-google-key").unwrap();
+        cfg.asr_provider = "gemini".into();
+        assert_eq!(asr_key(&cfg).as_deref(),Some("sample-google-key"));
+        cfg.asr_provider = "custom".into();
+        assert_eq!(asr_key(&cfg),Some(String::new()));
     }
 
     #[test]

@@ -1085,6 +1085,21 @@ export component AppWindow inherits Window {
     in-out property <int> llm-provider-index;
     in-out property <int> realtime-provider-index;
     in-out property <int> asr-provider-index;
+    in-out property <int> tts-provider-index;
+    in-out property <string> tts-voice;
+    in-out property <string> tts-model;
+    in-out property <string> azure-region;
+    in-out property <string> tts-key-input;
+    in property <bool> tts-key-saved;
+    in-out property <int> tts-test-state;
+    in-out property <string> tts-test-status;
+    callback tts-provider-changed(int);
+    callback test-tts();
+    callback clear-tts-key();
+    in-out property <int> local-model-index;
+    in-out property <string> local-model-status;
+    callback local-model-changed(int);
+    callback delete-local-model();
     callback asr-provider-changed(int);
     callback voice-mode-changed(int);
     callback llm-provider-changed(int);
@@ -1654,19 +1669,11 @@ export component AppWindow inherits Window {
                 if root.settings-sub == 1: VerticalLayout {
                     alignment: start;
                     spacing: 8px;
+                    SectionLabel { text: @tr("Mode"); }
                     Card {
-                        if root.frontend-index == 0: FieldBlock {
-                            title: @tr("Voice provider");
-                            Select {
-                                options: [@tr("Alibaba DashScope"), "OpenAI"];
-                                current <=> root.realtime-provider-index;
-                                selected(index) => { root.realtime-provider-changed(index); }
-                            }
-                        }
-                        if root.frontend-index == 0: Divider { }
                         SettingRow {
                             title: @tr("Conversation mode");
-                            description: root.frontend-index == 0 ? @tr("Realtime voice: streaming conversation, needs a provider key") : @tr("Speech to text, then your language model, then Windows speech");
+                            description: root.frontend-index == 0 ? @tr("Realtime voice: streaming conversation, needs a provider key") : @tr("Recognition, your language model, then your chosen voice");
                             VerticalLayout {
                                 alignment: center;
                                 Segmented {
@@ -1677,27 +1684,101 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        Divider { }
-                        if root.frontend-index == 1: FieldBlock {
-                            title: @tr("Speech recognition");
-                            hint: @tr("Local is free and works offline after a one-time verified model download.");
-                            Select {
-                                options: [@tr("Local (offline)"), "OpenAI", "Groq Whisper", @tr("Alibaba DashScope")];
+                    }
+                    SectionLabel { text: root.frontend-index == 1 ? @tr("Recognition") : @tr("Realtime"); }
+                    Card {
+                        FieldBlock {
+                            title: root.frontend-index == 1 ? @tr("Speech recognition") : @tr("Voice provider");
+                            hint: root.frontend-index == 1 ? @tr("Local is free and works offline after a one-time verified model download.") : @tr("Realtime models listen and speak; your language model handles tools.");
+                            if root.frontend-index == 0: Select {
+                                options: [@tr("Alibaba DashScope"), @tr("OpenAI")];
+                                current <=> root.realtime-provider-index;
+                                selected(index) => { root.realtime-provider-changed(index); }
+                            }
+                            if root.frontend-index == 1: Select {
+                                options: [@tr("Local (offline)"), @tr("OpenAI"), @tr("Groq Whisper"), @tr("Alibaba DashScope"), @tr("Deepgram"), @tr("ElevenLabs"), @tr("Azure AI Speech"), @tr("Google Gemini"), @tr("Custom (OpenAI-compatible)")];
                                 current <=> root.asr-provider-index;
                                 selected(index) => { root.asr-provider-changed(index); }
                             }
                         }
-                        if root.frontend-index == 1: Divider { }
+                        if root.frontend-index == 1 && root.asr-provider-index == 0: FieldBlock {
+                            title: @tr("Local model");
+                            hint: @tr("Downloaded on first use. Moonshine and Parakeet are English-only; Whisper and SenseVoice support multiple languages. Zipformer streams partial text.");
+                            Select {
+                                options: [@tr("Zipformer (streaming, follows language)"), @tr("Moonshine tiny (English, 103 MB)"), @tr("Whisper tiny (multilingual, 111 MB)"), @tr("Whisper base (multilingual, 198 MB)"), @tr("Whisper small (multilingual, 610 MB)"), @tr("SenseVoice (5 languages, 158 MB)"), @tr("Parakeet TDT (English, 460 MB)")];
+                                current <=> root.local-model-index;
+                                selected(index) => { root.local-model-changed(index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: root.local-model-status; color: Theme.ink-3; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap; }
+                                Btn { text: @tr("Delete downloaded model"); clicked => { root.delete-local-model(); } }
+                            }
+                        }
+                        if root.frontend-index == 1 && root.asr-provider-index == 8: FieldBlock {
+                            title: @tr("Base URL and model");
+                            hint: @tr("Any server that implements the OpenAI transcription API, e.g. Qwen3-ASR or faster-whisper. whisper.cpp needs an OpenAI-compatible proxy; its /inference API differs. API key is optional.");
+                            TextField { text <=> root.asr-url; }
+                            TextField { text <=> root.asr-model; }
+                        }
+                        if root.frontend-index == 1 && root.asr-provider-index == 6: FieldBlock {
+                            title: @tr("Azure Speech region");
+                            hint: @tr("For example eastus; shared by recognition and speech output. Or set AZURE_SPEECH_REGION.");
+                            TextField { text <=> root.azure-region; }
+                        }
+                        Divider { }
                         KeyBlock {
                             state: root.voice-test-state == 1 ? (root.asr-key-input != "" ? 1 : root.asr-key-state == 0 ? 0 : 1) : root.voice-test-state;
                             detail: root.voice-test-status;
                             test-label: root.frontend-index == 0 ? @tr("Test realtime voice") : @tr("Test speech recognition");
-                            placeholder: (root.frontend-index == 0 && root.realtime-provider-index == 1) || (root.frontend-index == 1 && root.asr-provider-index == 1) ? @tr("Optional OpenAI key (shares the OpenAI LLM key)") : root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("No key needed for local speech recognition") : root.frontend-index == 1 && root.asr-provider-index == 2 ? @tr("Groq API key") : @tr("Alibaba Cloud Model Studio API key");
-                            hint: (root.frontend-index == 0 && root.realtime-provider-index == 1) || (root.frontend-index == 1 && root.asr-provider-index == 1) ? @tr("Leave empty to use the OpenAI LLM key or OPENAI_API_KEY") : root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("Testing downloads and loads the local model the first time") : root.frontend-index == 1 && root.asr-provider-index == 2 ? "console.groq.com" : "bailian.console.aliyun.com";
+                            placeholder: root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("No key needed for local speech recognition") : @tr("Provider API key (saved encrypted)");
+                            hint: @tr("Leave empty to reuse a saved key for this provider or its environment variable.");
                             saved: root.asr-key-saved;
                             input <=> root.asr-key-input;
                             test => { root.test-voice(); }
                             clear => { root.clear-asr-key(); }
+                        }
+                    }
+                    if root.frontend-index == 1: SectionLabel { text: @tr("Voice (speech output)"); }
+                    if root.frontend-index == 1: Card {
+                        FieldBlock {
+                            title: @tr("Speech output provider");
+                            hint: @tr("Cloud voices use AI-generated speech. If a cloud call fails, Aeri uses Windows speech and shows a note.");
+                            Select {
+                                options: [@tr("Windows (offline)"), @tr("OpenAI"), @tr("ElevenLabs"), @tr("Azure AI Speech")];
+                                current <=> root.tts-provider-index;
+                                selected(index) => { root.tts-provider-changed(index); }
+                            }
+                        }
+                        if root.tts-provider-index != 0: Divider { }
+                        if root.tts-provider-index != 0: FieldBlock {
+                            title: @tr("Voice");
+                            hint: root.tts-provider-index == 2 ? @tr("Enter a voice ID from your ElevenLabs voice library; the default George voice supports multiple languages.") : @tr("Use a voice supported by the selected provider. The preset follows your language.");
+                            TextField { text <=> root.tts-voice; }
+                        }
+                        if root.tts-provider-index == 1 || root.tts-provider-index == 2: FieldBlock {
+                            title: @tr("Speech model");
+                            TextField { text <=> root.tts-model; }
+                        }
+                        if root.tts-provider-index == 3: FieldBlock {
+                            title: @tr("Azure Speech region");
+                            hint: @tr("For example eastus; shared by recognition and speech output. Or set AZURE_SPEECH_REGION.");
+                            TextField { text <=> root.azure-region; }
+                        }
+                        if root.tts-provider-index != 0: FieldBlock {
+                            title: @tr("Speech output API key");
+                            hint: @tr("Leave empty to reuse a saved key for this provider or its environment variable.");
+                            TextField { text <=> root.tts-key-input; placeholder: @tr("Provider API key (saved encrypted)"); password: true; }
+                            if root.tts-key-saved: Btn { text: @tr("Clear saved key"); clicked => { root.clear-tts-key(); } }
+                        }
+                        Divider { }
+                        FieldBlock {
+                            title: @tr("Preview voice");
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Btn { text: root.tts-test-state == 2 ? @tr("Stop voice") : @tr("Test voice"); clicked => { root.test-tts(); } }
+                                Text { text: root.tts-test-status; horizontal-stretch: 1; wrap: word-wrap; font-size: 12px; color: root.tts-test-state == 4 ? Theme.danger : Theme.ink-3; vertical-alignment: center; }
+                            }
                         }
                     }
                     SectionLabel { text: @tr("Speech & interruptions"); }

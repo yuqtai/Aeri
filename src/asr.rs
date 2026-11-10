@@ -1,6 +1,10 @@
 //! Streaming local and DashScope recognition, plus OpenAI-compatible
 //! utterance transcription for OpenAI and Groq. All capture uses 16 kHz PCM.
 
+mod cloud;
+mod offline;
+pub use offline::IDS as LOCAL_MODELS;
+
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -12,11 +16,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Provider { Local, OpenAi, Groq, DashScope }
+pub enum Provider { Local, OpenAi, Groq, DashScope, Deepgram, ElevenLabs, Azure, Gemini, Custom }
 
 impl Provider {
     pub fn from_id(id: &str) -> Self {
-        match id { "local" => Self::Local, "openai" => Self::OpenAi, "groq" => Self::Groq, _ => Self::DashScope }
+        match id { "local" => Self::Local, "openai" => Self::OpenAi, "groq" => Self::Groq, "deepgram" => Self::Deepgram, "elevenlabs" => Self::ElevenLabs, "azure" => Self::Azure, "gemini" => Self::Gemini, "custom" => Self::Custom, _ => Self::DashScope }
     }
 }
 
@@ -25,6 +29,8 @@ pub struct AsrSettings {
     pub url: String,
     pub model: String,
     pub api_key: String,
+    pub region: String,
+    pub local_model: String,
     pub sentence_silence_ms: u32,
     /// 多久没开口就放弃
     pub speech_timeout: Duration,
@@ -45,10 +51,16 @@ type WsStream = futures_util::stream::SplitStream<
 pub async fn check(s: &AsrSettings) -> anyhow::Result<()> {
     match s.provider {
         Provider::Local => {
-            let dir = prepare_local(|_| {}).await?;
-            return tokio::task::spawn_blocking(move || local_recognizer(&dir).map(|_| ())).await?;
+            let dir = prepare_local(&s.local_model, |_| {}).await?;
+            let id = s.local_model.clone();
+            return tokio::task::spawn_blocking(move || {
+                if id == "zipformer" { local_recognizer(&dir).map(|_| ()) }
+                else { offline::recognizer(&id,&dir).map(|_| ()) }
+            }).await?;
         }
-        Provider::OpenAi | Provider::Groq => return transcribe(s, &vec![0.0; 16000]).await.map(|_| ()),
+        Provider::Deepgram => return cloud::check_deepgram(s).await,
+        Provider::ElevenLabs | Provider::Azure | Provider::Gemini => return cloud::transcribe(s, &vec![0.0; 16000]).await.map(|_| ()),
+        Provider::OpenAi | Provider::Groq | Provider::Custom => return transcribe(s, &vec![0.0; 16000]).await.map(|_| ()),
         Provider::DashScope => {}
     }
     let (mut tx, mut rx, finish_task) = open_task(s).await?;
@@ -56,6 +68,16 @@ pub async fn check(s: &AsrSettings) -> anyhow::Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(3), rx.next()).await;
     let _ = tx.close().await;
     Ok(())
+}
+
+/// The custom-server test reports its actual transcription, including silence.
+pub async fn check_detail(s: &AsrSettings) -> anyhow::Result<String> {
+    if s.provider == Provider::Custom {
+        let text = transcribe(s,&vec![0.0;16000]).await?;
+        return Ok(if text.is_empty() { crate::locale::pick("Empty transcript (silent test WAV accepted)", "转写为空（已接收静音测试 WAV）").into() } else { text });
+    }
+    check(s).await?;
+    Ok(String::new())
 }
 
 /// 连接服务并发送 run-task，等到 task-started 后返回（发送端，接收端，finish-task 消息）
@@ -107,10 +129,11 @@ pub async fn recognize(
 ) -> anyhow::Result<Option<String>> {
     match s.provider {
         Provider::Local => return recognize_local(s, audio, on_partial).await,
-        Provider::OpenAi | Provider::Groq => {
+        Provider::Deepgram => return cloud::deepgram(s, audio, on_partial).await,
+        Provider::OpenAi | Provider::Groq | Provider::Custom | Provider::ElevenLabs | Provider::Azure | Provider::Gemini => {
             let samples = collect_utterance(s, audio).await;
             if samples.is_empty() { return Ok(None); }
-            let text = transcribe(s, &samples).await?;
+            let text = if matches!(s.provider, Provider::ElevenLabs | Provider::Azure | Provider::Gemini) { cloud::transcribe(s, &samples).await? } else { transcribe(s, &samples).await? };
             on_partial(&text);
             return Ok((!text.is_empty()).then_some(text));
         }
@@ -192,6 +215,8 @@ fn parse_event(msg: Option<Result<Message, tokio_tungstenite::tungstenite::Error
     }
 }
 
+static INSTALL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct LocalModel {
     name: &'static str,
     sha256: &'static str,
@@ -216,13 +241,12 @@ fn local_model(zh: bool) -> LocalModel {
 
 // Only the pinned official archive is extracted, and only the required files.
 // Nothing is shipped in the app zip or written beside the executable.
-pub async fn prepare_local(mut status: impl FnMut(&str)) -> anyhow::Result<std::path::PathBuf> {
+pub async fn prepare_local(id: &str, mut status: impl FnMut(&str)) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write;
     use sha2::{Digest, Sha256};
     use crate::config::NoWindow;
-    static INSTALL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _install = INSTALL.lock().await;
-    let model = local_model(crate::locale::is_zh());
+    let model = offline::model(id);
     let root = crate::config::app_dir().join("models");
     let dir = root.join(model.name);
     if model.files.iter().all(|f| dir.join(f).is_file()) { return Ok(dir); }
@@ -247,7 +271,7 @@ pub async fn prepare_local(mut status: impl FnMut(&str)) -> anyhow::Result<std::
     command.kill_on_drop(true);
     command.arg("-xjf").arg(&path).arg("-C").arg(&staging);
     for file in model.files {
-        let prefix = if crate::locale::is_zh() { "./" } else { "" };
+        let prefix = if model.name == "sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01" { "./" } else { "" };
         command.arg(format!("{prefix}{}/{file}", model.name));
     }
     let result = command.output().await.context("Extracting the local speech model requires Windows tar.exe")?;
@@ -256,6 +280,30 @@ pub async fn prepare_local(mut status: impl FnMut(&str)) -> anyhow::Result<std::
     std::fs::rename(&extracted, &dir).context("Installing the local speech model failed")?;
     let _ = std::fs::remove_dir(&staging);
     Ok(dir)
+}
+
+/// Only fixed manifest entries can be deleted, never an arbitrary config path.
+pub async fn delete_local(id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(LOCAL_MODELS.contains(&id), "Unknown local model");
+    let _guard = INSTALL.lock().await;
+    let dir = crate::config::app_dir().join("models").join(offline::model(id).name);
+    if dir.exists() {
+        anyhow::ensure!(!std::fs::symlink_metadata(&dir)?.file_type().is_symlink(), "Refusing to delete a model link");
+        std::fs::remove_dir_all(dir).context("Could not remove the model; stop recognition and retry")?;
+    }
+    Ok(())
+}
+
+pub fn local_size(id: &str) -> u64 {
+    fn size(dir: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+        entries.flatten().map(|e| {
+            let Ok(t) = e.file_type() else { return 0 };
+            if t.is_symlink() { 0 } else if t.is_dir() { size(&e.path()) }
+            else { e.metadata().map(|m| m.len()).unwrap_or(0) }
+        }).sum()
+    }
+    size(&crate::config::app_dir().join("models").join(offline::model(id).name))
 }
 
 fn local_recognizer(dir: &std::path::Path) -> anyhow::Result<sherpa_onnx::OnlineRecognizer> {
@@ -279,7 +327,8 @@ fn local_recognizer(dir: &std::path::Path) -> anyhow::Result<sherpa_onnx::Online
 }
 
 async fn recognize_local(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<f32>>, mut partial: impl FnMut(&str)) -> anyhow::Result<Option<String>> {
-    let dir = prepare_local(|text| partial(text)).await?;
+    if s.local_model != "zipformer" { return offline::recognize(s,audio,partial).await; }
+    let dir = prepare_local(&s.local_model,|text| partial(text)).await?;
     let recognizer = tokio::task::spawn_blocking(move || local_recognizer(&dir)).await??;
     let stream = recognizer.create_stream();
     let started = Instant::now();
@@ -350,8 +399,10 @@ async fn transcribe(s: &AsrSettings, samples: &[f32]) -> anyhow::Result<String> 
     body.extend(wav(samples)); body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let base = s.url.trim_end_matches('/');
     let url = if base.ends_with("/audio/transcriptions") { base.to_string() } else { format!("{base}/audio/transcriptions") };
-    let response = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?.post(url).bearer_auth(&s.api_key)
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}")).body(body).send().await.context("Speech transcription request failed")?;
+    let mut request = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?.post(&url)
+        .header("Content-Type", format!("multipart/form-data; boundary={boundary}")).body(body);
+    if !s.api_key.is_empty() { request = request.bearer_auth(&s.api_key); }
+    let response = request.send().await.map_err(|_| anyhow::anyhow!("Speech server not reachable at {url}"))?;
     if !response.status().is_success() { bail!("Speech transcription failed (HTTP {}); check the provider, key, and model.", response.status()); }
     let result: Value = response.json().await?;
     Ok(result["text"].as_str().context("Missing transcription text")?.trim().to_string())
@@ -378,6 +429,7 @@ mod tests {
                 if let Some(i) = request.windows(4).position(|b| b == b"\r\n\r\n") {
                     body_start = i+4;
                     let headers = String::from_utf8_lossy(&request[..i]).to_ascii_lowercase();
+                    assert!(!headers.contains("authorization:"));
                     assert!(headers.starts_with("post /v1/audio/transcriptions "));
                     assert!(headers.contains("multipart/form-data; boundary=aeri"));
                     content_len = headers.lines().find_map(|line| line.strip_prefix("content-length: ")).unwrap().parse::<usize>().unwrap();
@@ -395,7 +447,7 @@ mod tests {
             let response = r#"{"text":"Hello from the recorded sample"}"#;
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
         });
-        let settings = AsrSettings { provider: Provider::OpenAi, url: format!("http://{addr}/v1"), model: "sample-model".into(), api_key: "sample-key".into(), sentence_silence_ms: 800, speech_timeout: Duration::from_secs(6) };
+        let settings = AsrSettings { provider: Provider::Custom, local_model: "zipformer".into(), region: String::new(), url: format!("http://{addr}/v1"), model: "sample-model".into(), api_key: String::new(), sentence_silence_ms: 800, speech_timeout: Duration::from_secs(6) };
         assert_eq!(transcribe(&settings, &[0.0; 1600]).await.unwrap(), "Hello from the recorded sample");
         server.await.unwrap();
     }
@@ -406,9 +458,12 @@ mod tests {
         for zh in [false, true] {
             let model = local_model(zh);
             let dir = std::path::Path::new(&root).join(model.name);
+            let start = Instant::now();
             let recognizer = local_recognizer(&dir).unwrap();
+            let load = start.elapsed().as_secs_f64();
             let wave = sherpa_onnx::Wave::read(dir.join("test_wavs/0.wav").to_str().unwrap()).unwrap();
             let stream = recognizer.create_stream();
+            let start = Instant::now();
             for chunk in wave.samples().chunks(1600) {
                 stream.accept_waveform(wave.sample_rate(), chunk);
                 while recognizer.is_ready(&stream) { recognizer.decode(&stream); }
@@ -417,6 +472,9 @@ mod tests {
             stream.input_finished();
             while recognizer.is_ready(&stream) { recognizer.decode(&stream); }
             let text = recognizer.get_result(&stream).unwrap().text;
+            let elapsed = start.elapsed().as_secs_f64();
+            let duration = wave.samples().len() as f64 / wave.sample_rate() as f64;
+            println!("MODEL_BENCH zipformer zh={zh} load={load:.3}s decode={elapsed:.3}s audio={duration:.3}s rtf={:.3} text={text}",elapsed/duration);
             assert!(!text.trim().is_empty(), "Official language sample must produce text (zh={zh})");
         }
     }

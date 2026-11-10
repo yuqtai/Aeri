@@ -487,6 +487,8 @@ impl Assistant {
         };
         let settings = AsrSettings {
             provider: asr::Provider::from_id(&self.cfg.asr_provider),
+                        region: config::azure_region(&self.cfg),
+                        local_model: self.cfg.local_asr_model.clone(),
             url: self.cfg.asr_url.clone(),
             model: self.cfg.asr_model.clone(),
             api_key,
@@ -496,7 +498,7 @@ impl Assistant {
         if settings.provider == asr::Provider::Local {
             let ui = self.ui.clone();
             let prepared = tokio::select! {
-                result = asr::prepare_local(|status| ui(UiEvent::Chat(Role::System, status.into()))) => Some(result),
+                result = asr::prepare_local(&self.cfg.local_asr_model,|status| ui(UiEvent::Chat(Role::System, status.into()))) => Some(result),
                 _ = self.turn.stopped() => None,
             };
             match prepared {
@@ -579,7 +581,8 @@ impl Assistant {
         self.emit(UiEvent::Status(Status::Speaking));
         let barge = self.cfg.barge_in && self.ear.is_some() && self.listening;
         self.set_mode(if barge { Mode::Barge } else { Mode::Muted });
-        let speaking = self.tts.speak(text, self.cfg.tts_rate);
+        let ui = self.ui.clone();
+        let speaking = self.tts.speak_configured(&self.cfg, text, |note| ui(UiEvent::Chat(Role::System, note.into())));
         tokio::pin!(speaking);
         let notify = self.ear.as_ref().map(|e| e.barge.clone());
         loop {
