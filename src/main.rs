@@ -415,7 +415,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_asr_model(c.asr_model.as_str().into());
     w.set_asr_silence_ms(c.asr_sentence_silence_ms as i32);
     w.set_asr_timeout_secs(c.asr_speech_timeout_secs as i32);
-    w.set_wake_words(c.wake_words.join("，").into());
+    w.set_wake_words(c.wake_words.join(locale::pick(", ", "，")).into());
     if let Some(first) = c.wake_words.first() {
         w.set_first_wake_word(first.as_str().into());
     }
@@ -492,12 +492,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.asr_model = text(w.get_asr_model());
     c.asr_sentence_silence_ms = w.get_asr_silence_ms().clamp(200, 6000) as u32;
     c.asr_speech_timeout_secs = w.get_asr_timeout_secs().clamp(2, 30) as u64;
-    c.wake_words = w
-        .get_wake_words()
-        .split([',', '，', '、', ';', '；', ' '])
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    c.wake_words = config::parse_wake_words(&w.get_wake_words());
     c.kws_threshold = sensitivity_to_threshold(w.get_sensitivity());
     c.kws_score = (w.get_kws_score() * 10.0).round() / 10.0;
     c.follow_up = w.get_follow_up();

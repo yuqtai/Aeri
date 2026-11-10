@@ -232,11 +232,42 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    let cfg: Config = std::fs::read_to_string(config_path())
+    let mut cfg: Config = std::fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    cfg.wake_words = repair_wake_words(std::mem::take(&mut cfg.wake_words));
     cfg
+}
+
+/// Wake words typed in Settings: separated by commas or semicolons (Chinese ones too).
+/// Spaces belong to the phrase, so "Hey Aeri" stays one wake word.
+pub fn parse_wake_words(text: &str) -> Vec<String> {
+    text.split([',', '，', '、', ';', '；'])
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Versions 0.4.0 and 0.4.1 also split on spaces and saved "Hey Aeri" as ["Hey", "Aeri"].
+/// Join a lone English greeting with the English word that follows it.
+fn repair_wake_words(words: Vec<String>) -> Vec<String> {
+    const GREETINGS: [&str; 5] = ["hey", "hi", "hello", "ok", "okay"];
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let w = &words[i];
+        let next = words.get(i + 1);
+        let english = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic());
+        if GREETINGS.contains(&w.to_ascii_lowercase().as_str()) && next.is_some_and(|n| english(n) && !GREETINGS.contains(&n.to_ascii_lowercase().as_str())) {
+            out.push(format!("{w} {}", next.unwrap()));
+            i += 2;
+        } else {
+            out.push(w.clone());
+            i += 1;
+        }
+    }
+    out
 }
 
 impl Config {
@@ -520,5 +551,27 @@ mod tests {
         assert_eq!(unprotect_key(&stored).as_deref(), Some("sk-test-123"));
         assert_eq!(unprotect_key("zz"), None);
         assert_eq!(unprotect_key(""), None);
+    }
+}
+
+#[cfg(test)]
+mod wake_word_tests {
+    use super::{parse_wake_words, repair_wake_words};
+
+    #[test]
+    fn spaces_stay_inside_a_wake_word() {
+        assert_eq!(parse_wake_words("Hey Aeri"), vec!["Hey Aeri"]);
+        assert_eq!(parse_wake_words(" Hey   Aeri , 你好电脑，小爱同学"), vec!["Hey Aeri", "你好电脑", "小爱同学"]);
+        assert!(parse_wake_words(" , ").is_empty());
+    }
+
+    #[test]
+    fn repairs_words_split_by_older_versions() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(repair_wake_words(v(&["Hey", "Aeri"])), v(&["Hey Aeri"]));
+        assert_eq!(repair_wake_words(v(&["你好电脑", "Hey", "Aeri"])), v(&["你好电脑", "Hey Aeri"]));
+        assert_eq!(repair_wake_words(v(&["Hey Aeri"])), v(&["Hey Aeri"]));
+        assert_eq!(repair_wake_words(v(&["你好电脑", "小爱同学"])), v(&["你好电脑", "小爱同学"]));
+        assert_eq!(repair_wake_words(v(&["Hey"])), v(&["Hey"]));
     }
 }
