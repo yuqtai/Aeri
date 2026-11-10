@@ -146,7 +146,7 @@ impl State {
         }
         let mut el = self.automation.element_from_point(p).ok()?;
         let mut best: Option<(String, String)> = None;
-        for _ in 0..30 {
+        for depth in 0..30 {
             let ct = el.get_control_type().ok()?;
             if matches!(ct, ControlType::Window | ControlType::Document | ControlType::Pane) && best.is_some() {
                 break;
@@ -158,6 +158,12 @@ impl State {
                 .unwrap_or_else(|| self.subtree_text(walker, &el, MAX_BLOCK_TEXT + 1, false));
             if content.chars().count() > MAX_BLOCK_TEXT {
                 break;
+            }
+            // Nothing readable right under the pointer (a terminal or image drawn as pixels): read it with OCR
+            if depth == 0 && content.is_empty() {
+                if let Some(t) = crate::ocr::text_near(p.get_x(), p.get_y()) {
+                    return Some((crate::locale::pick("text recognized from the screen", "从屏幕上识别出的文字").into(), clip(&t, MAX_BLOCK_TEXT)));
+                }
             }
             let role = el.get_property_value(UIProperty::AriaRole).and_then(|v| v.get_string()).unwrap_or_default();
             if !content.is_empty() {

@@ -19,6 +19,7 @@ mod remote;
 mod history;
 mod plugins;
 mod locale;
+mod ocr;
 mod resample;
 mod screen;
 mod sys;
@@ -62,6 +63,12 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--kws-test") {
         return kws_test(&args[2..]);
+    }
+    if args.get(1).map(String::as_str) == Some("--ocr-test") {
+        let mut pt = windows::Win32::Foundation::POINT::default();
+        unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt); }
+        println!("{}", ocr::text_near(pt.x, pt.y).unwrap_or_else(|| "(nothing)".into()));
+        return Ok(());
     }
     if args.get(1).map(String::as_str) == Some("--mcp") {
         return mcp::serve(); // 给 Codex / Claude Code 提供桌面工具，不开界面
