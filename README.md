@@ -50,6 +50,13 @@
 > **"Add this to my Obsidian daily note"**
 > With a plugin, Aeri uses the app's own link or local API instead of clicking around. Two steps, a few seconds.
 
+## Screenshots
+
+| Ask, and it acts | Settings | Voice, your way |
+|:---:|:---:|:---:|
+| ![Chat](docs/screenshots/en-chat.png) | ![Settings](docs/screenshots/en-settings.png) | ![Voice settings](docs/screenshots/en-voice.png) |
+| Reminders, math, disk space, translation, each with the tool it used | One page per area; problems show in amber | Standard mode with free offline recognition, or realtime voice |
+
 ## Why it feels light
 
 | | Measured |

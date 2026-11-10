@@ -35,9 +35,9 @@ def paste_card(canvas, img, xy, shadow_alpha):
 
 TEXT = {
     "zh": {"tagline": "常驻一整天，也感觉不到它在。", "sub": "Windows 上的语音助手 · 说一句，它帮你做完",
-           "chips": ["待机 60 MB", "整机 CPU < 0.2%", "下载 24 MB"], "suffix": "", "bold": FONT_BOLD, "regular": FONT},
+           "chips": ["待机 60 MB", "整机 CPU < 0.2%", "下载 27 MB"], "suffix": "", "shots": ["screen-read.png", "shutdown-confirm.png"], "bold": FONT_BOLD, "regular": FONT},
     "en": {"tagline": "Voice that actually gets things done.", "sub": "A lightweight voice assistant for Windows",
-           "chips": ["60 MB idle", "< 0.2% CPU", "24 MB download"], "suffix": "-en",
+           "chips": ["60 MB idle", "< 0.2% CPU", "27 MB download"], "suffix": "-en", "shots": ["en-chat.png", "en-settings.png"],
            "bold": "C:/Windows/Fonts/segoeuib.ttf", "regular": "C:/Windows/Fonts/segoeui.ttf"},
 }
 
@@ -65,9 +65,12 @@ def make(name, t, lang="zh"):
         d.text((x + 20 * S, 590 * S), label, font=chip_font, fill=t["chip_text"])
         x += w + 14 * S
 
-    for i, (shot, xy) in enumerate([("screen-read.png", (870, 70)), ("shutdown-confirm.png", (1200, 130))]):
+    # Two app screenshots, overlapping; sized so both fit whatever the screenshot proportions
+    width = 360
+    for shot, xy in zip(tx["shots"], [(850, 70), (1190, 140)]):
         img = Image.open(OUT / shot).convert("RGBA")
-        img = img.resize((int(img.width * 0.78 * S), int(img.height * 0.78 * S)), Image.LANCZOS)
+        k = min(width / img.width, 592 / img.height)
+        img = img.resize((int(img.width * k * S), int(img.height * k * S)), Image.LANCZOS)
         paste_card(c, rounded(img, 24 * S), (xy[0] * S, xy[1] * S), t["shadow"])
 
     c.resize((W, H), Image.LANCZOS).convert("RGB").save(OUT / f"hero{tx['suffix']}-{name}.png", optimize=True)
