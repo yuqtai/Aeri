@@ -1,9 +1,8 @@
-#![allow(dead_code)] // used by the language-aware parts as they are converted
-//! Interface language. Aeri is English-first; Chinese is used when the Windows UI language is Chinese.
-//! Everything that depends on language (UI text, default providers, default wake word, quick commands,
-//! search sites) should ask this module instead of checking the system itself.
+//! Interface language. Aeri is English-first; Chinese is used when the Windows UI language is Chinese,
+//! unless the user picks a language in Settings → Appearance. Everything that depends on language
+//! (UI text, default providers, default wake word, quick commands, search sites) asks this module.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -11,17 +10,21 @@ pub enum Lang {
     Zh,
 }
 
-static LANG: OnceLock<Lang> = OnceLock::new();
+/// 0 = not decided yet, 1 = English, 2 = Chinese
+static LANG: AtomicU8 = AtomicU8::new(0);
 
-/// The language Aeri runs in. Decided once per process from the Windows UI language;
-/// the environment variable `AERI_LANG=en|zh` overrides it (handy for testing).
+/// The language Aeri runs in. Until `apply_preference` is called it follows the environment variable
+/// `AERI_LANG=en|zh` (handy for tests) or the Windows UI language.
 pub fn lang() -> Lang {
-    *LANG.get_or_init(|| {
-        if let Ok(v) = std::env::var("AERI_LANG") {
-            return parse(&v);
+    match LANG.load(Ordering::Relaxed) {
+        1 => Lang::En,
+        2 => Lang::Zh,
+        _ => {
+            let l = automatic();
+            store(l);
+            l
         }
-        system()
-    })
+    }
 }
 
 pub fn is_zh() -> bool {
@@ -31,6 +34,35 @@ pub fn is_zh() -> bool {
 /// Pick the text for the current language.
 pub fn pick<'a>(en: &'a str, zh: &'a str) -> &'a str {
     if is_zh() { zh } else { en }
+}
+
+/// Apply the setting from config.json: "system" (default), "en" or "zh".
+/// `AERI_LANG` still wins so tests can force a language.
+pub fn apply_preference(pref: &str) {
+    let l = if std::env::var("AERI_LANG").is_ok() {
+        automatic()
+    } else {
+        match pref {
+            "en" => Lang::En,
+            "zh" => Lang::Zh,
+            _ => system(),
+        }
+    };
+    store(l);
+}
+
+/// The values the language setting can take, in the order shown in Settings
+pub const PREFERENCES: [&str; 3] = ["system", "en", "zh"];
+
+fn store(l: Lang) {
+    LANG.store(if l == Lang::Zh { 2 } else { 1 }, Ordering::Relaxed);
+}
+
+fn automatic() -> Lang {
+    match std::env::var("AERI_LANG") {
+        Ok(v) => parse(&v),
+        Err(_) => system(),
+    }
 }
 
 fn parse(v: &str) -> Lang {
@@ -43,12 +75,17 @@ fn system() -> Lang {
     if id & 0x3ff == 0x04 { Lang::Zh } else { Lang::En }
 }
 
-/// BCP-47 code for the current language (used by Slint translations and web search URLs)
+/// BCP-47 code for the current language (used by the history page)
 pub fn code() -> &'static str {
     match lang() {
         Lang::En => "en",
         Lang::Zh => "zh-CN",
     }
+}
+
+/// Name of the bundled Slint translation for the current language ("" = the English source text)
+pub fn slint_bundle() -> &'static str {
+    if is_zh() { "zh_CN" } else { "" }
 }
 
 #[cfg(test)]

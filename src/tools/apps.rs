@@ -217,10 +217,7 @@ pub fn call(index: &AppIndex, name: &str, input: &Value) -> Option<(String, bool
         "open_url" => {
             let mut url = s("url");
             // obsidian:// 这类软件自己的链接协议原样打开（插件说明书会用到）；file:// 等不行
-            let app_scheme = url.split_once("://").is_some_and(|(s, _)| {
-                s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !matches!(s.to_ascii_lowercase().as_str(), "file" | "ftp" | "javascript" | "data")
-            });
-            if !app_scheme && !url.starts_with("http://") && !url.starts_with("https://") {
+            if !app_link(&url) && !url.starts_with("http://") && !url.starts_with("https://") {
                 url = format!("https://{url}");
             }
             let ok = sys::shell_open(&url);
@@ -267,5 +264,38 @@ mod tests {
         assert_eq!(site_engine("B站"), Some("bilibili"));
         assert_eq!(site_engine("淘宝"), Some("taobao"));
         assert!(search_url("test", "").starts_with(crate::locale::pick("https://www.google.com/", "https://www.bing.com/")));
+    }
+}
+
+/// App link schemes that open_url passes through unchanged (plugin guides use them):
+/// any `scheme://` except dangerous ones, plus a few well-known schemes without `//`.
+/// Anything else (e.g. "example.com" or "localhost:3000") is treated as a web address.
+fn app_link(url: &str) -> bool {
+    const BLOCKED: [&str; 5] = ["file", "ftp", "javascript", "data", "vbscript"];
+    const NO_SLASH: [&str; 6] = ["mailto", "spotify", "tel", "callto", "sms", "msteams"];
+    let Some((scheme, rest)) = url.split_once(':') else { return false };
+    let scheme = scheme.to_ascii_lowercase();
+    let valid = scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '+' || c == '.');
+    if !valid || BLOCKED.contains(&scheme.as_str()) || scheme == "http" || scheme == "https" {
+        return false;
+    }
+    rest.starts_with("//") || NO_SLASH.contains(&scheme.as_str())
+}
+
+#[cfg(test)]
+mod app_link_tests {
+    use super::app_link;
+
+    #[test]
+    fn app_links() {
+        assert!(app_link("obsidian://new?name=a"));
+        assert!(app_link("spotify:search:lofi"));
+        assert!(app_link("mailto:a@b.com?subject=Hi"));
+        assert!(app_link("vscode://file/C:/x.txt"));
+        assert!(!app_link("javascript:alert(1)"));
+        assert!(!app_link("file:///C:/Windows"));
+        assert!(!app_link("example.com"));
+        assert!(!app_link("localhost:3000"));
+        assert!(!app_link("https://example.com"));
     }
 }

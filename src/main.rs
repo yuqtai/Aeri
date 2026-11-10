@@ -79,12 +79,13 @@ fn main() -> anyhow::Result<()> {
 
     let first_run = config::first_run();
     let cfg = config::load();
+    locale::apply_preference(&cfg.language);
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
     let icon = icon_rgba();
     let window = AppWindow::new()?;
-    slint::select_bundled_translation(if locale::is_zh() { "zh_CN" } else { "" })?;
+    slint::select_bundled_translation(locale::slint_bundle())?;
     window.set_messages(ModelRc::from(Rc::new(VecModel::<ChatItem>::default())));
     let devices = Rc::new(RefCell::new(audio::input_device_names()));
     apply_config(&window, &cfg, &devices.borrow());
@@ -119,6 +120,7 @@ fn main() -> anyhow::Result<()> {
     wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
     wire_update(&window, runtime.handle().clone(), cfg.auto_update);
     wire_history(&window);
+    wire_language(&window);
     wire_plugins(&window, runtime.handle().clone());
     mark_settings_clean(&window);
     let _tray = create_tray(&window, cmd_tx.clone(), icon)?;
@@ -442,6 +444,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_barge_in(c.barge_in);
     w.set_full_duplex(c.full_duplex);
     w.set_remote_enabled(c.remote_enabled);
+    w.set_language_index(locale::PREFERENCES.iter().position(|l| *l == c.language).unwrap_or(0) as i32);
     w.global::<Theme>().set_scheme(THEMES.iter().position(|t| *t == c.theme).unwrap_or(0) as i32);
     refresh_key_status(w, c);
     invalidate_voice_test(w);
@@ -859,6 +862,30 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
             run_check(weak, false).await;
         });
     }
+}
+
+/// Language takes effect right away and is saved immediately (it is not part of “Save and apply”):
+/// the UI switches its bundled translation, and texts set from Rust are refreshed.
+/// The tray and floating-orb menus are built at startup, so they follow after a restart.
+fn wire_language(window: &AppWindow) {
+    let weak = window.as_weak();
+    window.on_language_changed(move |index| {
+        let Some(w) = weak.upgrade() else { return };
+        let pref = locale::PREFERENCES[index.clamp(0, 2) as usize];
+        let mut saved = config::load();
+        saved.language = pref.into();
+        if config::save(&saved).is_err() {
+            set_note(&w, NOTE_ERROR, locale::pick("Could not save the language setting", "语言设置保存失败"));
+            return;
+        }
+        locale::apply_preference(pref);
+        let _ = slint::select_bundled_translation(locale::slint_bundle());
+        refresh_key_status(&w, &saved);
+        refresh_remote(&w);
+        w.set_history_status("".into());
+        w.set_plugins_status("".into());
+        w.set_language_note(locale::pick("The tray menu switches language after Aeri restarts.", "托盘菜单会在 Aeri 重启后切换语言。").into());
+    });
 }
 
 fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices: Rc<RefCell<Vec<String>>>, rt: Handle) {

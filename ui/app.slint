@@ -1115,6 +1115,9 @@ export component AppWindow inherits Window {
     callback clear-llm-key();
     callback clear-asr-key();
     callback theme-changed();
+    in-out property <int> language-index;
+    in property <string> language-note;
+    callback language-changed(int);
     callback discard-settings();
     callback start-pairing();
     callback cancel-pairing();
@@ -2190,6 +2193,20 @@ export component AppWindow inherits Window {
                                     options: [@tr("System"), @tr("Light"), @tr("Dark")];
                                     current <=> Theme.scheme;
                                     changed => { root.theme-changed(); }
+                                }
+                            }
+                        }
+                        Divider { }
+                        SettingRow {
+                            title: @tr("Language");
+                            description: root.language-note != "" ? root.language-note : @tr("Applies right away. “System” follows the Windows display language");
+                            VerticalLayout {
+                                alignment: center;
+                                Segmented {
+                                    width: 250px;
+                                    options: [@tr("System"), "English", "中文"];
+                                    current <=> root.language-index;
+                                    changed current => { root.language-changed(self.current); }
                                 }
                             }
                         }

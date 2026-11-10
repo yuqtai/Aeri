@@ -88,6 +88,8 @@ pub struct Config {
     pub tts_rate: i32,
     /// auto（跟随系统）/ light / dark
     pub theme: String,
+    /// Interface language: "system" (follow Windows), "en" or "zh"
+    pub language: String,
 
     // 悬浮球
     pub float_ball: bool,
@@ -164,6 +166,7 @@ impl Config {
             playwright_mcp: "@playwright/mcp@0.0.83".into(),
             tts_rate: 1,
             theme: "auto".into(),
+            language: "system".into(),
             float_ball: true,
             hotkey: true,
             ball_x: i32::MIN,

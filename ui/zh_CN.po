@@ -720,3 +720,9 @@ msgstr "缺少 key"
 
 msgid "Ready"
 msgstr "已就绪"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Applies right away. “System” follows the Windows display language"
+msgstr "选择后立即生效。“跟随系统”会按 Windows 的显示语言"
