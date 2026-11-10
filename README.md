@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-en-dark.png">
-    <img src="docs/screenshots/hero-en-light.png" alt="Aeri: voice that actually gets things done">
+    <img src="docs/screenshots/hero-en-light.png" alt="Aeri: just say Hey Aeri, it does the rest">
   </picture>
 </p>
 
@@ -25,7 +25,26 @@
 
 <br>
 
-**Aeri is a voice assistant for Windows that doesn't just talk — it does things.** Say "Hey Aeri", ask for something, and it opens apps, renames files, writes notes, changes settings, or hands longer jobs to a background agent. It idles at about 60 MB of RAM, so you can leave it running all day.
+<h3 align="center">Just say "Hey Aeri." It does the rest.</h3>
+
+<table>
+<tr>
+<td width="33%" valign="top">
+<h4>🎙️ Hands-free</h4>
+Say <b>"Hey Aeri"</b> and what you need. It opens apps, renames files, changes settings and sets reminders. No clicks, no keyboard. It also speaks up on its own when a reminder is due or a background job is done.
+</td>
+<td width="33%" valign="top">
+<h4>🧩 Plugins</h4>
+Teach it any app with a <b>plain-text plugin</b>: a short Markdown guide, no code. 13 ready to install: Spotify, Outlook, VS Code, Slack, Notion, Obsidian and more.
+</td>
+<td width="33%" valign="top">
+<h4>🪶 Light</h4>
+About <b>60 MB</b> of memory and under 0.2% CPU when idle. One Rust process, 27 MB download. Leave it on all day.
+</td>
+</tr>
+</table>
+
+Open source (MIT). Bring any AI model, or run it fully offline with Ollama. The wake word is detected on your PC, and nothing is recorded or sent before you say it. No account, no telemetry.
 
 ## You say it, Aeri does it
 

@@ -25,6 +25,27 @@
 
 <br>
 
+<h3 align="center">喊一声 "Hey Aeri"，剩下的交给它。</h3>
+
+<table>
+<tr>
+<td width="33%" valign="top">
+<h4>🎙️ 动嘴就行</h4>
+喊一声唤醒词，说要做什么：打开软件、改文件名、调设置、设提醒，不用碰鼠标键盘。提醒到点、后台任务做完，它会主动开口告诉你。
+</td>
+<td width="33%" valign="top">
+<h4>🧩 插件扩展</h4>
+用一份<b>纯文字的插件</b>教它用任何软件：一段 Markdown 说明，不用写代码。现有 13 个可以直接装：Spotify、Outlook、VS Code、Slack、Notion、Obsidian、思源笔记等。
+</td>
+<td width="33%" valign="top">
+<h4>🪶 轻</h4>
+待机约 <b>60 MB</b> 内存、整机 CPU 不到 0.2%，一个 Rust 进程，下载 27 MB，开一整天也感觉不到。
+</td>
+</tr>
+</table>
+
+开源（MIT），大模型随你选，接 Ollama 可以全程离线。唤醒词在本机检测，没喊之前不录音、不上传。不用注册，没有遥测。
+
 ## 你说，它做
 
 > **「把这个文件改名叫周报」**

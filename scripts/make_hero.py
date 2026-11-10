@@ -34,9 +34,9 @@ def paste_card(canvas, img, xy, shadow_alpha):
 
 
 TEXT = {
-    "zh": {"tagline": "常驻一整天，也感觉不到它在。", "sub": "Windows 上的语音助手 · 说一句，它帮你做完",
+    "zh": {"tagline": "喊一声，剩下的交给它。", "sub": "动嘴就行 · 插件扩展 · 开源免费",
            "chips": ["待机 60 MB", "整机 CPU < 0.2%", "下载 27 MB"], "suffix": "", "shots": ["screen-read.png", "shutdown-confirm.png"], "bold": FONT_BOLD, "regular": FONT},
-    "en": {"tagline": "Voice that actually gets things done.", "sub": "A lightweight voice assistant for Windows",
+    "en": {"tagline": "Just say \"Hey Aeri.\" It does the rest.", "sub": "Hands-free · plugins for any app · open source",
            "chips": ["60 MB idle", "< 0.2% CPU", "27 MB download"], "suffix": "-en", "shots": ["en-chat.png", "en-settings.png"],
            "bold": "C:/Windows/Fonts/segoeuib.ttf", "regular": "C:/Windows/Fonts/segoeui.ttf"},
 }
