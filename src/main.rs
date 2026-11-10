@@ -45,7 +45,8 @@ const MAX_CHAT_ITEMS: usize = 200;
 const EFFORTS: [&str; 3] = ["low", "high", "max"];
 const EXECUTORS: [&str; 3] = ["codex", "claude", "builtin"];
 const ACCESS: [&str; 3] = ["full", "workspace", "readonly"];
-const ASR_PROVIDERS: [&str; 4] = ["local", "openai", "groq", "dashscope"];
+const ASR_PROVIDERS: [&str; 9] = ["local", "openai", "groq", "dashscope", "deepgram", "elevenlabs", "azure", "gemini", "custom"];
+const TTS_PROVIDERS: [&str; 4] = ["windows", "openai", "elevenlabs", "azure"];
 const FRONTENDS: [&str; 2] = ["realtime", "classic"];
 
 // Keep format literals checked by Rust while selecting UI copy centrally.
@@ -380,6 +381,7 @@ fn refresh_key_status(w: &AppWindow, c: &Config) {
     w.set_asr_key_state(if voice_ready { KEY_READY } else { KEY_MISSING });
     w.set_llm_key_saved(config::has_saved_key(config::llm_protected(c)));
     w.set_asr_key_saved(config::has_saved_key(config::voice_protected(c)));
+    w.set_tts_key_saved(c.stt_api_keys_protected.get(&c.tts_provider).is_some_and(|v| config::has_saved_key(v)));
 }
 
 fn ui_key_status(protected: &str, env_name: &str) -> String {
@@ -407,6 +409,8 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_effort_index(EFFORTS.iter().position(|e| *e == c.llm_effort).unwrap_or(0) as i32);
     w.set_new_conversation_secs(c.new_conversation_after_secs as i32);
     w.set_asr_key_input("".into());
+    w.set_local_model_index(asr::LOCAL_MODELS.iter().position(|id| *id == c.local_asr_model).unwrap_or(0) as i32);
+    refresh_local_model_status(w);
     w.set_asr_url(c.asr_url.as_str().into());
     w.set_asr_model(c.asr_model.as_str().into());
     w.set_asr_silence_ms(c.asr_sentence_silence_ms as i32);
@@ -428,6 +432,14 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_browser_idle_minutes(c.browser_idle_minutes as i32);
     w.set_playwright_package(c.playwright_mcp.as_str().into());
     w.set_tts_rate(c.tts_rate as f32);
+    w.set_tts_provider_index(TTS_PROVIDERS.iter().position(|p| *p == c.tts_provider).unwrap_or(0) as i32);
+    let (model, voice) = tts::defaults(&c.tts_provider,locale::is_zh());
+    w.set_tts_model(if c.tts_model.is_empty() { model } else { &c.tts_model }.into());
+    w.set_tts_voice(if c.tts_voice.is_empty() { voice } else { &c.tts_voice }.into());
+    w.set_azure_region(c.azure_speech_region.as_str().into());
+    w.set_tts_key_input("".into());
+    w.set_tts_test_status("".into());
+    w.set_tts_test_state(KEY_READY);
     w.set_show_on_start(c.show_window_on_start);
     w.set_float_ball(c.float_ball);
     w.set_hotkey(c.hotkey);
@@ -450,6 +462,12 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     invalidate_voice_test(w);
 }
 
+fn refresh_local_model_status(w: &AppWindow) {
+    let size = asr::local_size(asr::LOCAL_MODELS[w.get_local_model_index().clamp(0,6) as usize]);
+    w.set_local_model_status(if size == 0 { locale::pick("Not downloaded", "尚未下载").into() }
+        else { ui_format!("Downloaded: {:.1} MB on disk", "已下载：占用 {:.1} MB", size as f64 / 1048576.0).into() });
+}
+
 /// 界面 -> 配置（以已保存的配置为底，保留 key 和界面上没有的项）
 fn read_settings(w: &AppWindow, devices: &[String]) -> Config {
     let mut c = config::load();
@@ -462,13 +480,14 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     let provider = &llm::PRESETS[w.get_llm_provider_index().clamp(0, 7) as usize];
     if c.llm_provider != provider.id { c.llm_key_env = provider.env.into(); }
     c.llm_provider = provider.id.into();
-    c.asr_provider = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 3) as usize].into();
+    c.asr_provider = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize].into();
     c.realtime_provider = if w.get_realtime_provider_index() == 1 { "openai" } else { "dashscope" }.into();
     c.llm_base_url = text(w.get_llm_base_url());
     c.llm_model = text(w.get_llm_model());
     c.llm_thinking = w.get_llm_thinking();
     c.llm_effort = EFFORTS[w.get_effort_index().clamp(0, 2) as usize].into();
     c.new_conversation_after_secs = w.get_new_conversation_secs().max(30) as u64;
+    c.local_asr_model = asr::LOCAL_MODELS[w.get_local_model_index().clamp(0,6) as usize].into();
     c.asr_url = text(w.get_asr_url());
     c.asr_model = text(w.get_asr_model());
     c.asr_sentence_silence_ms = w.get_asr_silence_ms().clamp(200, 6000) as u32;
@@ -493,6 +512,10 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.browser_idle_minutes = w.get_browser_idle_minutes().clamp(1, 120) as u64;
     c.playwright_mcp = text(w.get_playwright_package());
     c.tts_rate = w.get_tts_rate().round() as i32;
+    c.tts_provider = TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,3) as usize].into();
+    c.tts_model = text(w.get_tts_model());
+    c.tts_voice = text(w.get_tts_voice());
+    c.azure_speech_region = text(w.get_azure_region());
     c.show_window_on_start = w.get_show_on_start();
     c.float_ball = w.get_float_ball();
     c.hotkey = w.get_hotkey();
@@ -527,6 +550,7 @@ fn voice_test_snapshot(w: &AppWindow) -> serde_json::Value {
         "url": w.get_realtime_url().as_str(), "model": w.get_realtime_model().as_str(),
         "voice": w.get_realtime_voice().as_str(), "rate": w.get_tts_rate(),
         "asr_url": w.get_asr_url().as_str(), "asr_model": w.get_asr_model().as_str(),
+        "local_model": w.get_local_model_index(), "region": w.get_azure_region().as_str(),
         "silence": w.get_asr_silence_ms(), "wait": w.get_asr_timeout_secs(),
         "key": key,
     })
@@ -576,7 +600,7 @@ fn settings_snapshot(w: &AppWindow) -> serde_json::Value {
         "config": serde_json::to_value(&c).unwrap_or_default(),
         "device": w.get_device_index(),
         "autostart": w.get_launch_at_login(),
-        "keys": [w.get_llm_key_input().trim(), w.get_asr_key_input().trim()],
+        "keys": [w.get_llm_key_input().trim(), w.get_asr_key_input().trim(), w.get_tts_key_input().trim()],
     })
 }
 
@@ -628,8 +652,8 @@ fn validate(c: &Config) -> Option<String> {
     if c.voice_frontend != "realtime" && c.asr_provider == "dashscope" && !c.asr_url.starts_with("ws") {
         return Some(locale::pick("Speech recognition URL must start with wss://", "语音识别服务地址应以 wss:// 开头").into());
     }
-    if c.voice_frontend != "realtime" && ["openai", "groq"].contains(&c.asr_provider.as_str()) && !c.asr_url.starts_with("http") {
-        return Some("Transcription base URL must start with https:// (or http:// for a local proxy)".into());
+    if c.voice_frontend != "realtime" && ["openai", "groq", "custom", "gemini", "elevenlabs"].contains(&c.asr_provider.as_str()) && !c.asr_url.starts_with("http") {
+        return Some(locale::pick("Transcription base URL must start with https:// (or http:// for a local server)","转写接口地址应以 https:// 开头（本地服务可使用 http://）").into());
     }
     if c.voice_frontend == "realtime" && !c.realtime_url.starts_with("ws") {
         return Some(locale::pick("Realtime voice URL must start with wss://", "实时语音服务地址应以 wss:// 开头").into());
@@ -921,6 +945,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let defaults = match index {
             1 => ("https://api.openai.com/v1", "gpt-transcribe"),
             2 => ("https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
+            4 => ("wss://api.deepgram.com/v1/listen", "nova-3"),
+            5 => ("https://api.elevenlabs.io/v1", "scribe_v2"),
+            6 => ("", "azure-speech"),
+            7 => ("https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash"),
+            8 => ("http://localhost:8000/v1", "Qwen/Qwen3-ASR-1.7B"),
             _ => ("wss://dashscope.aliyuncs.com/api-ws/v1/inference", "fun-asr-realtime"),
         };
         w.set_asr_url(defaults.0.into());
@@ -935,6 +964,73 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         w.set_asr_key_input("".into());
         refresh_key_status(&w, &read_settings(&w, &[]));
         invalidate_voice_test(&w);
+    });
+    let weak = window.as_weak();
+    window.on_local_model_changed(move |_| {
+        if let Some(w) = weak.upgrade() { refresh_local_model_status(&w); invalidate_voice_test(&w); }
+    });
+    let (weak,delete_rt) = (window.as_weak(),rt.clone());
+    window.on_delete_local_model(move || {
+        let Some(w) = weak.upgrade() else { return };
+        let id = asr::LOCAL_MODELS[w.get_local_model_index().clamp(0,6) as usize];
+        let weak = weak.clone();
+        delete_rt.spawn(async move {
+            let result = asr::delete_local(id).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    refresh_local_model_status(&w);
+                    if result.is_err() { w.set_local_model_status(locale::pick("Could not delete the model. Stop recognition and retry.","无法删除模型，请停止语音识别后重试。").into()); }
+                }
+            });
+        });
+    });
+    let weak = window.as_weak();
+    window.on_tts_provider_changed(move |index| {
+        let Some(w) = weak.upgrade() else { return };
+        let (model, voice) = tts::defaults(TTS_PROVIDERS[index.clamp(0,3) as usize],locale::is_zh());
+        w.set_tts_model(model.into());
+        w.set_tts_voice(voice.into());
+        w.set_tts_key_input("".into());
+        w.set_tts_test_status("".into());
+        refresh_key_status(&w,&read_settings(&w,&[]));
+    });
+    let preview = std::sync::Arc::new(tts::Tts::new());
+    let (weak, preview_rt, test_tts) = (window.as_weak(),rt.clone(),preview.clone());
+    window.on_test_tts(move || {
+        let Some(w) = weak.upgrade() else { return };
+        if w.get_tts_test_state() == KEY_TESTING { test_tts.stop(); return; }
+        let mut c = read_settings(&w,&[]);
+        let input = w.get_tts_key_input();
+        if !input.trim().is_empty() {
+            c.stt_api_keys_protected.insert(c.tts_provider.clone(), config::protect_key(input.as_str()).unwrap_or_default());
+        } else if c.llm_provider == c.tts_provider && !w.get_llm_key_input().trim().is_empty() {
+            *config::llm_key_slot(&mut c) = config::protect_key(w.get_llm_key_input().as_str()).unwrap_or_default();
+        } else {
+            let recognition_provider = if c.voice_frontend == "realtime" { &c.realtime_provider } else { &c.asr_provider };
+            if *recognition_provider == c.tts_provider && !w.get_asr_key_input().trim().is_empty() {
+                c.stt_api_keys_protected.insert(c.tts_provider.clone(),config::protect_key(w.get_asr_key_input().as_str()).unwrap_or_default());
+            }
+        }
+        w.set_tts_test_state(KEY_TESTING);
+        w.set_tts_test_status(locale::pick("Playing a short sample…", "正在播放简短示例…").into());
+        let (weak, tts) = (weak.clone(),test_tts.clone());
+        preview_rt.spawn(async move {
+            let mut fallback = String::new();
+            tts.speak_configured(&c,locale::pick("Hello, I'm Aeri. This is your selected voice.", "你好，我是 Aeri，这是您选择的音色。"),|note| fallback = note.to_string()).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_tts_test_state(if fallback.is_empty() { KEY_OK } else { KEY_FAILED });
+                    w.set_tts_test_status(if fallback.is_empty() { locale::pick("Voice preview finished or stopped.", "音色试听已结束或停止。").into() } else { fallback.into() });
+                }
+            });
+        });
+    });
+    let (weak, tx) = (window.as_weak(),cmd_tx.clone());
+    window.on_clear_tts_key(move || {
+        let Some(w) = weak.upgrade() else { return };
+        let mut c = config::load();
+        c.stt_api_keys_protected.remove(TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,3) as usize]);
+        if config::save(&c).is_ok() { refresh_key_status(&w,&c); let _ = tx.send(Command::Reload(c)); }
     });
     // 保存并应用
     let (tx, weak, devs) = (cmd_tx.clone(), window.as_weak(), devices.clone());
@@ -955,10 +1051,17 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 }
             }
         }
+        if !w.get_tts_key_input().trim().is_empty() {
+            let Some(protected) = config::protect_key(w.get_tts_key_input().as_str()) else {
+                set_note(&w,NOTE_ERROR,locale::pick("Could not encrypt and save the key", "key 加密保存失败")); return;
+            };
+            c.stt_api_keys_protected.insert(c.tts_provider.clone(),protected);
+        }
         match config::save(&c) {
             Ok(()) => {
                 w.set_llm_key_input("".into());
                 w.set_asr_key_input("".into());
+                w.set_tts_key_input("".into());
                 refresh_key_status(&w, &c);
                 ball::set_enabled(c.float_ball);
                 apply_hotkey(&w, c.hotkey);
@@ -1027,7 +1130,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                     if w.get_realtime_provider_index() == 1 { c.realtime_openai_api_key_protected.clear(); }
                     else { c.asr_api_key_protected.clear(); }
                 } else {
-                    let id = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 3) as usize];
+                    let id = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize];
                     if id == "dashscope" { c.asr_api_key_protected.clear(); }
                     else { c.stt_api_keys_protected.remove(id); }
                 }
@@ -1083,7 +1186,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let Some(w) = weak.upgrade() else { return };
         if w.get_voice_test_state() == KEY_TESTING { return; }
         let mut c = read_settings(&w, &[]);
-        if c.llm_provider == "openai" && !w.get_llm_key_input().trim().is_empty() {
+        if (c.llm_provider == "openai" || c.llm_provider == "gemini") && !w.get_llm_key_input().trim().is_empty() {
             *config::llm_key_slot(&mut c) = config::protect_key(w.get_llm_key_input().as_str()).unwrap_or_default();
         }
         let input = w.get_asr_key_input().trim().to_string();
@@ -1118,10 +1221,12 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                     let session = realtime::Session::connect(&settings).await?;
                     // 不请求回复；配置确认后有界关闭测试会话。
                     let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<String, anyhow::Error>(String::new())
                 } else {
-                    asr::check(&asr::AsrSettings {
+                    asr::check_detail(&asr::AsrSettings {
                         provider: asr::Provider::from_id(&c.asr_provider),
+                        region: config::azure_region(&c),
+                        local_model: c.local_asr_model.clone(),
                         url: c.asr_url.clone(), model: c.asr_model.clone(), api_key: key.clone(),
                         sentence_silence_ms: c.asr_sentence_silence_ms,
                         speech_timeout: Duration::from_secs(c.asr_speech_timeout_secs),
@@ -1129,7 +1234,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 }
             }).await;
             let (state, msg) = match result {
-                Ok(Ok(())) => (KEY_OK, ui_format!("{label} connection test passed. Microphone and playback were not tested. Save & apply your changes.", "{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。")),
+                Ok(Ok(answer)) => (KEY_OK, if answer.is_empty() { ui_format!("{label} connection test passed. Microphone and playback were not tested. Save & apply your changes.", "{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。") } else { ui_format!("Server answered: {answer}", "服务器返回：{answer}") }),
+                Ok(Err(e)) if c.asr_provider == "custom" && !realtime_mode => (KEY_FAILED,format!("{e:#}")),
                 Ok(Err(_)) => (KEY_FAILED, ui_format!("{label} connection failed. Check credentials, model/voice access, and service URL, then retry.", "{label}连接失败，请检查凭证、模型/音色是否开通及服务地址，然后重试。")),
                 Err(_) => (KEY_FAILED, ui_format!("{label} connection timed out. Check your network and service URL, then retry.", "{label}连接测试超时，请检查网络与服务地址后重试。")),
             };
@@ -1137,6 +1243,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 if let Some(w) = weak.upgrade() {
                     if w.get_voice_test_epoch() == epoch {
                         if voice_test_snapshot(&w) == snapshot {
+                            refresh_local_model_status(&w);
                             w.set_voice_test_state(state);
                             w.set_voice_test_status(msg.into());
                         } else { invalidate_voice_test(&w); }
@@ -1163,6 +1270,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         rt.spawn(async move {
             let settings = asr::AsrSettings {
                 provider: asr::Provider::from_id(&c.asr_provider),
+                        region: config::azure_region(&c),
+                        local_model: c.local_asr_model.clone(),
                 url: c.asr_url.clone(),
                 model: c.asr_model.clone(),
                 api_key: key,
