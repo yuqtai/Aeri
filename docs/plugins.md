@@ -1,33 +1,31 @@
-# 插件
+# Plugins
 
-Aeri 自带的是人人都用的功能：开关软件、音量、文件、截图、提醒、关机等。**怎么用某个具体软件**（思源、Obsidian、记事本……）交给插件。
+Applies to Aeri 0.4.0. [简体中文](zh-CN/plugins.md)
 
-插件是一份**说明书**（一个 Markdown 文件），不是程序。Aeri 发现你要操作这个软件时，会把说明书交给大模型，照着用最快、最稳的办法去做。比如思源笔记读不到界面控件，靠点界面要绕十几步还常常失败；思源插件教它直接调思源的本机接口，两步、几秒就写好。
+A plugin is a Markdown guide for using a particular app. It tells the model which tools, local APIs, or app links to use. It does not load executable plugin code. General tools for files, apps, volume, screenshots, reminders, and power are built in.
 
-## 怎么用
+## Install and use
 
-- **装插件**：设置 → 插件，点“安装”；也可以直接说“装一下 Obsidian 插件”。
-- **自动生效**：你说的话里提到这个软件，或者它正在前台时，Aeri 会自动带上说明书，不用你做什么。
-- **内置插件**：只有记事本随 Aeri 自带；思源笔记、Obsidian 等在市场里按需安装。内置插件在市场里有更新版时会显示“更新”。
-- **卸载**：设置 → 插件，点“卸载”。内置插件不能卸载。
+Open **Settings → Plugins** to browse, install, update, or uninstall a guide. You can also ask Aeri to install a plugin by name. Notepad is the only bundled guide in 0.4.0; other apps such as Obsidian and SiYuan come from the market. Bundled guides cannot be uninstalled, but a market update can override them.
 
-## 插件市场
+Aeri attaches relevant guides when your request mentions the plugin name/keywords or the foreground app matches its process name. Explicit name/keyword matches rank first; at most two guides are attached automatically. You can ask for a guide through `plugin_guide` if it was not selected.
 
-市场就是 GitHub 上的 [yuqtai/aeri-plugins](https://github.com/yuqtai/aeri-plugins) 仓库：每个插件一个文件夹，`index.json` 登记了每个插件的版本和 SHA-256。Aeri 下载后先核对校验值，不一致就不装。
+## Market and files
 
-想写一个插件、或者给已有插件提改进，看那个仓库的 README，提 PR 即可。
+The market is [yuqtai/aeri-plugins](https://github.com/yuqtai/aeri-plugins). Its `index.json` lists versions and SHA-256 hashes. Aeri verifies a downloaded guide against the index before installation. Installed guides live under `%APPDATA%\VoiceAssistant\plugins`.
 
-## 安全
+For contributions, follow that repository's README and submit a pull request there. SHA-256 checks detect mismatched downloads; they do not make an untrusted guide safe.
 
-- 插件只是文字，不会在电脑上运行任何程序。
-- 插件常用的 `local_http` 工具**只能访问本机**（127.0.0.1 / localhost），连不了外网。
-- 软件的令牌写成 `{{secret:文件#JSON指针}}`，由 Aeri 在本机读取后直接填进请求，**不会发给大模型**；接口返回的内容里如果出现令牌，也会被替换成 `***`。只能读用户目录下的文件。
-- 插件说明书仍然是提示词，恶意插件可能诱导大模型做别的事，所以市场里的插件都要经过审核；不要从来路不明的地方手动放插件到 `%APPDATA%\VoiceAssistant\plugins\`。
+## Local APIs and secrets
 
-## 给开发者
+`local_http` accepts HTTP(S) requests to loopback hosts (`127.0.0.1`, `localhost`, `::1`) only. A guide can use `{{secret:file#JSON-pointer}}` placeholders for app tokens. Aeri reads permitted files under the user profile, substitutes the values locally, and masks those values in returned text before it reaches the model. Do not paste raw tokens into a guide.
 
-- 代码在 `src/plugins.rs`：解析、匹配（`hint`）、`plugin_guide` / `local_http` / `plugin_market` 三个工具、市场下载。
-- 插件源文件在仓库的 `plugins/` 目录，其中 `BUILTIN` 列出的会编译时打进程序（`include_str!`），其余只发布到市场；改了要同步到市场仓库并运行它的 `make_index.py`。
-- 匹配规则：话里出现插件的 `keywords` 或名字最优先，其次是前台窗口的程序名等于 `match`；一次最多带 2 份说明书。
+Guides remain model instructions and can lead to actions through Aeri's tools. Review sources and install only trusted guides; manually copying unknown Markdown into the plugin directory bypasses market download checks. See [safety](safety.md).
 
-[← 返回 README](../README.md)
+## Implementation
+
+- [src/plugins.rs](../src/plugins.rs) contains parsing, matching, market downloads, and the `plugin_guide`, `local_http`, and `plugin_market` tools.
+- Sources live in [plugins/](../plugins/). Only entries in `BUILTIN` are embedded through `include_str!`.
+- After changing a market guide, sync it to the market repository and regenerate its index with that repository's `make_index.py`.
+
+[← README](../README.md)

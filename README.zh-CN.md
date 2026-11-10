@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://github.com/yuqtai/Aeri/releases/latest"><b>下载</b></a> ·
   <a href="#快速开始"><b>快速开始</b></a> ·
-  <a href="docs/guide.md"><b>使用说明</b></a> ·
+  <a href="docs/zh-CN/guide.md"><b>使用说明</b></a> ·
   <a href="https://linux.do"><b>社区</b></a>
 </p>
 
@@ -49,7 +49,7 @@
 > 到点它会开口提醒你，重启电脑也不会丢。
 
 > **躺在沙发上，拿起手机按住说**
-> 同一个 Wi-Fi 下用安卓 App 按住说话、打字、停止、调音量，回答照常从电脑播出。见 [手机控制](docs/guide.md#手机控制安卓-app)。
+> 同一个 Wi-Fi 下用安卓 App 按住说话、打字、停止、调音量，回答照常从电脑播出。见 [手机控制](docs/zh-CN/guide.md#手机控制安卓-app)。
 
 ## 使用截图
 
@@ -70,7 +70,7 @@
 
 Rust 编写，一个进程，不带浏览器内核，不占显卡。
 
-详细原理和完整测试数据 → [轻和快](docs/performance.md)
+详细原理和完整测试数据 → [轻和快](docs/zh-CN/performance.md)
 
 ## 快速开始
 
@@ -91,14 +91,14 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 
 之后有新版本，设置页里点一下就能更新；手机 App 跟着电脑一起更新，手机上点一下就装好，不用再去下载。
 
-## 更多文档
+## 文档
 
-- [使用说明](docs/guide.md)：界面、全部设置项、Key 的细节
-- [轻和快](docs/performance.md)：为什么轻、为什么快，完整实测
-- [安全与已知限制](docs/safety.md)：它能做什么、不会做什么、哪些还没测过
-- [开发与发版](docs/development.md)：架构、编译、安装、发版
-- [插件](docs/plugins.md)：教 Aeri 用更多软件，怎么装、怎么写
-- [状态机清单](docs/state-machines.md)：程序里每个“阶段”怎么表示、为什么
+- [使用说明](docs/zh-CN/guide.md)：安装、语音模式、服务商、设置、历史与手机控制
+- [轻和快](docs/zh-CN/performance.md)：架构与注明版本的历史测量
+- [安全与已知限制](docs/zh-CN/safety.md)：权限、隐私、限制和待验证项
+- [开发与发版](docs/zh-CN/development.md)：架构、编译、安装、发版
+- [插件](docs/zh-CN/plugins.md)：教 Aeri 用更多软件，怎么装、怎么写
+- [状态机清单](docs/zh-CN/state-machines.md)：程序里每个“阶段”怎么表示、为什么
 
 ## 社区交流
 

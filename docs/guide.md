@@ -1,70 +1,89 @@
-# 使用说明
+# User guide
 
-## 界面
+Applies to Aeri 0.4.0. [简体中文](zh-CN/guide.md)
 
-- **悬浮球**：平时桌面上只有一个小光球（默认在右下角），状态和主界面的聆听光球同步：正在听时向外扩散波纹、声波条跳动，思考/执行时三个点依次亮起，暂停唤醒时变灰。
-  - 单击：在旁边展开主界面；关闭主界面又缩回悬浮球。
-  - 拖动：可以放到任意位置，靠近屏幕左右边缘会自动吸附，位置会记住。
-  - 右键：打开主界面 / 开始说话 / 暂停或恢复语音唤醒 / 隐藏悬浮球 / 退出。
-  - 前台是全屏程序（游戏、全屏视频、PPT 放映）时自动藏起来，退出全屏再出现。
-  - 有后台任务在跑时，球的右上角亮一个绿点；主界面顶部也会写“后台任务进行中”。
-  - 悬浮球不抢焦点、不出现在任务栏和 Alt+Tab 里；动画只在工作时运行，待机不重绘。隐藏后可以从托盘菜单“显示悬浮球”找回来。
-- **对话页**：底部中间的“聆听光球”是主按钮，也是状态灯——待机是带淡光晕的白色、正在听时变亮并向外扩散波纹、思考/执行时三个点依次亮起、播报时外圈呼吸、暂停唤醒时变灰。动画只在工作时运行，待机不耗 CPU。助手正在听、思考、操作或回答时再点一下光球（或悬浮球右键菜单里的“停止”），会立刻停下回到待机。你说的话是浅色气泡，助手的回答像正文一样排版，工具调用是灰色小条（写成“打开应用：计算器”这样的人话，后台任务的进展只占一行、原地更新）；没有对话时显示几个可以直接点的示例命令。左下角是语音唤醒开关，右下角可以展开打字输入框。
-- **设置页**：右上角的滑杆图标进入。首页只有 7 个分类入口，每项下面一行写着当前状态（比如“实时语音 · 百炼 key 已就绪”），缺 key、麦克风不可用、有新版本时这一行变黄；点进去是这一类的常用设置，服务地址、模型名这类很少改的项目收在每页底部的“高级选项”里。改了设置底部才出现“放弃更改 / 保存并应用”；没保存就退出设置时会先问保存还是放弃，不会悄悄丢掉或留下没生效的改动。
-- **外观**：设置里可选跟随系统、浅色、深色；Windows 11 上标题栏会和界面背景同色。
-- 界面全部是自绘组件（`ui/app.slint`），颜色集中在 `Theme` 全局里：一种强调色（“聆听光”）只用来表示助手正在工作，其余都是中性色。
+## First run
 
-## 设置
+1. Download the Windows x64 ZIP from [Releases](https://github.com/yuqtai/Aeri/releases/latest), extract it, and run `aeri.exe`.
+2. Open **Settings → Language model**, choose your provider, enter its key, and save and apply. English installs start with OpenAI; Chinese installs start with DeepSeek. Ollama can use a local model without an API key.
+3. Leave **Voice chat → Conversation mode** on **Standard (recommended)** and **Speech recognition** on **Local (offline)**. Use **Test speech recognition** to download and load the model before your first conversation.
+4. Say **“Hey Aeri”** on an English install, or **“你好电脑”** on a Chinese install. You can also click the orb, press Ctrl+Alt+Space, or type a request.
 
-所有配置都在界面“设置”页里手动修改，点“保存并应用”立即生效（不用重启），设置首页底部的“恢复默认设置”会还原除 key 以外的所有项：
+Local recognition downloads the appropriate English or Chinese sherpa-onnx model on first use, verifies SHA-256, and stores it under `%APPDATA%\VoiceAssistant\models`. This first download needs internet access and Windows `tar.exe`; recognition then works offline. Standard mode speaks through Windows SAPI. Language-model requests still need the configured provider unless you use a local endpoint.
 
-| 分类 | 常用设置 | 高级选项（默认收起） |
+Aeri follows the Windows **display language**: Chinese UI language selects Chinese; other languages select English. `AERI_LANG=en` or `AERI_LANG=zh` overrides this at process startup. These choices affect new-install defaults, including the wake word; changing language or upgrading does not replace values already saved in `config.json`.
+
+## Window and floating orb
+
+- Click the floating orb to open the main window. Closing the window returns to the orb; use **Quit** in the orb or tray menu to exit.
+- Drag the orb to move it. It snaps near screen edges, remembers its position, and hides while the foreground app is full screen.
+- Right-click for talk/stop, wake-word pause/resume, hide/show, and quit actions. A green dot indicates a background task.
+- The main listening orb shows idle, listening, thinking, acting, speaking, or paused state. Click it while busy to stop the current turn.
+- Chat shows your requests, replies, tool activity, and background progress. The lower-right control opens text input; the lower-left switch pauses voice wake.
+
+## Settings
+
+There are nine categories. Less frequently changed fields are under **Advanced options**. Changes take effect after **Save & apply**; leaving with unsaved changes offers save or discard. Restore defaults preserves saved keys.
+
+| Category | Controls |
+|---|---|
+| Voice chat | Standard/realtime mode, speech provider and test, speaking rate, follow-up listening, wake-word interruption, headphone interruption, lower other audio; advanced model, URL, voice, silence and speech timeout |
+| Wake & microphone | Microphone selection/refresh, wake words, sensitivity, wake on startup, Ctrl+Alt+Space; advanced wake-word weight |
+| Language model | Provider, key/test/clear, model, thinking and effort; advanced endpoint and new-conversation timeout |
+| Computer control | Desktop and browser access, Codex/Claude Code/built-in executor, Full access/Working directory/Read only; advanced working directory, agent model, browser idle timeout, Playwright package |
+| Phone control | Enable LAN control, pair phone, revoke pairings; `remote_port` in config defaults to 47821 |
+| Appearance & startup | System/light/dark theme, floating orb, start with Windows, open window on startup |
+| Software updates | Check/install updates, daily automatic checks |
+| History | View/search, save history, clear saved chats and task records |
+| Plugins | Browse, install, update, uninstall app guides |
+
+Settings are stored in `%APPDATA%\VoiceAssistant\config.json`; manual editing is normally unnecessary. Use a distinctive wake phrase. Unsupported English words produce a pronunciation warning; Aeri uses an English pronunciation lexicon and Chinese pinyin tokens.
+
+## Providers and keys
+
+These are the presets shipped in 0.4.0, not a guarantee that a provider still offers a model. Change the model or service URL in settings if your account needs a different one.
+
+| Language model | Preset model | Environment fallback |
 |---|---|---|
-| 语音对话 | 对话方式（实时语音 / 识别+大模型）、阿里云百炼 API Key（测试 / 清除）、语速、回复后继续聆听、说唤醒词打断播报、戴耳机直接插话、对话时调低其他声音 | 音色、实时语音模型和服务地址；语音识别的单独测试、服务地址、模型、断句静音时长、唤醒后等待开口的时长 |
-| 唤醒与麦克风 | 麦克风（可刷新列表）、唤醒词、灵敏度、启动时开启语音唤醒、快捷键说话（Ctrl+Alt+空格，开会、嘈杂或不方便出声喊唤醒词时用） | 唤醒词加权 |
-| 大模型 | API Key（测试 / 清除，默认 DeepSeek）、模型、深度思考及思考强度 | 接口地址、多久没说话后开始新对话 |
-| 电脑操控 | 是否允许控制桌面软件、是否允许控制浏览器、后台智能体（Codex / Claude Code / 内置助手）、权限（完全访问 / 工作目录 / 只读） | 工作目录、智能体用的模型、浏览器闲置多久自动关闭、Playwright 包版本 |
-| 手机控制 | 是否允许手机控制、配对新手机、取消全部配对 | 端口默认 47821，在配置文件的 `remote_port` 里改 |
-| 外观与启动 | 外观（跟随系统 / 浅色 / 深色）、是否显示悬浮球、开机自动启动、启动时是否打开主界面 | |
-| 软件更新 | 当前版本、检查更新 / 安装新版本、每天自动检查更新 | |
+| OpenAI | `gpt-4.1-mini` | `OPENAI_API_KEY` |
+| Anthropic | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
+| Google Gemini | `gemini-3.8-flash` | `GEMINI_API_KEY` |
+| OpenRouter | `openai/gpt-4.1-mini` | `OPENROUTER_API_KEY` |
+| Groq | `openai/gpt-oss-120b` | `GROQ_API_KEY` |
+| DeepSeek | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| Ollama | `qwen3`, `http://localhost:11434/v1` | No key required |
+| Custom | `default`, `http://localhost:8000/v1` | Configure endpoint/model; key optional |
 
-配置保存在 `%APPDATA%\VoiceAssistant\config.json`，一般不需要手动编辑。
+OpenAI-compatible providers use Chat Completions; Anthropic and the DeepSeek preset use the Anthropic message format.
 
-唤醒词建议用四个音节的词（默认“你好电脑”）：三个字的常用词容易被相近的话误唤醒，比如“小助手”会被“小猪手套”触发。
+| Voice path | Providers in 0.4.0 |
+|---|---|
+| Standard recognition | Local sherpa-onnx; OpenAI (`gpt-transcribe`); Groq (`whisper-large-v3-turbo`); Alibaba DashScope (`fun-asr-realtime`) |
+| Standard speech output | Installed Windows SAPI voices; prefers a matching English/Chinese voice, then Natural/Neural if exposed through SAPI |
+| Optional realtime | OpenAI (`gpt-realtime-2`, `marin`) or Alibaba DashScope (`qwen-audio-3.1-realtime-plus`, `longanqian_v3.1`) |
 
-## 手机控制（安卓 App）
+Realtime sends audio to its provider for transcription and speech. With an LLM key configured, your selected language model handles reasoning and tools; otherwise the realtime model can handle them. Typed requests use the Standard path. Realtime connection failure can fall back to Standard recognition.
 
-人不在电脑跟前（躺在沙发上、离麦克风远）时，用同一个 Wi-Fi 下的安卓手机操控 Aeri。手机直接连电脑，不经过任何服务器，只接受局域网连接。
+OpenAI recognition and realtime can share the saved OpenAI LLM key or `OPENAI_API_KEY`; an explicit voice key takes priority. Groq recognition can use `GROQ_API_KEY`. DashScope uses `DASHSCOPE_API_KEY`. Saved keys take priority over environment fallbacks and are protected with Windows DPAPI for the current Windows account.
 
-- **按住说话**：像发语音消息一样按住、说完松开，声音从手机麦克风实时传给电脑，回答照常从电脑播出；电脑没有麦克风也能用。助手正在回答时按下会先停下再听你说。
-- **打字**：发文字命令，手机输入法的语音输入也能用。
-- **实时同步**：对话、状态（待机 / 正在听 / 思考中 / 正在回答）、后台任务进度都和电脑一致；忙的时候可以点“停止”。
-- **快捷控制**：暂停或恢复语音唤醒、调音量、静音、播放 / 暂停、上一首 / 下一首。
-- **App 跟着电脑更新**：电脑上的 Aeri 更新后会带着同版本的手机 App。手机连上时如果发现电脑上的更新，顶部会提示“电脑上有新版 App”，点“更新”就从电脑直接传过来（不走外网），核对无误后打开系统安装界面，你点一次“更新”确认即可，配对不会丢。第一次更新时系统会让你允许 Aeri 安装应用。
+Codex and Claude Code use their own CLI installations and login sessions. Install and sign in to the chosen CLI separately; the built-in executor uses Aeri's selected language model.
 
-第一次使用：
+## History and longer tasks
 
-1. 电脑上打开 设置 → 手机控制 → “允许手机控制”，点“保存并应用”。第一次打开时 Windows 防火墙会询问，请允许 Aeri 访问“专用网络”。
-2. 手机安装 App（约 1.4 MB）：GitHub Release 里的 `Aeri-vX.Y.Z-android.apk`，或者电脑上安装目录里的 `android\Aeri.apk`（`%LOCALAPPDATA%\Programs\VoiceAssistant\android\Aeri.apk`）。打开后会自动在局域网里找到电脑。以后的更新由电脑传给手机，不用再手动装。
-3. 电脑上点“配对新手机”，把显示的 6 位配对码填进手机，点“配对”。之后手机会记住这台电脑，电脑换了 IP 也能自动找到。
+History is enabled by default. Chats and completed task records are kept for 30 days under `%APPDATA%\VoiceAssistant\history\YYYY-MM-DD.jsonl`. Startup restores recent chat messages for display. **History → View** opens a searchable local page. The current pruning code runs at startup and uses a 30-day window relative to the newest saved day, so an inactive installation can retain older records until a later cleanup. Turning saving off stops new records; use **Clear** and then **Confirm clear** to delete existing records (confirmation expires after three seconds).
 
-设置里的“取消全部配对”会让所有手机断开、下次要重新配对。App 只在前台时连着电脑，切到后台就断开。手机和电脑之间的协议见 [android/PROTOCOL.md](../android/PROTOCOL.md)。
+Long jobs can run in the background while you keep talking. Only one background task runs at a time. In the current session, ask to continue or retry a task with its earlier context. Saved results can be searched after restart; they do not restore a running task or its in-memory continuation state. Reminders are stored separately in `reminders.json` and survive restarts.
 
-## API Key 详细说明
+## Phone control (Android app)
 
-打开程序窗口的“设置”页，在对应的 API Key 框里粘贴 key，点“测试”确认可用，再点“保存并应用”，不需要敲任何命令：
+The Android app connects directly to the PC on the same LAN. It supports push-to-talk, typed requests, stop, wake pause/resume, volume, mute, and media controls. Replies play on the PC. A PC microphone is not required for phone speech input.
 
-| key | 在哪里创建 | 用途 |
-|---|---|---|
-| DeepSeek | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | 大模型 |
-| 阿里云百炼 | [百炼控制台](https://bailian.console.aliyun.com/) 的 API-KEY 页面 | 实时语音对话和语音识别，只在唤醒后上传音频；实时语音模型按百炼的计费规则收费 |
+1. Enable **Settings → Phone control**, save, and allow Windows Firewall access on your private network.
+2. Install `Aeri-vX.Y.Z-android.apk` from Releases, or `android\Aeri.apk` beside the PC executable. Use Android 8 or newer and the same Wi-Fi network.
+3. Click **Pair new phone** on the PC and enter its six-digit code on the phone.
 
-后台智能体用的是它们自己的登录：
+The app discovers the PC on the LAN and remembers pairing. **Revoke all pairings** disconnects phones and requires pairing again. The app disconnects in the background. When a newer APK is bundled with the PC, the phone offers a local transfer, verification, and the Android installation prompt. Keep the signing certificate consistent across updates. See the [remote protocol](../android/PROTOCOL.md).
 
-- Codex：`npm install -g @openai/codex` 后运行一次 `codex` 登录（ChatGPT 账号或 OpenAI key）。
-- Claude Code：`npm install -g @anthropic-ai/claude-code` 后运行一次 `claude` 并 `/login`。没登录时助手会直接告诉你“Claude Code 还没登录”。
+LAN transport is not encrypted. Enable it only on a trusted network; see [safety and limitations](safety.md).
 
-key 用 Windows DPAPI 加密后存在配置文件里，只有当前 Windows 账户能解密；界面上不会再显示 key 本身，只显示状态。也兼容系统环境变量 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`（界面里没填时才使用）。
-
-
-[← 返回 README](../README.md)
+[← README](../README.md)

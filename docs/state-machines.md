@@ -1,37 +1,37 @@
-# 状态机清单
+# State machines
 
-Aeri 里有不少“这一刻处在哪个阶段”的状态。凡是用几个布尔值、数字或 `Option` 拼出来的，都容易出现**不该存在的组合**：比如“没按着说话键，却在等着开始听手机”。这份清单列出每一个状态机，以及它现在用什么表示、为什么。
+This inventory reflects Aeri 0.4.0. [简体中文](zh-CN/state-machines.md)
 
-**规则**：一个东西有三个以上的阶段，或者有几个布尔值互相牵连，就写成 `enum`，在类型旁边用注释画出转换图。改状态的函数尽量集中在一个地方。
+Use an `enum` when a feature has several dependent phases rather than unrelated booleans that allow impossible combinations. Document transitions beside the type and keep state-changing operations together. Independent two-state flags and simple caches do not need a larger state machine.
 
-[← 返回 README](../README.md)
+## Explicit states
 
-## 已经是显式的
-
-| 状态机 | 位置 | 状态 | 说明 |
-|---|---|---|---|
-| 助手状态 | `assistant::Status` | 待机 / 正在听 / 思考 / 执行 / 播报 / 暂停 | 界面、悬浮球、手机都按它显示。界面那边是数字（0–5），两边注释写明对应关系 |
-| **麦克风模式** | `audio::Mode` | Idle / Capture / Muted / Paused / Barge | 原来是 5 个 `u8` 常量，任何数字都能传进去；改成枚举，类型旁边写了谁负责哪一步转换 |
-| **手机按住说话** | `audio::PhoneTurn` + `held` | None → Requested → Running → None / Served | 原来是 5 个布尔值（held、active、requested、turn、served），能组合出 32 种情况。现在拆成两个维度：手指按没按着（`held`），和“听手机”这一轮进行到哪一步。`active` 不再单独存，改为由这两者算出来 |
-| **悬浮球左键** | `ball::Pointer` | Up / Pressed / Dragging | 原来是“按下位置（Option）+ 是否在拖（bool）”，会出现“没按下却在拖”的组合 |
-| **手机控制服务** | `remote::Phase` | Off / Starting / Listening / Failed(原因) | 原来是服务句柄、错误文字、是否在监听三个独立变量。现在带启动编号（generation），被替换掉的旧服务晚到的报错不会覆盖新服务的状态 |
-| 后台任务 | `tasks::State` | Running / Done / Failed / Cancelled | 一直是枚举；结束时写进历史记录 |
-| 历史记录清空 | `app.slint` 的 `history-confirm` | 普通 → 等确认（3 秒）→ 普通 | 两个状态，一个布尔值加定时器就够了 |
-
-## 暂时保持原样的
-
-这几处也能算状态机，但现在的写法问题不大，改了收益小、风险大，先不动：
-
-| 状态机 | 位置 | 为什么不改 |
+| Machine | Source | Representation and transitions |
 |---|---|---|
-| 软件更新按钮 | `main.rs` 的 `UPDATE_CHECK / INSTALL / BUSY` | 要和 Slint 界面共享，Slint 的 `int` 最简单；只有三个值，都集中在 `wire_update` 一处 |
-| 设置页未保存提示 | `app.slint` 的 `settings-dirty`、`leave-pending`、`settings-note` | 三个值描述的是不同的事（有改动、正要离开、上次保存的结果），组合基本都合法 |
-| 悬浮球显示 | `ball.rs` 的 `enabled`、`visible`、`shown` | `shown` 是由 `visible` 和“前台是否全屏”算出来、缓存下来的，只在 `apply_visibility` 一处更新 |
-| 浏览器控制会话 | `browser.rs` 的 `Option<Session>` | 只有“有 / 没有”两种 |
-| 桌面快照 | `desktop.rs` 的 `Option<String>` | 只是缓存上一次的快照 |
+| Assistant | `assistant::Status` | `Idle=0`, `Listening=1`, `Thinking=2`, `Acting=3`, `Speaking=4`, `Paused=5`; shared display contract for Slint, orb, phone |
+| Microphone routing | `audio::Mode` | `Idle → Capture → Muted → Barge`; `Barge → Capture` on wake interruption; end returns to `Idle` or `Paused` |
+| Phone push-to-talk | `audio::PhoneTurn` plus independent `held` | `None → Requested → Running → None` if released, or `Served` if still held; prevents repeated turns from one press |
+| Orb pointer | `ball::Pointer` | `Up → Pressed → Dragging → Up`; release while only pressed is a click |
+| Phone server | `remote::Phase` | `Off → Starting → Listening` or `Failed(reason)`; generation guards reject late events from replaced servers |
+| Background task | `tasks::State` | `Running → Done / Failed / Cancelled`; completed results can be persisted to history |
+| History deletion | `history-confirm` in Slint | Normal → confirmation pending → normal; timeout after three seconds |
 
-## 给 AI 智能体的提示
+`audio::Mode` describes where microphone samples go, not what the UI displays. `Muted` drops samples; `Barge` runs wake-word detection while speaking. The separate phone `held` flag allows a short press to finish a buffered turn even if release occurred before recognition started.
 
-- 想知道助手现在在干什么，看 `assistant::Status`；想知道麦克风的声音会被送去哪里，看 `audio::mode()`。
-- 改 `audio::Mode` 的转换前，先读 `audio.rs` 里 `Mode` 上方的转换说明。手机相关的改动要同时跑 `phone_press_starts_at_most_one_turn` 和 `phone_release_before_turn_still_runs_it` 这两个测试。
-- 新加一个有阶段的功能时，先写 `enum` 和它的转换图注释，再写逻辑。
+## Deliberately simple representations
+
+| State | Location | Reason |
+|---|---|---|
+| Update action | `UPDATE_CHECK / INSTALL / BUSY` in `main.rs` | Three integer values shared with Slint, centralized in `wire_update` |
+| Unsaved settings | `settings-dirty`, `leave-pending`, `settings-note` in Slint | Different facts: pending edits, attempted navigation, result message |
+| Orb visibility | `enabled`, `visible`, `shown` in `ball.rs` | `shown` caches the result of requested visibility and foreground full-screen state in `apply_visibility` |
+| Browser session | `Option<Session>` in `tools/browser.rs` | Present or absent |
+| Desktop snapshot | `Option<String>` in `tools/desktop.rs` | Cache, not a multiphase operation |
+
+## When changing transitions
+
+Read the transition comments in [audio.rs](../src/audio.rs) before changing microphone or phone behavior. Retain coverage from `phone_press_starts_at_most_one_turn` and `phone_release_before_turn_still_runs_it`; run the suite through `build.ps1 -Test` as described in [development](development.md). Standard/local recognition and optional realtime share these routing states; do not assume `Capture` always means cloud upload.
+
+Persisted history is not a new task state: it records results for viewing and search across restarts. Active task handles and continuation context remain session-local.
+
+[← README](../README.md)

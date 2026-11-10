@@ -1,52 +1,41 @@
-# 轻和快：细节与实测
+# Performance
 
-## 轻：常驻不拖累电脑
+Applies to the architecture in 0.4.0. The measurements below are historical, not a new 0.4.0 benchmark. [简体中文](zh-CN/performance.md)
 
-- **一个进程，几十 MB 内存**：Rust 编写，没有 Python、Node、Electron 运行时，不带浏览器内核。桌面控制组件 agent-desktop 也是 Rust 写的小程序，只在操作桌面时临时运行，做完就退出，不常驻。
-- **待机几乎不吃 CPU**：唤醒词模型在本地跑，前面还有一道能量门限，安静时连模型都不用算；界面和悬浮球的动画只在工作时运行，待机不重绘。
-- **不占显卡**：界面用 Slint 软件渲染，打游戏、剪视频时不和你抢 GPU；前台全屏时悬浮球自动藏起来。
-- **装起来小**：下载包 24 MB，解压后约 56 MB（其中手机 App 1.3 MB），拷走就能用，不需要管理员权限。
-- **不用的不加载**：浏览器控制、后台智能体（Codex / Claude Code）都是用到时才启动，做完就关。
+## What affects resource use
 
-## 快：说完就办
+The Windows app uses Rust and Slint software rendering. Idle UI animations stop. Wake-word detection runs locally behind an energy gate. `agent-desktop` starts for desktop operations; Codex, Claude Code, and browser automation start when needed rather than remaining resident.
 
-- **常用的事走本地，不等大模型**：“打开计算器”“在 B 站搜 X”“音量调到 30”“锁屏”这类话由本地直达规则处理（识别+大模型模式下），立刻执行。
-- **工具本身几乎不花时间**：算数、查时间、找应用、查文件信息、电脑状态都在本进程里完成，不到 1 毫秒；读屏幕文字约 0.05 秒；在整台电脑里找文件约 0.6 秒（Windows 搜索索引）。慢的只有网络和大模型思考。
-- **常用的事一步完成**：改名、查找、打开、移动复制、删除（进回收站）文件；音量调到多少、亮度、深色模式、Wi-Fi、蓝牙；截图、锁屏、睡眠、关机；窗口最大化、分屏、移到另一块屏幕；电量、磁盘、CPU、网络；精确计算；剪贴板历史；提醒和倒计时。都有专门的工具，不用让大模型在界面上一步步点。说“把这个文件……”时自动用资源管理器里选中的文件。
-- **实时语音负责听和说，你自己的大模型负责想**：音频直接流给百炼 Qwen-Audio Realtime，由它断句、转写、出声；该做什么、调什么工具由你在设置里填的大模型（默认 DeepSeek）决定，想好的回复再交给实时语音读出来。没填大模型的 key 时，才让实时语音模型自己判断。
-- **看得见屏幕**：每句话都带上你正在看的窗口；说“复制这条帖子”“这段翻译一下”时，先读屏幕上鼠标所指的那一块、选中的文字和可见内容，再直接把结果写进剪贴板，不靠模拟全选复制。
-- **能自己做的不外包**：前台直接调用本地工具完成；只有明显费时的任务才交给后台智能体，而且不阻塞对话。
-- **操作桌面软件不抢鼠标**：桌面控制用 [agent-desktop](https://github.com/vercel-labs/agent-desktop)，通过系统无障碍接口点按钮、填输入框、勾选、选下拉项，默认不移动鼠标、不把窗口切到前台，操作完读回状态确认是否真的生效；窗口在后面也能操作。
-- **随时打断**：再点一下光球立刻停下；播报时喊唤醒词就停下来听你说（系统播报实测约 0.1 秒内停下）。
-- **更新也快**：设置里一键更新，从下载、校验到替换重启，本机实测约 9 秒。
+Standard mode now defaults to **local speech recognition**. Its model is downloaded separately on first use and is not included in the app ZIP. Loading recognition, running a local LLM, browser automation, or a background agent changes memory and CPU use. The older idle figures below do not measure this new recognition path.
 
-## 本机实测
+Local fast-path rules in Standard mode handle supported common commands without an LLM call. Dedicated tools handle files, volume, windows, screenshots, reminders, calculation, and system information. Other requests include recognition, network latency, model reasoning, tools, and speech synthesis. Realtime mode uses its provider for listening and speech, and generally uses the configured LLM for reasoning; it does not use the spoken fast-path rules.
 
-测试机：AMD Ryzen 5 5600（6 核 12 线程）、16 GB 内存、Windows 11 专业版；Aeri v0.3.1 发布版，只显示悬浮球、开着语音唤醒待机。
+## Recorded measurements
 
-**占用**
+Source: the project's pre-pivot performance notes. Test PC: AMD Ryzen 5 5600 (6 cores/12 threads), 16 GB RAM, Windows 11 Pro. Idle measurements used **Aeri 0.3.1 release**, floating orb only, wake enabled, for five minutes.
 
-| 项目 | 实测 |
+| Idle metric (0.3.1) | Recorded result |
 |---|---|
-| 内存（私有） | 约 62 MB（连续 5 分钟在 61–62 MB 之间，没有增长）；工作集约 105 MB |
-| CPU（连续 5 分钟待机） | 单核 1–2%，折合整机 0.1–0.2% |
-| 常驻进程 | 1 个（agent-desktop 每次操作临时启动，启动加退出约 85 毫秒） |
-| 下载包 | 24.2 MB（zip，v0.3.5；v0.3.1 时 22.4 MB） |
-| 解压后 | 55.6 MB（v0.3.5）：aeri.exe 24.4 MB、agent-desktop 3.3 MB、4 个 DLL 21.4 MB（唤醒词推理引擎）、唤醒词模型 5.2 MB、手机 App 1.3 MB |
+| Private memory | 61–62 MB; working set about 105 MB |
+| CPU | 1–2% of one core; about 0.1–0.2% of the whole machine |
+| Resident app processes | 1; desktop helper starts temporarily |
 
-**速度**（每项连续调用 3 次取中位数，不含网络和大模型思考时间）
+The following timings were recorded in the same 0.3.1 test notes (median of three calls, excluding network/model time). The update timing includes download and restart.
 
-| 操作 | 耗时 |
+| Operation | Recorded time |
 |---|---|
-| 算数、查时间、找应用、查文件信息、电脑状态（电量 / 内存 / 磁盘） | 不到 1 毫秒 |
-| 读当前窗口的文字（screen_read） | 约 46 毫秒 |
-| 列出打开的窗口（agent-desktop） | 约 175 毫秒 |
-| 在整台电脑里按名字找文件（Windows 搜索索引） | 约 0.6 秒 |
-| 读一个窗口的全部控件（agent-desktop 快照） | 约 0.7 秒（编辑器窗口；越复杂越慢） |
-| 后台智能体连接本程序的工具（`aeri.exe --mcp` 启动到首次应答） | 27 毫秒 |
-| 软件内更新（下载 22 MB、校验、替换、重启） | 约 9 秒 |
+| Calculation, time, app lookup, file information, PC status | Under 1 ms |
+| Read current window text (`screen_read`) | About 46 ms |
+| List windows (desktop helper) | About 175 ms |
+| File-name search using Windows Search index | About 0.6 s |
+| Full controls snapshot (editor window) | About 0.7 s |
+| MCP process startup to first response | 27 ms |
+| In-app update (22 MB download, verify, replace, restart) | About 9 s |
 
-> 对话进行中、后台任务运行时占用会高一些：Codex / Claude Code 只在有任务时启动，做完就退出；浏览器控制第一次使用要启动 Edge，会慢几秒。
+Package sizes were measured separately on **0.3.5**: 24.2 MB ZIP, 55.6 MB extracted (24.4 MB executable, 3.3 MB desktop helper, 21.4 MB DLLs, 5.2 MB wake model, 1.3 MB Android app). These are not 0.4.0 download or installed-size claims.
 
+## Rechecking on 0.4.0
 
-[← 返回 README](../README.md)
+Record the version, hardware, Windows version, voice mode/provider, loaded models, and whether background agents/browser processes are included. Measure idle separately from first model download/load, recognition, and active tasks. Use several runs and report network/model time separately from local tool time. No fresh 0.4.0 resource or latency measurements are supplied here.
+
+[User guide](guide.md) · [← README](../README.md)
