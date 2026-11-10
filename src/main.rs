@@ -413,7 +413,7 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_llm_providers(ModelRc::from(Rc::new(VecModel::from(llm::PRESETS.iter().map(|p| slint::SharedString::from(p.name)).collect::<Vec<_>>()))));
     w.set_llm_provider_index(llm::PRESETS.iter().position(|p| p.id == c.llm_provider).unwrap_or(7) as i32);
     w.set_asr_provider_index(ASR_PROVIDERS.iter().position(|p| *p == c.asr_provider).unwrap_or(3) as i32);
-    w.set_realtime_provider_index(if c.realtime_provider == "openai" { 1 } else { 0 });
+    w.set_realtime_provider_index(realtime::IDS.iter().position(|p| *p == c.realtime_provider).unwrap_or(0) as i32);
     w.set_llm_key_input("".into());
     w.set_llm_base_url(c.llm_base_url.as_str().into());
     w.set_llm_model(c.llm_model.as_str().into());
@@ -494,7 +494,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     if c.llm_provider != provider.id { c.llm_key_env = provider.env.into(); }
     c.llm_provider = provider.id.into();
     c.asr_provider = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize].into();
-    c.realtime_provider = if w.get_realtime_provider_index() == 1 { "openai" } else { "dashscope" }.into();
+    c.realtime_provider = realtime::IDS[w.get_realtime_provider_index().clamp(0, realtime::IDS.len() as i32 - 1) as usize].into();
     c.llm_base_url = text(w.get_llm_base_url());
     c.llm_model = text(w.get_llm_model());
     c.llm_thinking = w.get_llm_thinking();
@@ -937,11 +937,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let weak = window.as_weak();
     window.on_realtime_provider_changed(move |index| {
         let Some(w) = weak.upgrade() else { return };
-        let defaults = if index == 1 {
-            ("wss://api.openai.com/v1/realtime", "gpt-realtime-2", "marin")
-        } else {
-            ("wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "qwen-audio-3.1-realtime-plus", "longanqian_v3.1")
-        };
+        let defaults = realtime::Provider::defaults(realtime::IDS[index.clamp(0, realtime::IDS.len() as i32 - 1) as usize]);
         w.set_realtime_url(defaults.0.into());
         w.set_realtime_model(defaults.1.into());
         w.set_realtime_voice(defaults.2.into());
@@ -1138,8 +1134,11 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             let mut c = config::load();
             if asr {
                 if w.get_frontend_index() == 0 {
-                    if w.get_realtime_provider_index() == 1 { c.realtime_openai_api_key_protected.clear(); }
-                    else { c.asr_api_key_protected.clear(); }
+                    match w.get_realtime_provider_index() {
+                        1 => c.realtime_openai_api_key_protected.clear(),
+                        0 => c.asr_api_key_protected.clear(),
+                        i => { c.stt_api_keys_protected.remove(&format!("realtime-{}", realtime::IDS[(i as usize).min(realtime::IDS.len() - 1)])); }
+                    }
                 } else {
                     let id = ASR_PROVIDERS[w.get_asr_provider_index().clamp(0, 8) as usize];
                     if id == "dashscope" { c.asr_api_key_protected.clear(); }

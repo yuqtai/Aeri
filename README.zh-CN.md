@@ -126,7 +126,7 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 
 语音也可以自由选择：识别可以用内置的离线模型（Moonshine、Whisper、SenseVoice、Parakeet）、本机自己搭的识别服务（Qwen3-ASR、faster-whisper 等兼容 OpenAI 接口的），或 OpenAI、Groq、Deepgram、ElevenLabs、Azure、Gemini、阿里云；朗读可以用 Windows 声音或 OpenAI、ElevenLabs、Azure。
 
-只需要这一个 Key：语音识别默认在本机离线完成（第一次使用时自动下载模型），回答用 Windows 自带的声音读出来。想要更自然的实时语音，可以在 设置 → 语音对话 里换成阿里云百炼或 OpenAI 的实时语音。
+只需要这一个 Key：语音识别默认在本机离线完成（第一次使用时自动下载模型），回答用 Windows 自带的声音读出来。想要更自然的实时语音，可以在 设置 → 语音对话 里换成实时语音：阿里云百炼、OpenAI、Azure OpenAI、xAI Grok，或任何兼容 OpenAI Realtime 接口的服务。
 
 想用手机操控（可选）：
 

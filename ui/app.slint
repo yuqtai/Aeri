@@ -1566,7 +1566,7 @@ export component AppWindow inherits Window {
                         NavRow {
                             icon: Icons.nav-voice;
                             title: @tr("Voice chat");
-                            summary: (root.frontend-index == 0 ? @tr("Realtime voice") + @tr(" · ") + (root.realtime-provider-index == 1 ? "OpenAI" : @tr("Alibaba DashScope"))
+                            summary: (root.frontend-index == 0 ? @tr("Realtime voice") + @tr(" · ") + (root.realtime-provider-index == 1 ? "OpenAI" : root.realtime-provider-index == 2 ? "Azure OpenAI" : root.realtime-provider-index == 3 ? "xAI Grok" : root.realtime-provider-index == 4 ? @tr("Custom") : @tr("Alibaba DashScope"))
                                     : @tr("Standard") + @tr(" · ") + (root.asr-provider-index == 0 ? @tr("Local recognition") : root.asr-provider-index == 1 ? "OpenAI" : root.asr-provider-index == 2 ? "Groq" : @tr("Alibaba DashScope")))
                                 + @tr(" · ") + (root.asr-key-state == 0 ? @tr("Needs a key") : root.asr-key-state == 4 ? @tr("Key test failed") : @tr("Ready"));
                             warn: root.asr-key-state == 0 || root.asr-key-state == 4;
@@ -1692,10 +1692,16 @@ export component AppWindow inherits Window {
                             title: root.frontend-index == 1 ? @tr("Speech recognition") : @tr("Voice provider");
                             hint: root.frontend-index == 1 ? @tr("Local is free and works offline after a one-time verified model download.") : @tr("Realtime models listen and speak; your language model handles tools.");
                             if root.frontend-index == 0: Select {
-                                options: [@tr("Alibaba DashScope"), @tr("OpenAI")];
+                                options: [@tr("Alibaba DashScope"), @tr("OpenAI"), @tr("Azure OpenAI"), @tr("xAI Grok"), @tr("Custom (OpenAI Realtime-compatible)")];
                                 current <=> root.realtime-provider-index;
                                 selected(index) => { root.realtime-provider-changed(index); }
                             }
+                        }
+                        if root.frontend-index == 0 && (root.realtime-provider-index == 2 || root.realtime-provider-index == 4): FieldBlock {
+                            title: root.realtime-provider-index == 2 ? @tr("Azure endpoint and deployment") : @tr("Service URL and model");
+                            hint: root.realtime-provider-index == 2 ? @tr("Replace YOUR-RESOURCE with your Azure OpenAI resource name; the model is your realtime deployment name.") : @tr("Any server that implements the OpenAI Realtime API. API key is optional.");
+                            TextField { text <=> root.realtime-url; }
+                            TextField { text <=> root.realtime-model; }
                             if root.frontend-index == 1: Select {
                                 options: [@tr("Local (offline)"), @tr("OpenAI"), @tr("Groq Whisper"), @tr("Alibaba DashScope"), @tr("Deepgram"), @tr("ElevenLabs"), @tr("Azure AI Speech"), @tr("Google Gemini"), @tr("Custom (OpenAI-compatible)")];
                                 current <=> root.asr-provider-index;

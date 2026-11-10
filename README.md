@@ -97,7 +97,7 @@ One Rust process, no browser engine, no GPU use. The wake word runs locally; aud
 
 Prefer another provider? Aeri also works with Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, a local Ollama model, or any OpenAI-compatible endpoint. Pick it in **Settings → Language model**.
 
-Voice is just as open. Speech recognition: built-in offline models (Moonshine, Whisper, SenseVoice, Parakeet), any local server with the OpenAI transcription API (Qwen3-ASR, faster-whisper…), or OpenAI, Groq, Deepgram, ElevenLabs, Azure, Gemini. Speech output: Windows voices, or OpenAI, ElevenLabs, Azure. Optional realtime voice: OpenAI or Alibaba DashScope.
+Voice is just as open. Speech recognition: built-in offline models (Moonshine, Whisper, SenseVoice, Parakeet), any local server with the OpenAI transcription API (Qwen3-ASR, faster-whisper…), or OpenAI, Groq, Deepgram, ElevenLabs, Azure, Gemini. Speech output: Windows voices, or OpenAI, ElevenLabs, Azure. Optional realtime voice: OpenAI, Azure OpenAI, xAI Grok, Alibaba DashScope, or any server with the OpenAI Realtime API.
 
 New versions install from inside the app (Settings → Updates).
 

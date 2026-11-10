@@ -847,3 +847,26 @@ msgstr "直接说话打断播报"
 msgid "Start talking while Aeri reads a reply and it stops to listen. With speakers, speak a little louder than the reply"
 msgstr "Aeri 读回复时直接开口说话，它会停下来听你说。用外放时说话声音要比播报大一些"
 
+msgid "Azure OpenAI"
+msgstr "Azure OpenAI"
+
+msgid "xAI Grok"
+msgstr "xAI Grok"
+
+msgid "Custom (OpenAI Realtime-compatible)"
+msgstr "自定义（兼容 OpenAI Realtime）"
+
+msgid "Azure endpoint and deployment"
+msgstr "Azure 地址和部署名"
+
+msgid "Service URL and model"
+msgstr "服务地址和模型"
+
+msgid "Replace YOUR-RESOURCE with your Azure OpenAI resource name; the model is your realtime deployment name."
+msgstr "把 YOUR-RESOURCE 换成你的 Azure OpenAI 资源名；模型填你的实时语音部署名。"
+
+msgid "Any server that implements the OpenAI Realtime API. API key is optional."
+msgstr "任何实现了 OpenAI Realtime 接口的服务都可以，API Key 可以不填。"
+
+msgid "Custom"
+msgstr "自定义"

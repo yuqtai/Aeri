@@ -1,4 +1,5 @@
-//! DashScope and OpenAI realtime voice adapters. Input is 16 kHz microphone
+//! Realtime voice adapters: Alibaba DashScope, and the OpenAI Realtime protocol
+//! (OpenAI, Azure OpenAI, xAI Grok, or any compatible server). Input is 16 kHz microphone
 //! audio; events expose 24 kHz PCM16 for the existing player.
 
 use std::time::Duration;
@@ -15,11 +16,36 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 pub const VOICE_PROMPT: &str = "你是语音播报员，只负责把文字读出来。用户消息里“【朗读】”后面的文字，用自然、口语的语气原样读出来，一字不改，不要回答、解释或补充任何内容。没有【朗读】标记的内容一律不要回应。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Provider { DashScope, OpenAi }
+pub enum Provider { DashScope, OpenAi, Azure, Xai, Custom }
+
+/// Ids in the order shown in Settings
+pub const IDS: [&str; 5] = ["dashscope", "openai", "azure", "xai", "custom"];
 
 impl Provider {
     pub fn from_id(id: &str) -> Self {
-        if id == "openai" { Self::OpenAi } else { Self::DashScope }
+        match id {
+            "openai" => Self::OpenAi,
+            "azure" => Self::Azure,
+            "xai" => Self::Xai,
+            "custom" => Self::Custom,
+            _ => Self::DashScope,
+        }
+    }
+
+    /// Speaks the OpenAI Realtime protocol (24 kHz audio, GA event names)
+    fn openai_like(self) -> bool {
+        self != Self::DashScope
+    }
+
+    /// (url, model, voice) defaults when the provider is picked in Settings
+    pub fn defaults(id: &str) -> (&'static str, &'static str, &'static str) {
+        match id {
+            "openai" => ("wss://api.openai.com/v1/realtime", "gpt-realtime-2", "marin"),
+            "azure" => ("wss://YOUR-RESOURCE.openai.azure.com/openai/v1/realtime", "gpt-realtime", "marin"),
+            "xai" => ("wss://api.x.ai/v1/realtime", "grok-voice-latest", "eve"),
+            "custom" => ("ws://127.0.0.1:8000/v1/realtime", "", "alloy"),
+            _ => ("wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "qwen-audio-3.1-realtime-plus", "longanqian_v3.1"),
+        }
     }
 }
 
@@ -64,6 +90,10 @@ pub struct Session {
     ws: Ws,
     provider: Provider,
     input_resampler: InputResampler,
+    /// Listen-only on a server that always answers by itself (xAI): replies we did not ask for are cancelled and dropped
+    guard_replies: bool,
+    asked: bool,
+    dropping: bool,
 }
 
 /// 连接、握手、等配置确认整体的截止时间
@@ -85,12 +115,17 @@ impl Session {
     async fn connect_inner(s: &RealtimeSettings) -> anyhow::Result<Self> {
         let url = session_url(&s.url, &s.model);
         let mut request = url.as_str().into_client_request()?;
-        request.headers_mut().insert("Authorization", format!("Bearer {}", s.api_key).parse()?);
+        if s.provider == Provider::Azure {
+            request.headers_mut().insert("api-key", s.api_key.parse()?);
+        } else if !s.api_key.is_empty() {
+            request.headers_mut().insert("Authorization", format!("Bearer {}", s.api_key).parse()?);
+        }
         let (ws, _) = tokio::time::timeout(Duration::from_secs(8), connect_async(request))
             .await
             .context("连接实时语音服务超时")?
             .context("连接实时语音服务失败（检查 API Key、模型是否已开通和网络）")?;
-        let mut session = Self { ws, provider: s.provider, input_resampler: InputResampler::default() };
+        let guard_replies = s.listen_only && s.provider == Provider::Xai;
+        let mut session = Self { ws, provider: s.provider, input_resampler: InputResampler::default(), guard_replies, asked: false, dropping: false };
         let tools: Vec<Value> = s
             .tools
             .iter()
@@ -106,7 +141,24 @@ impl Session {
             "input_audio_transcription": {"language": "zh"},
             "turn_detection": {"type": "smart_turn_v2"},
         });
-        if s.provider == Provider::OpenAi {
+        if s.provider == Provider::Xai {
+            // Close to OpenAI's protocol, but voice and turn detection sit at the top of the session
+            config = json!({
+                "instructions": s.instructions,
+                "voice": s.voice,
+                "turn_detection": {"type": "server_vad"},
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": "grok-transcribe", "language_hint": crate::locale::pick("en", "zh")}
+                    },
+                    "output": {"format": {"type": "audio/pcm", "rate": 24000}, "speed": s.speech_rate.clamp(0.5, 1.5)}
+                }
+            });
+            if !s.tools.is_empty() {
+                config["tools"] = json!(s.tools.iter().map(|t| json!({"type":"function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"]})).collect::<Vec<_>>());
+            }
+        } else if s.provider.openai_like() {
             config = json!({
                 "type": "realtime",
                 "output_modalities": ["audio"],
@@ -146,7 +198,7 @@ impl Session {
     /// 发送 16k 单声道音频
     pub async fn send_audio(&mut self, samples: &[f32]) -> anyhow::Result<()> {
         let converted;
-        let samples = if self.provider == Provider::OpenAi {
+        let samples = if self.provider.openai_like() {
             converted = self.input_resampler.convert(samples);
             converted.as_slice()
         } else { samples };
@@ -178,6 +230,7 @@ impl Session {
     }
 
     pub async fn create_response(&mut self) -> anyhow::Result<()> {
+        self.asked = true;
         self.send(json!({"type": "response.create"})).await
     }
 
@@ -193,12 +246,31 @@ impl Session {
     /// 下一个事件；连接断开时返回错误
     pub async fn next_event(&mut self) -> anyhow::Result<Event> {
         let v = parse(self.ws.next().await)?;
+        let kind = v["type"].as_str().unwrap_or("");
+        if self.guard_replies {
+            match kind {
+                "response.created" if !self.asked => {
+                    self.dropping = true;
+                    self.cancel_response().await;
+                    return Ok(Event::Other);
+                }
+                "response.created" => self.asked = false,
+                "response.done" if self.dropping => {
+                    self.dropping = false;
+                    return Ok(Event::Other);
+                }
+                _ if self.dropping && kind.starts_with("response.") => return Ok(Event::Other),
+                _ => {}
+            }
+        }
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        Ok(match v["type"].as_str().unwrap_or("") {
+        Ok(match kind {
             "input_audio_buffer.speech_started" => Event::SpeechStarted,
             "input_audio_buffer.speech_stopped" if v["reason"] == "turn_invalid" => Event::SpeechInvalid,
             "input_audio_buffer.speech_stopped" => Event::SpeechStopped,
-            "conversation.item.input_audio_transcription.delta" => Event::UserPartial(if self.provider == Provider::OpenAi { s("delta") } else { format!("{}{}", s("text"), s("stash")) }),
+            "conversation.item.input_audio_transcription.delta" => Event::UserPartial(if self.provider.openai_like() { s("delta") } else { format!("{}{}", s("text"), s("stash")) }),
+            // xAI: the whole transcript so far
+            "conversation.item.input_audio_transcription.updated" => Event::UserPartial(s("transcript")),
             "conversation.item.input_audio_transcription.completed" => Event::UserText(s("transcript")),
             "response.output_audio_transcript.delta" | "response.output_text.delta" | "response.audio_transcript.delta" | "response.text.delta" => Event::Transcript(s("delta")),
             "response.output_audio.delta" | "response.audio.delta" => Event::Audio(base64_decode(v["delta"].as_str().unwrap_or(""))),
@@ -385,6 +457,84 @@ mod tests {
         assert!(matches!(session.next_event().await.unwrap(), Event::Transcript(t) if t == "Hi"));
         assert!(matches!(session.next_event().await.unwrap(), Event::Audio(b) if b == [1,2,3,4]));
         assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(t) if t == "cancelled"));
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn xai_listen_only_drops_replies_it_did_not_ask_for() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, req) = (listener.accept().await.unwrap().0, ());
+            let _ = req;
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let update = parse(ws.next().await).unwrap();
+            assert_eq!(update["session"]["voice"], "eve");
+            assert_eq!(update["session"]["turn_detection"]["type"], "server_vad");
+            assert_eq!(update["session"]["audio"]["input"]["transcription"]["model"], "grok-transcribe");
+            ws.send(Message::text(json!({"type":"session.updated"}).to_string())).await.unwrap();
+            // The server answers the user on its own: Aeri must cancel it and hide its audio
+            for event in [
+                json!({"type":"conversation.item.input_audio_transcription.updated","transcript":"Hel"}),
+                json!({"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello"}),
+                json!({"type":"response.created"}),
+            ] { ws.send(Message::text(event.to_string())).await.unwrap(); }
+            assert_eq!(parse(ws.next().await).unwrap()["type"], "response.cancel");
+            for event in [
+                json!({"type":"response.output_audio.delta","delta":"AQIDBA=="}),
+                json!({"type":"response.done","response":{"status":"cancelled"}}),
+            ] { ws.send(Message::text(event.to_string())).await.unwrap(); }
+            // Then Aeri asks for the reply it wants read aloud
+            assert_eq!(parse(ws.next().await).unwrap()["type"], "conversation.item.create");
+            assert_eq!(parse(ws.next().await).unwrap()["type"], "response.create");
+            for event in [
+                json!({"type":"response.created"}),
+                json!({"type":"response.output_audio.delta","delta":"AQIDBA=="}),
+                json!({"type":"response.done","response":{"status":"completed"}}),
+            ] { ws.send(Message::text(event.to_string())).await.unwrap(); }
+            while ws.next().await.is_some() {}
+        });
+        let mut cfg = settings(format!("ws://{addr}/v1/realtime"));
+        cfg.provider = Provider::Xai;
+        cfg.listen_only = true;
+        cfg.voice = "eve".into();
+        let mut session = Session::connect(&cfg).await.unwrap();
+        assert!(matches!(session.next_event().await.unwrap(), Event::UserPartial(t) if t == "Hel"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::UserText(t) if t == "Hello"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::Other)); // own reply cancelled
+        assert!(matches!(session.next_event().await.unwrap(), Event::Other)); // its audio dropped
+        assert!(matches!(session.next_event().await.unwrap(), Event::Other)); // its done dropped
+        session.read_aloud("Hi").await.unwrap();
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseCreated));
+        assert!(matches!(session.next_event().await.unwrap(), Event::Audio(b) if b == [1,2,3,4]));
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(t) if t == "completed"));
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn azure_uses_api_key_header() {
+        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut seen = (String::new(), false);
+            let mut ws = tokio_tungstenite::accept_hdr_async(tcp, |req: &Request, resp: Response| {
+                seen = (req.headers().get("api-key").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default(), req.headers().contains_key("Authorization"));
+                Ok(resp)
+            }).await.unwrap();
+            assert_eq!(seen, ("secret".to_string(), false));
+            let update = parse(ws.next().await).unwrap();
+            assert_eq!(update["session"]["type"], "realtime");
+            ws.send(Message::text(json!({"type":"session.updated"}).to_string())).await.unwrap();
+            while ws.next().await.is_some() {}
+        });
+        let mut cfg = settings(format!("ws://{addr}/openai/v1/realtime"));
+        cfg.provider = Provider::Azure;
+        cfg.api_key = "secret".into();
+        let session = Session::connect(&cfg).await.unwrap();
         session.close().await;
         server.await.unwrap();
     }

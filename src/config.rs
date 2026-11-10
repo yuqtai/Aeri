@@ -386,12 +386,26 @@ fn openai_key(cfg: &Config) -> Option<String> {
 // OpenAI voice shares the encrypted LLM key; other LLM providers can coexist
 // with a separately saved voice key or OPENAI_API_KEY.
 pub fn realtime_key(cfg: &Config) -> Option<String> {
-    if cfg.realtime_provider == "openai" {
-        unprotect_key(&cfg.realtime_openai_api_key_protected)
-            .or_else(|| openai_key(cfg))
-    } else {
-        unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env))
+    match cfg.realtime_provider.as_str() {
+        "openai" => unprotect_key(&cfg.realtime_openai_api_key_protected).or_else(|| openai_key(cfg)),
+        "azure" => realtime_slot_key(cfg, "AZURE_OPENAI_API_KEY"),
+        "xai" => realtime_slot_key(cfg, "XAI_API_KEY"),
+        // A local server may not need a key
+        "custom" => realtime_slot_key(cfg, "").or_else(|| Some(String::new())),
+        _ => unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env)),
     }
+}
+
+/// Realtime providers other than OpenAI and DashScope keep their key under "realtime-<id>"
+fn realtime_slot(provider: &str) -> String {
+    format!("realtime-{provider}")
+}
+
+fn realtime_slot_key(cfg: &Config, env: &str) -> Option<String> {
+    cfg.stt_api_keys_protected
+        .get(&realtime_slot(&cfg.realtime_provider))
+        .and_then(|v| unprotect_key(v))
+        .or_else(|| if env.is_empty() { None } else { env_key(env) })
 }
 
 pub fn asr_key(cfg: &Config) -> Option<String> {
@@ -407,7 +421,14 @@ pub fn asr_key(cfg: &Config) -> Option<String> {
 
 pub fn voice_key_slot(cfg: &mut Config) -> &mut String {
     if cfg.voice_frontend == "realtime" {
-        if cfg.realtime_provider == "openai" { &mut cfg.realtime_openai_api_key_protected } else { &mut cfg.asr_api_key_protected }
+        match cfg.realtime_provider.as_str() {
+            "openai" => &mut cfg.realtime_openai_api_key_protected,
+            "dashscope" => &mut cfg.asr_api_key_protected,
+            other => {
+                let slot = realtime_slot(other);
+                cfg.stt_api_keys_protected.entry(slot).or_default()
+            }
+        }
     } else if cfg.asr_provider != "dashscope" {
         cfg.stt_api_keys_protected.entry(cfg.asr_provider.clone()).or_default()
     } else { &mut cfg.asr_api_key_protected }
@@ -441,7 +462,11 @@ pub fn azure_region(cfg: &Config) -> String {
 
 pub fn voice_protected(cfg: &Config) -> &str {
     if cfg.voice_frontend == "realtime" {
-        if cfg.realtime_provider == "openai" { &cfg.realtime_openai_api_key_protected } else { &cfg.asr_api_key_protected }
+        match cfg.realtime_provider.as_str() {
+            "openai" => &cfg.realtime_openai_api_key_protected,
+            "dashscope" => &cfg.asr_api_key_protected,
+            other => cfg.stt_api_keys_protected.get(&realtime_slot(other)).map(String::as_str).unwrap_or(""),
+        }
     } else if cfg.asr_provider != "dashscope" {
         cfg.stt_api_keys_protected.get(&cfg.asr_provider).map(String::as_str).unwrap_or("")
     } else { &cfg.asr_api_key_protected }
