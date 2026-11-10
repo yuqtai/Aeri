@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{HLOCAL, LocalFree};
 use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default = "Config::legacy_defaults")]
 pub struct Config {
     // 唤醒
     pub wake_words: Vec<String>,
@@ -30,6 +30,8 @@ pub struct Config {
     pub save_history: bool,
 
     // 云端流式识别（阿里云百炼 fun-asr-realtime）
+    pub asr_provider: String,
+    pub stt_api_keys_protected: std::collections::BTreeMap<String, String>,
     pub asr_url: String,
     pub asr_model: String,
     /// DPAPI 加密后的 key（十六进制）
@@ -42,6 +44,9 @@ pub struct Config {
     pub asr_speech_timeout_secs: u64,
 
     // 大模型（Anthropic Messages 格式，默认 DeepSeek）
+    pub llm_provider: String,
+    pub llm_key_provider: String,
+    pub llm_api_keys_protected: std::collections::BTreeMap<String, String>,
     pub llm_base_url: String,
     pub llm_api_key_protected: String,
     pub llm_key_env: String,
@@ -63,6 +68,8 @@ pub struct Config {
     // 语音对话
     /// realtime（实时语音模型，边说边回、可打断）/ classic（识别 + 大模型 + 系统播报）
     pub voice_frontend: String,
+    pub realtime_provider: String,
+    pub realtime_openai_api_key_protected: String,
     pub realtime_url: String,
     pub realtime_model: String,
     pub realtime_voice: String,
@@ -106,8 +113,8 @@ fn legacy_version() -> u32 {
     0
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    fn legacy_defaults() -> Self {
         Self {
             // 四个音节的唤醒词最不容易误触发；“小助手”这类三字词会被“小猪手套”误唤醒
             wake_words: vec!["你好电脑".into()],
@@ -121,12 +128,17 @@ impl Default for Config {
             duck_others: true,
             auto_update: true,
             save_history: true,
+            asr_provider: "dashscope".into(),
+            stt_api_keys_protected: Default::default(),
             asr_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
             asr_model: "fun-asr-realtime".into(),
             asr_api_key_protected: String::new(),
             asr_key_env: "DASHSCOPE_API_KEY".into(),
             asr_sentence_silence_ms: 800,
             asr_speech_timeout_secs: 6,
+            llm_provider: "deepseek".into(),
+            llm_key_provider: "deepseek".into(),
+            llm_api_keys_protected: Default::default(),
             llm_base_url: "https://api.deepseek.com/anthropic".into(),
             llm_api_key_protected: String::new(),
             llm_key_env: "DEEPSEEK_API_KEY".into(),
@@ -139,6 +151,8 @@ impl Default for Config {
             agent_workdir: String::new(),
             agent_model: String::new(),
             voice_frontend: "realtime".into(),
+            realtime_provider: "dashscope".into(),
+            realtime_openai_api_key_protected: String::new(),
             realtime_url: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime".into(),
             realtime_model: "qwen-audio-3.1-realtime-plus".into(),
             realtime_voice: "longanqian_v3.1".into(),
@@ -161,6 +175,34 @@ impl Default for Config {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new_install(crate::locale::is_zh())
+    }
+}
+
+impl Config {
+    fn new_install(zh: bool) -> Self {
+        let mut cfg = Self::legacy_defaults();
+        cfg.voice_frontend = "classic".into();
+        cfg.asr_provider = "local".into();
+        if !zh {
+            let p = crate::llm::preset("openai");
+            cfg.llm_provider = p.id.into();
+            cfg.llm_key_provider = p.id.into();
+            cfg.llm_base_url = p.url.into();
+            cfg.llm_model = p.model.into();
+            cfg.llm_key_env = p.env.into();
+            cfg.llm_thinking = false;
+            cfg.realtime_provider = "openai".into();
+            cfg.realtime_url = "wss://api.openai.com/v1/realtime".into();
+            cfg.realtime_model = "gpt-realtime-2".into();
+            cfg.realtime_voice = "marin".into();
+        }
+        cfg
+    }
+}
+
 pub fn app_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     base.join("VoiceAssistant")
@@ -171,16 +213,10 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    let mut cfg: Config = std::fs::read_to_string(config_path())
+    let cfg: Config = std::fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if cfg.config_version < CONFIG_VERSION {
-        // v2 起默认只显示悬浮球：旧配置里“启动时显示窗口”默认是开的，迁移时关掉
-        cfg.show_window_on_start = false;
-        cfg.config_version = CONFIG_VERSION;
-        let _ = save(&cfg);
-    }
     cfg
 }
 
@@ -273,11 +309,62 @@ fn env_key(env_name: &str) -> Option<String> {
 
 /// 优先用界面里保存的 key，其次环境变量
 pub fn llm_key(cfg: &Config) -> Option<String> {
-    unprotect_key(&cfg.llm_api_key_protected).or_else(|| env_key(&cfg.llm_key_env))
+    if cfg.llm_provider == "ollama" { return Some(String::new()); }
+    unprotect_key(llm_protected(cfg)).or_else(|| env_key(&cfg.llm_key_env))
+        .or_else(|| (cfg.llm_provider == "custom").then(String::new))
+}
+
+pub fn llm_protected(cfg: &Config) -> &str {
+    if cfg.llm_provider == cfg.llm_key_provider { &cfg.llm_api_key_protected }
+    else { cfg.llm_api_keys_protected.get(&cfg.llm_provider).map(String::as_str).unwrap_or("") }
+}
+
+pub fn llm_key_slot(cfg: &mut Config) -> &mut String {
+    if cfg.llm_provider == cfg.llm_key_provider { &mut cfg.llm_api_key_protected }
+    else { cfg.llm_api_keys_protected.entry(cfg.llm_provider.clone()).or_default() }
+}
+
+fn openai_key(cfg: &Config) -> Option<String> {
+    let protected = if cfg.llm_key_provider == "openai" { &cfg.llm_api_key_protected }
+        else { cfg.llm_api_keys_protected.get("openai").map(String::as_str).unwrap_or("") };
+    unprotect_key(protected).or_else(|| env_key("OPENAI_API_KEY"))
+}
+
+// OpenAI voice shares the encrypted LLM key; other LLM providers can coexist
+// with a separately saved voice key or OPENAI_API_KEY.
+pub fn realtime_key(cfg: &Config) -> Option<String> {
+    if cfg.realtime_provider == "openai" {
+        unprotect_key(&cfg.realtime_openai_api_key_protected)
+            .or_else(|| openai_key(cfg))
+    } else {
+        unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env))
+    }
 }
 
 pub fn asr_key(cfg: &Config) -> Option<String> {
-    unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env))
+    match cfg.asr_provider.as_str() {
+        "local" => Some(String::new()),
+        "openai" => cfg.stt_api_keys_protected.get("openai").and_then(|v| unprotect_key(v))
+            .or_else(|| openai_key(cfg)),
+        "groq" => cfg.stt_api_keys_protected.get("groq").and_then(|v| unprotect_key(v)).or_else(|| env_key("GROQ_API_KEY")),
+        _ => unprotect_key(&cfg.asr_api_key_protected).or_else(|| env_key(&cfg.asr_key_env)),
+    }
+}
+
+pub fn voice_key_slot(cfg: &mut Config) -> &mut String {
+    if cfg.voice_frontend == "realtime" {
+        if cfg.realtime_provider == "openai" { &mut cfg.realtime_openai_api_key_protected } else { &mut cfg.asr_api_key_protected }
+    } else if cfg.asr_provider == "openai" || cfg.asr_provider == "groq" {
+        cfg.stt_api_keys_protected.entry(cfg.asr_provider.clone()).or_default()
+    } else { &mut cfg.asr_api_key_protected }
+}
+
+pub fn voice_protected(cfg: &Config) -> &str {
+    if cfg.voice_frontend == "realtime" {
+        if cfg.realtime_provider == "openai" { &cfg.realtime_openai_api_key_protected } else { &cfg.asr_api_key_protected }
+    } else if cfg.asr_provider == "openai" || cfg.asr_provider == "groq" {
+        cfg.stt_api_keys_protected.get(&cfg.asr_provider).map(String::as_str).unwrap_or("")
+    } else { &cfg.asr_api_key_protected }
 }
 
 /// 给界面显示的 key 状态（不显示 key 本身）
@@ -316,6 +403,46 @@ impl NoWindow for tokio::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_and_new_install_defaults_are_separate() {
+        let old: Config = serde_json::from_str(r#"{"llm_model":"my-model","show_window_on_start":true}"#).unwrap();
+        assert_eq!(old.llm_provider, "deepseek");
+        assert_eq!(old.voice_frontend, "realtime");
+        assert_eq!(old.asr_provider, "dashscope");
+        assert_eq!(old.realtime_provider, "dashscope");
+        assert_eq!(old.llm_model, "my-model");
+        assert!(old.show_window_on_start);
+        let en = Config::new_install(false);
+        assert_eq!(en.llm_provider, "openai");
+        assert_eq!(en.voice_frontend, "classic");
+        assert_eq!(en.asr_provider, "local");
+        assert_eq!(en.realtime_provider, "openai");
+        assert_eq!(en.llm_key_env, "OPENAI_API_KEY");
+        let zh = Config::new_install(true);
+        assert_eq!(zh.llm_provider, "deepseek");
+        assert_eq!(zh.realtime_provider, "dashscope");
+        let roundtrip: Config = serde_json::from_value(serde_json::to_value(&en).unwrap()).unwrap();
+        assert_eq!(roundtrip.llm_model, en.llm_model);
+        assert_eq!(roundtrip.realtime_url, en.realtime_url);
+    }
+
+    #[test]
+    fn keys_are_scoped_to_provider_and_openai_voice_can_share() {
+        let mut cfg = Config::new_install(false);
+        cfg.llm_api_key_protected = protect_key("openai-example").unwrap();
+        assert_eq!(realtime_key(&cfg).as_deref(), Some("openai-example"));
+        cfg.llm_provider = "groq".into();
+        cfg.llm_key_env.clear();
+        assert_eq!(llm_key(&cfg), None);
+        *llm_key_slot(&mut cfg) = protect_key("groq-example").unwrap();
+        assert_eq!(llm_key(&cfg).as_deref(), Some("groq-example"));
+        assert_eq!(realtime_key(&cfg).as_deref(), Some("openai-example"));
+        cfg.llm_provider = "openai".into();
+        assert_eq!(llm_key(&cfg).as_deref(), Some("openai-example"));
+        cfg.asr_provider = "openai".into();
+        assert_eq!(asr_key(&cfg).as_deref(), Some("openai-example"));
+    }
 
     #[test]
     fn key_roundtrip() {

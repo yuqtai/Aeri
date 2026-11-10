@@ -348,6 +348,7 @@ component Segmented inherits Rectangle {
 }
 
 component Select inherits Rectangle {
+    callback selected(int);
     in property <[string]> options;
     in-out property <int> current;
     height: 36px;
@@ -416,6 +417,7 @@ component Select inherits Rectangle {
                         mouse-cursor: pointer;
                         clicked => {
                             root.current = i;
+                            root.selected(i);
                             popup.close();
                         }
                     }
@@ -1078,6 +1080,14 @@ export component AppWindow inherits Window {
     in-out property <string> agent-model;
     in-out property <string> executor-status;
     in-out property <int> frontend-index;
+    in property <[string]> llm-providers;
+    in-out property <int> llm-provider-index;
+    in-out property <int> realtime-provider-index;
+    in-out property <int> asr-provider-index;
+    callback asr-provider-changed(int);
+    callback voice-mode-changed(int);
+    callback llm-provider-changed(int);
+    callback realtime-provider-changed(int);
     in-out property <string> realtime-model;
     in-out property <string> realtime-voice;
     in-out property <bool> barge-in;
@@ -1643,25 +1653,45 @@ export component AppWindow inherits Window {
                     alignment: start;
                     spacing: 8px;
                     Card {
+                        if root.frontend-index == 0: FieldBlock {
+                            title: "Voice provider";
+                            Select {
+                                options: ["Alibaba DashScope", "OpenAI"];
+                                current <=> root.realtime-provider-index;
+                                selected(index) => { root.realtime-provider-changed(index); }
+                            }
+                        }
+                        if root.frontend-index == 0: Divider { }
                         SettingRow {
                             title: "对话方式";
-                            description: root.frontend-index == 0 ? "百炼实时语音模型：边说边回，可以插话" : "先识别成文字，再由大模型回答、系统播报";
+                            description: root.frontend-index == 0 ? "Optional streaming voice; requires a provider key" : "Speech to text, your LLM, then Windows speech";
                             VerticalLayout {
                                 alignment: center;
                                 Segmented {
-                                    width: 196px;
-                                    options: ["实时语音", "识别+大模型"];
+                                    width: 280px;
+                                    options: ["Realtime", "Standard (recommended)"];
                                     current <=> root.frontend-index;
+                                    changed current => { root.voice-mode-changed(self.current); }
                                 }
                             }
                         }
                         Divider { }
+                        if root.frontend-index == 1: FieldBlock {
+                            title: "Speech recognition";
+                            hint: "Local is free and offline after a one-time verified model download.";
+                            Select {
+                                options: ["Local (offline)", "OpenAI", "Groq Whisper", "Alibaba DashScope"];
+                                current <=> root.asr-provider-index;
+                                selected(index) => { root.asr-provider-changed(index); }
+                            }
+                        }
+                        if root.frontend-index == 1: Divider { }
                         KeyBlock {
                             state: root.voice-test-state == 1 ? (root.asr-key-input != "" ? 1 : root.asr-key-state == 0 ? 0 : 1) : root.voice-test-state;
                             detail: root.voice-test-status;
                             test-label: root.frontend-index == 0 ? "测试实时语音" : "测试语音识别";
-                            placeholder: "粘贴阿里云百炼 key（留空保留已保存的）";
-                            hint: "在 bailian.console.aliyun.com 创建";
+                            placeholder: (root.frontend-index == 0 && root.realtime-provider-index == 1) || (root.frontend-index == 1 && root.asr-provider-index == 1) ? "Optional OpenAI key (shares the OpenAI LLM key)" : root.frontend-index == 1 && root.asr-provider-index == 0 ? "No key needed for local speech recognition" : root.frontend-index == 1 && root.asr-provider-index == 2 ? "Groq API key" : "DashScope API key";
+                            hint: (root.frontend-index == 0 && root.realtime-provider-index == 1) || (root.frontend-index == 1 && root.asr-provider-index == 1) ? "Uses the OpenAI LLM key or OPENAI_API_KEY when left empty" : root.frontend-index == 1 && root.asr-provider-index == 0 ? "Test downloads and loads the local model on first use" : root.frontend-index == 1 && root.asr-provider-index == 2 ? "console.groq.com" : "bailian.console.aliyun.com";
                             saved: root.asr-key-saved;
                             input <=> root.asr-key-input;
                             test => { root.test-voice(); }
@@ -1908,11 +1938,21 @@ export component AppWindow inherits Window {
                             : "“识别 + 大模型”模式下必须填写。";
                     }
                     Card {
+                        FieldBlock {
+                            title: "Model provider";
+                            hint: "Selecting a provider fills its defaults. Replace the key when changing services.";
+                            Select {
+                                options: root.llm-providers;
+                                current <=> root.llm-provider-index;
+                                selected(index) => { root.llm-provider-changed(index); }
+                            }
+                        }
+                        Divider { }
                         KeyBlock {
                             state: root.llm-key-state;
                             detail: root.llm-key-status;
                             placeholder: "粘贴新的 key（留空表示不修改）";
-                            hint: "默认用 DeepSeek，在 platform.deepseek.com 创建；key 加密保存在本机";
+                            hint: "API keys are encrypted on this PC. Ollama needs no key.";
                             saved: root.llm-key-saved;
                             input <=> root.llm-key-input;
                             test => { root.test-llm(); }
@@ -1921,7 +1961,7 @@ export component AppWindow inherits Window {
                         Divider { }
                         FieldBlock {
                             title: "模型";
-                            hint: "deepseek-flash 快且便宜；deepseek-v4-pro 更强";
+                            hint: "Use a model available to your account; local Ollama models must be pulled first.";
                             TextField { text <=> root.llm-model; }
                         }
                         Divider { }
@@ -1950,7 +1990,7 @@ export component AppWindow inherits Window {
                     if root.show-advanced: Card {
                         FieldBlock {
                             title: "接口地址";
-                            hint: "Anthropic Messages 格式的接口";
+                            hint: "Provider base URL; Custom uses OpenAI Chat Completions";
                             TextField { text <=> root.llm-base-url; }
                         }
                         Divider { }
