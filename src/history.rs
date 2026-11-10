@@ -190,47 +190,8 @@ pub fn open_viewer() -> Result<(), String> {
     }
 }
 
-const VIEWER: &str = r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aeri 历史记录</title><style>
-:root{--bg:#f6f7fb;--card:#fff;--text:#111827;--sub:#6b7280;--line:#e5e7eb;--accent:#4f46e5;--soft:#eef2ff;--ok:#16a34a;--bad:#dc2626}
-@media (prefers-color-scheme:dark){:root{--bg:#0f111a;--card:#191c28;--text:#f3f4f6;--sub:#9ca3af;--line:#2a2e3d;--accent:#818cf8;--soft:#22264a;--ok:#4ade80;--bad:#f87171}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 "Microsoft YaHei UI",system-ui,sans-serif}
-header{position:sticky;top:0;background:var(--bg);padding:20px 16px 12px;border-bottom:1px solid var(--line);z-index:1}
-.wrap{max-width:820px;margin:0 auto}h1{font-size:20px;margin:0 0 12px}
-.bar{display:flex;gap:8px;flex-wrap:wrap}input{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);font:inherit}
-button{padding:8px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);font:inherit;cursor:pointer}button.on{background:var(--accent);border-color:var(--accent);color:#fff}
-main{padding:8px 16px 60px}h2{font-size:14px;color:var(--sub);margin:28px 0 10px;font-weight:600}
-.msg{display:flex;gap:12px;padding:6px 0}.time{flex:none;width:44px;color:var(--sub);font-size:12px;padding-top:3px}
-.body{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}.u .body{color:var(--accent);font-weight:600}.tool .body{color:var(--sub);font-size:13px}.sys .body{color:var(--sub);font-size:13px;font-style:italic}
-.task{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:8px 0}
-.task .head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-weight:600}.tag{font-size:12px;padding:1px 8px;border-radius:99px;background:var(--soft);color:var(--accent);font-weight:500}
-.tag.done{color:var(--ok)}.tag.failed{color:var(--bad)}.task .meta{color:var(--sub);font-size:12px;margin:2px 0 6px}
-details summary{cursor:pointer;color:var(--sub);font-size:13px}details div{white-space:pre-wrap;word-break:break-word;margin-top:6px;font-size:14px}
-.empty{color:var(--sub);text-align:center;padding:60px 0}mark{background:#fde68a;color:inherit;border-radius:3px}
-</style></head><body>
-<header><div class="wrap"><h1>Aeri 历史记录</h1><div class="bar"><input id="q" placeholder="搜索对话和任务…" autofocus>
-<button data-f="all" class="on">全部</button><button data-f="task">只看任务</button></div></div></header>
-<main class="wrap" id="list"></main>
-<script>
-const DATA=__DATA__;let filter="all";
-const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const hl=(s,q)=>{s=esc(s);if(!q)return s;const i=q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");return s.replace(new RegExp(i,"gi"),m=>"<mark>"+m+"</mark>")};
-const STATE={done:"已完成",failed:"失败",cancelled:"已取消"};
-function render(){const q=document.getElementById("q").value.trim();const ql=q.toLowerCase();let html="";
-for(const d of DATA){let rows="";for(const e of d.items){
- const hay=(e.text+" "+(e.task?e.task.description+" "+e.task.result:"")).toLowerCase();
- if(ql&&!hay.includes(ql))continue;if(filter==="task"&&e.kind!=="task")continue;
- if(e.kind==="task"){const t=e.task,m=Math.floor(t.secs/60),s=t.secs%60;
-  rows+=`<div class="task"><div class="head">任务 #${t.id}<span class="tag ${t.state}">${STATE[t.state]||t.state}</span></div>
-  <div class="meta">${e.t} · ${esc(t.executor)} · 用时 ${m?m+" 分 ":""}${s} 秒</div><div>${hl(t.description,q)}</div>
-  ${t.result?`<details${q?" open":""}><summary>完整结果</summary><div>${hl(t.result,q)}</div></details>`:""}</div>`;}
- else{const c=["u","a","tool","sys"][e.role]||"a";rows+=`<div class="msg ${c}"><div class="time">${e.t.slice(0,5)}</div><div class="body">${e.role===0?"你：":""}${hl(e.text,q)}</div></div>`;}}
- if(rows)html+=`<h2>${d.day}</h2>`+rows;}
-document.getElementById("list").innerHTML=html||'<div class="empty">没有找到记录</div>';}
-document.getElementById("q").oninput=render;
-for(const b of document.querySelectorAll("button[data-f]"))b.onclick=()=>{filter=b.dataset.f;for(const x of document.querySelectorAll("button[data-f]"))x.classList.toggle("on",x===b);render()};
-render();
-</script></body></html>"#;
+/// 历史记录网页（单文件，数据替换 __DATA__ 后写到 history.html）
+const VIEWER: &str = include_str!("history_viewer.html");
 
 // ---------- 给助手用的工具 ----------
 

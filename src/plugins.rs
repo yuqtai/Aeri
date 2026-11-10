@@ -15,7 +15,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config;
 
-const BUILTIN: &[&str] = &[include_str!("../plugins/siyuan/PLUGIN.md"), include_str!("../plugins/notepad/PLUGIN.md")];
+/// 随程序自带的插件；其余的（思源笔记、Obsidian 等）在插件市场里按需安装
+const BUILTIN: &[&str] = &[include_str!("../plugins/notepad/PLUGIN.md")];
 pub const MARKET_REPO: &str = "yuqtai/aeri-plugins";
 /// 一次最多自动带几份说明书，免得上下文太长
 const MAX_AUTO: usize = 2;
@@ -423,10 +424,10 @@ mod tests {
     fn builtins_parse() {
         let list: Vec<Plugin> = BUILTIN.iter().filter_map(|t| parse(t, true)).collect();
         assert_eq!(list.len(), BUILTIN.len());
-        let s = list.iter().find(|p| p.id == "siyuan").unwrap();
-        assert_eq!(s.matches, vec!["siyuan.exe"]);
-        assert!(s.keywords.contains(&"思源".to_string()));
-        assert!(s.body.starts_with("思源是"));
+        let n = list.iter().find(|p| p.id == "notepad").unwrap();
+        assert_eq!(n.matches, vec!["notepad.exe"]);
+        assert!(n.keywords.contains(&"记事本".to_string()));
+        assert!(!list.iter().any(|p| p.id == "siyuan"), "思源改为从市场安装");
     }
 
     #[test]
@@ -434,10 +435,10 @@ mod tests {
         let ids = |t: &str, e: &[&str]| -> Vec<String> {
             matching(t, &e.iter().map(|s| s.to_string()).collect::<Vec<_>>()).into_iter().map(|p| p.id).collect()
         };
-        assert_eq!(ids("记到思源笔记里吧", &["msedge.exe"]), vec!["siyuan"]);
-        assert_eq!(ids("把这段保存一下", &["SiYuan.exe"]), vec!["siyuan"]);
+        assert_eq!(ids("在记事本里写一句话", &["msedge.exe"]), vec!["notepad"]);
+        assert_eq!(ids("把这段保存一下", &["Notepad.exe"]), vec!["notepad"]);
         // 只在后面的窗口里不算
-        assert!(ids("今天天气怎么样", &["msedge.exe", "SiYuan.exe"]).is_empty());
+        assert!(ids("今天天气怎么样", &["msedge.exe", "Notepad.exe"]).is_empty());
     }
 
     #[test]
