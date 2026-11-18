@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -44,6 +46,10 @@ data class UiState(
     val chats: List<Chat> = emptyList(),
     /** 正按着说话键 */
     val talking: Boolean = false,
+    /** 电脑当前音量百分比（0..100），未知时为空 */
+    val volumePercent: Int? = null,
+    /** 电脑当前是否静音 */
+    val volumeMuted: Boolean = false,
     /** 连续连不上的次数 */
     val failures: Int = 0,
     /** 手机上装的 App 版本 */
@@ -106,6 +112,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var pairing: FoundPc? = null
     private val mic = Mic()
     private var talkStarted = 0L
+    private var talkListeningSeen = false
 
     private fun notice(text: String) {
         _notices.tryEmit(text)
@@ -132,7 +139,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         socket?.cancel()
         val gen = ++generation
         _ui.update { it.copy(link = Link.Connecting) }
-        val request = Request.Builder().url("ws://$host:$port/").build()
+        val request = runCatching {
+            check(port in 1..65535) { "invalid port" }
+            Request.Builder().url("ws://$host:$port/").build()
+        }.getOrElse {
+            if (pairing != null) {
+                pairing = null
+                _ui.update { it.copy(link = Link.Offline) }
+                _pair.update { it.copy(busy = false, error = INVALID_ADDR_MSG) }
+            } else {
+                lost()
+            }
+            return
+        }
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 webSocket.send(first.toString())
@@ -200,9 +219,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val target = pairing
         if (target != null) {
             pairing = null
+            val addr = if (target.port == DEFAULT_PORT) target.host else "${target.host}:${target.port}"
             _ui.update { it.copy(link = Link.Offline) }
             _pair.update {
-                it.copy(busy = false, error = "连不上 ${target.host}：确认电脑上打开了手机控制，手机和电脑连的是同一个 Wi-Fi")
+                it.copy(
+                    busy = false,
+                    error = "连不上 $addr：请确认电脑开启了手机控制、连在同一 Wi-Fi，且 Windows 防火墙已允许 Aeri 通过“公用网络/专用网络”",
+                )
             }
             return
         }
@@ -256,6 +279,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     pairing = null
                     val error = when (msg.optString("reason")) {
                         "bad_code" -> "配对码不对，再看一下电脑上的 6 位数字"
+                        "too_many_attempts" -> "输错次数太多，配对码已作废：请在电脑上再点一次“配对新手机”"
                         "save_failed" -> "电脑没能保存配对信息，请重试"
                         else -> "电脑上没有在配对，或者配对码过期了：请在电脑的 设置 → 手机控制 里点“配对新手机”"
                     }
@@ -274,23 +298,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     for (i in 0 until (history?.length() ?: 0)) add(parseChat(history!!.getJSONObject(i)))
                 }
                 val status = msg.optInt("status")
-                // 电脑上带的 App 比手机上的新：提示更新
+                // 电脑上带的 App 比手机上的新（含预发布版升正式版如 0.4.9-rc.1 -> 0.4.9）：提示更新
                 val update = msg.optJSONObject("app")?.let {
                     AppUpdate(it.optLong("version_code"), it.optString("version_name"), it.optLong("size"))
-                }?.takeIf { it.versionCode > installedCode }
+                }?.takeIf {
+                    it.versionCode > installedCode ||
+                        (it.versionCode == installedCode && it.versionName.isNotEmpty() && it.versionName != installedName)
+                }
+                val vol = msg.optJSONObject("volume")
                 val old = _ui.value.saved
                 val renamed = old?.copy(name = msg.optString("pc", old.name))
                 if (renamed != null && renamed != old) Store.save(getApplication(), renamed)
                 _ui.update {
+                    val listenOn = if (msg.has("listening")) msg.optBoolean("listening") else listenFrom(status, it.listenOn)
                     it.copy(
                         saved = renamed ?: it.saved,
                         link = Link.Online,
                         failures = 0,
                         status = status,
-                        listenOn = listenFrom(status, it.listenOn),
+                        listenOn = listenOn,
                         partial = msg.optString("partial"),
                         taskRunning = msg.optBoolean("task_running"),
                         chats = chats,
+                        volumePercent = if (vol != null && vol.has("percent")) vol.optInt("percent").coerceIn(0, 100) else it.volumePercent,
+                        volumeMuted = vol?.optBoolean("muted", it.volumeMuted) ?: it.volumeMuted,
                         appUpdate = update,
                     )
                 }
@@ -299,6 +330,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "status" -> {
                 val status = msg.optInt("s")
                 _ui.update { it.copy(status = status, listenOn = listenFrom(status, it.listenOn)) }
+                if (_ui.value.talking) {
+                    if (status == Status.LISTENING) {
+                        talkListeningSeen = true
+                    } else if (talkListeningSeen && status in intArrayOf(
+                            Status.THINKING,
+                            Status.ACTING,
+                            Status.SPEAKING,
+                            Status.IDLE,
+                            Status.PAUSED,
+                        )
+                    ) {
+                        // 服务端已进入本轮识别并转入处理/回答/结束，自动停止本地采集
+                        dropTalking(notifyServer = true)
+                    }
+                }
             }
 
             "partial" -> _ui.update { it.copy(partial = msg.optString("text")) }
@@ -309,6 +355,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             "task_running" -> _ui.update { it.copy(taskRunning = msg.optBoolean("on")) }
+            "volume" -> _ui.update {
+                it.copy(
+                    volumePercent = msg.optInt("percent", it.volumePercent ?: 0).coerceIn(0, 100),
+                    volumeMuted = msg.optBoolean("muted", it.volumeMuted),
+                )
+            }
             "clear" -> _ui.update { it.copy(chats = emptyList()) }
         }
     }
@@ -341,19 +393,75 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 手动填的地址：192.168.1.8 或 192.168.1.8:47821 */
+    private fun parseValidHost(raw: String): String? {
+        val host = raw.trim()
+        if (host.isEmpty() || host.length > 253) return null
+        if (host.startsWith('.') || host.endsWith('.') || ".." in host) return null
+        val labels = host.split('.')
+        if (labels.any { it.isEmpty() || it.length > 63 }) return null
+        // 纯数字点分输入必须严格为 4 段 0..255 的 IPv4 地址
+        if (labels.all { part -> part.all { it in '0'..'9' } }) {
+            if (labels.size != 4) return null
+            val octets = labels.map { part ->
+                if (part.length > 3) return null
+                val n = part.toIntOrNull() ?: return null
+                if (n !in 0..255) return null
+                n
+            }
+            return octets.joinToString(".")
+        }
+        // 主机名校验（ASCII 字母/数字/连字符，首尾非连字符，末段不全为数字）
+        for (label in labels) {
+            if (label.startsWith('-') || label.endsWith('-')) return null
+            if (!label.all { (it in 'a'..'z') || (it in 'A'..'Z') || (it in '0'..'9') || it == '-' }) return null
+        }
+        if (labels.last().all { it in '0'..'9' }) return null
+        return host
+    }
+
+    private fun isValidEndpoint(host: String, port: Int): Boolean {
+        val normalized = parseValidHost(host) ?: return false
+        if (port !in 1..65535) return false
+        return runCatching {
+            HttpUrl.Builder().scheme("http").host(normalized).port(port).build()
+        }.isSuccess
+    }
+
+    /** 手动填的地址：严格校验 IPv4/主机名格式与端口范围 1..65535（例如 192.168.1.8 或 192.168.1.8:47821） */
     fun manualTarget(text: String): FoundPc? {
         val t = text.trim()
-        if (t.isEmpty()) return null
-        val host = t.substringBefore(':').trim()
-        if (host.isEmpty()) return null
-        val port = t.substringAfter(':', "").trim().toIntOrNull() ?: DEFAULT_PORT
+        if (t.isEmpty() || t.count { it == ':' } > 1) return null
+        val hostRaw: String
+        val port: Int
+        if (':' in t) {
+            hostRaw = t.substringBefore(':').trim()
+            val portPart = t.substringAfter(':').trim()
+            if (portPart.isEmpty() || !portPart.all { it in '0'..'9' }) return null
+            port = portPart.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+        } else {
+            hostRaw = t
+            port = DEFAULT_PORT
+        }
+        val host = parseValidHost(hostRaw) ?: return null
+        if (!isValidEndpoint(host, port)) return null
         return FoundPc(host, port, host, "")
     }
 
+    fun reportInvalidAddress() {
+        _pair.update { it.copy(error = INVALID_ADDR_MSG) }
+    }
+
+    fun clearPairError() {
+        if (_pair.value.error != null) _pair.update { it.copy(error = null) }
+    }
+
     fun pairWith(pc: FoundPc, code: String) {
-        if (code.length != 6) {
-            _pair.update { it.copy(error = "配对码是 6 位数字") }
+        if (!isValidEndpoint(pc.host, pc.port)) {
+            _pair.update { it.copy(busy = false, error = INVALID_ADDR_MSG) }
+            return
+        }
+        if (code.length != 6 || !code.all { it in '0'..'9' }) {
+            _pair.update { it.copy(busy = false, error = "配对码是 6 位数字") }
             return
         }
         pairing = pc
@@ -413,7 +521,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 按住说话 ----------
 
-    /** 按下说话键：手机麦克风的声音实时传给电脑。调用前要确认已经有录音权限 */
+    /** 按下说话键：先确认手机麦克风成功打开，再通知电脑开始收音，防止麦克风被占用时误杀电脑播报/思考 */
     fun startTalking(): Boolean {
         if (_ui.value.talking) return true
         val ws = socket
@@ -421,13 +529,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             notice("还没连上电脑")
             return false
         }
-        ws.send(JSONObject().put("t", "ptt").put("on", true).toString())
-        talkStarted = SystemClock.elapsedRealtime()
-        if (!mic.start { chunk -> ws.send(chunk.toByteString()) }) {
-            ws.send(JSONObject().put("t", "ptt").put("on", false).put("cancel", true).toString())
+        val sendLock = Any()
+        var pttSent = false
+        val preChunks = ArrayList<ByteString>(4)
+        val started = mic.start { chunk ->
+            val bytes = chunk.toByteString()
+            synchronized(sendLock) {
+                if (pttSent) {
+                    ws.send(bytes)
+                } else {
+                    preChunks.add(bytes)
+                }
+            }
+        }
+        if (!started) {
             notice("麦克风打不开，可能被别的应用占用了")
             return false
         }
+        val sent = synchronized(sendLock) {
+            val ok = ws.send(JSONObject().put("t", "ptt").put("on", true).toString())
+            if (ok) {
+                for (b in preChunks) ws.send(b)
+                pttSent = true
+            }
+            preChunks.clear()
+            ok
+        }
+        if (!sent) {
+            viewModelScope.launch(Dispatchers.IO) { mic.stop() }
+            notice("还没连上电脑")
+            return false
+        }
+        talkStarted = SystemClock.elapsedRealtime()
+        talkListeningSeen = (_ui.value.status == Status.LISTENING)
         _ui.update { it.copy(talking = true) }
         return true
     }
@@ -436,6 +570,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopTalking(cancel: Boolean = false) {
         if (!_ui.value.talking) return
         _ui.update { it.copy(talking = false) }
+        talkListeningSeen = false
         val ws = socket
         val tooShort = SystemClock.elapsedRealtime() - talkStarted < MIN_TALK_MS
         viewModelScope.launch(Dispatchers.IO) {
@@ -451,11 +586,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         notice("需要麦克风权限才能按住说话：请在系统设置里允许 Aeri 使用麦克风")
     }
 
-    /** 连接断了：录音停掉就行（电脑那边连接断开时会自动松开） */
-    private fun dropTalking() {
+    /** 连接断了或服务端本轮收音已结束：停掉本地采集（在线结束时同步告知电脑松开说话状态） */
+    private fun dropTalking(notifyServer: Boolean = false) {
         if (!_ui.value.talking) return
         _ui.update { it.copy(talking = false) }
-        viewModelScope.launch(Dispatchers.IO) { mic.stop() }
+        talkListeningSeen = false
+        val ws = if (notifyServer) socket else null
+        viewModelScope.launch(Dispatchers.IO) {
+            mic.stop()
+            ws?.send(JSONObject().put("t", "ptt").put("on", false).toString())
+        }
     }
 
     // ---------- App 更新：从电脑下载新版，核对后交给系统安装 ----------
@@ -496,10 +636,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         if (_ui.value.appDownload != null) return
         if (!app.packageManager.canRequestPackageInstalls()) {
-            notice("请允许 Aeri 安装应用，然后回到这里再点一次“更新”")
-            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${app.packageName}"))
+            val tip = "请允许 Aeri 安装应用，然后回到这里再点一次“更新”"
+            Toast.makeText(app, tip, Toast.LENGTH_LONG).show()
+            val pkgUri = Uri.parse("package:${app.packageName}")
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkgUri)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { app.startActivity(intent) }
+            runCatching { app.startActivity(intent) }.onFailure {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { app.startActivity(fallback) }.onFailure {
+                    notice(tip)
+                }
+            }
             return
         }
         if (send(JSONObject().put("t", "get_app"))) _ui.update { it.copy(appDownload = 0f) }
@@ -537,7 +685,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "app_error" -> {
                 download?.abort()
                 download = null
-                onMain { failDownload("电脑上没有找到手机 App 安装包") }
+                val reason = msg.optString("reason")
+                onMain {
+                    if (reason == "missing") {
+                        _ui.update { it.copy(appDownload = null, appUpdate = null) }
+                        notice("电脑上没有找到手机 App 安装包（可能已被移动或未随发布版打包）")
+                    } else {
+                        failDownload("电脑读取手机 App 安装包失败，请再试一次")
+                    }
+                }
             }
         }
     }
@@ -589,8 +745,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         http.dispatcher.executorService.shutdown()
     }
 
-    private companion object {
-        const val MAX_CHATS = 200
-        const val MIN_TALK_MS = 400L
+    companion object {
+        const val INVALID_ADDR_MSG = "电脑地址或端口格式不对（例如 192.168.1.8 或 192.168.1.8:47821）"
+        private const val MAX_CHATS = 200
+        private const val MIN_TALK_MS = 400L
     }
 }

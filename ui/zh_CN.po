@@ -942,3 +942,51 @@ msgstr "保存在本机，点眼睛图标可以显示。留空则使用环境变
 
 msgid "https:// = OpenAI speech API; wss://…/api-ws/… = Alibaba / Qwen (CosyVoice)."
 msgstr "https:// 是 OpenAI 语音接口，wss://…/api-ws/… 是阿里 / 千问（CosyVoice）"
+
+msgid "Copy"
+msgstr "复制"
+
+msgid "Copied"
+msgstr "已复制"
+
+msgid "No voice API key configured yet"
+msgstr "还没有填写语音 API Key"
+
+msgid "No language model API key configured yet"
+msgstr "还没有填写大模型 API Key"
+
+msgid "One more step: add a voice API key"
+msgstr "还差一步：填写语音 API Key"
+
+msgid "Enter an API key for the selected voice service, or switch to free Local (offline) recognition in Settings."
+msgstr "请为所选语音服务填写 API Key，或在设置里切换到免费的“本地（离线）”识别。"
+
+msgid "One more step: add a language model API key"
+msgstr "还差一步：填写大模型 API Key"
+
+msgid "Speech recognition is ready. Add a language model API key (or select local Ollama) to chat and control your PC."
+msgstr "语音识别已就绪；请填写大模型 API Key（或选择本地 Ollama）以开始对话和操控电脑。"
+
+msgid "Set up model"
+msgstr "去设置大模型"
+
+msgid "Stored on this computer. Use the eye button to show it. Ollama needs no key."
+msgstr "保存在本机，点眼睛图标可以显示；Ollama 不需要 key。"
+
+msgid "Codex, Claude Code, and the built-in assistant can only edit files in the working directory; desktop actions use built-in tools"
+msgstr "Codex、Claude Code 与内置助手都只能改工作目录里的文件，桌面操作走自带工具"
+
+msgid "Codex, Claude Code, and the built-in assistant can only view and answer; modifying tools are blocked"
+msgstr "Codex、Claude Code 与内置助手都只能查看和回答，修改类工具均被拦截"
+
+msgid "Leave blank to use your home folder; enforced for Codex, Claude Code, and the built-in assistant"
+msgstr "留空使用用户目录；Codex、Claude Code 与内置助手同样遵守"
+
+msgid "Leave blank to use the agent’s default model (the built-in assistant uses the Language model setting)"
+msgstr "留空使用智能体自己的默认模型（内置助手默认用大模型页的模型）"
+
+msgid "Use the Android app on the same Wi-Fi to type, hold to talk, stop, and adjust volume. Local networks only. When Windows Firewall asks, allow both Private and Public networks (home Wi-Fi is often set to Public by default)."
+msgstr "同一个 Wi-Fi 下用安卓 App 打字、按住说话、停止和调音量。只接受局域网连接；第一次打开时 Windows 防火墙会询问，请允许 Aeri 访问当前网络（专用网络和公用网络都勾上，家庭 Wi-Fi 常被系统默认设为公用网络）。"
+
+msgid "Confirm unpair"
+msgstr "再点确认取消"

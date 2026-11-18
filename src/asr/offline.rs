@@ -49,9 +49,10 @@ pub(super) fn recognizer(id: &str, dir: &std::path::Path) -> anyhow::Result<sher
             c.model_config.whisper.task = Some("transcribe".into());
             c.model_config.whisper.tail_paddings = -1;
         }
-        _ => bail!("Unknown offline model"),
+        _ => bail!("{}", crate::locale::pick("Unknown offline model", "未知离线语音模型")),
     }
-    sherpa_onnx::OfflineRecognizer::create(&c).context("Could not load the offline speech model")
+    sherpa_onnx::OfflineRecognizer::create(&c)
+        .context(crate::locale::pick("Could not load the offline speech model", "加载离线语音模型失败"))
 }
 
 pub(super) async fn recognize(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<f32>>, mut partial: impl FnMut(&str)) -> anyhow::Result<Option<String>> {

@@ -4,8 +4,9 @@
 //! - 识别 + 大模型：fun-asr 识别一句话 → 本地直达规则 / DeepSeek → 系统播报。
 //! 两种都支持播报时说唤醒词打断。
 
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -172,11 +173,36 @@ const MIC_RETRY: Duration = Duration::from_secs(5);
 const REALTIME_FOLLOW_UP: Duration = Duration::from_secs(8);
 /// 播报结束后再等一会儿才重新收音，避免扬声器余音被当成用户说话
 const ECHO_TAIL: Duration = Duration::from_millis(500);
+/// 本地大模型模式下，SpeechStopped 后最多等百炼自发回复多久；超时未收到则直接放行待朗读内容
+const AUTO_TURN_MAX_WAIT: Duration = Duration::from_millis(1500);
+
+fn missing_asr_key_msg() -> &'static str {
+    crate::locale::pick(
+        "Speech recognition needs an API key for the selected provider. Add it in Settings and select Save.",
+        "还没有设置所选语音识别服务的 API Key：请在“设置”页填写后点“保存并应用”。",
+    )
+}
+
+fn missing_voice_key_msg() -> &'static str {
+    crate::locale::pick(
+        "Voice conversation needs an API key for the selected provider. Add it in Settings and select Save.",
+        "还没有设置所选语音服务的 API Key：请在“设置 → 语音对话”填写并保存后即可语音对话。",
+    )
+}
+
+enum DeferredCmd {
+    Cmd(Command),
+    /// 收到 Command::Text 时已立刻回显过用户气泡，轮到执行时不再重复回显
+    EchoedText { text: String, generation: u64 },
+}
 
 struct Assistant {
     cfg: Config,
     ui: UiSink,
     cmd_tx: UnboundedSender<Command>,
+    cmd_rx: UnboundedReceiver<Command>,
+    deferred_cmds: VecDeque<DeferredCmd>,
+    pending_reload: Option<Config>,
     apps: Arc<AppIndex>,
     tasks: Arc<TaskManager>,
     reminders: Arc<Reminders>,
@@ -199,7 +225,7 @@ struct Assistant {
     phone: bool,
 }
 
-pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: UnboundedSender<Command>, ui: UiSink) {
+pub async fn run(cfg: Config, rx: UnboundedReceiver<Command>, cmd_tx: UnboundedSender<Command>, ui: UiSink) {
     let apps = Arc::new(AppIndex::load_cached());
     {
         let apps = apps.clone();
@@ -222,6 +248,9 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
         cfg,
         ui,
         cmd_tx,
+        cmd_rx: rx,
+        deferred_cmds: VecDeque::new(),
+        pending_reload: None,
         apps,
         tasks,
         reminders,
@@ -239,61 +268,15 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
     let mut mic_retry = tokio::time::interval(MIC_RETRY);
 
     loop {
+        a.apply_pending_reload();
+        if let Some(deferred) = a.deferred_cmds.pop_front() {
+            a.run_deferred(deferred).await;
+            continue;
+        }
         tokio::select! {
-            cmd = rx.recv() => {
+            cmd = a.cmd_rx.recv() => {
                 let Some(cmd) = cmd else { break };
-                a.turn = STOP.turn();
-                match cmd {
-                    Command::Wake(_word) => {
-                        // 耳朵检测到唤醒词时会立刻切到录音模式；如果此后模式被改过（比如期间在处理别的命令），这个唤醒已过时
-                        let fresh = a.ear.is_some() && a.mode() == Mode::Capture;
-                        if a.listening && fresh {
-                            #[cfg(debug_assertions)]
-                            println!("[唤醒] {_word}");
-                            a.conversation(None, Origin::Wake).await;
-                        } else if a.mode() == Mode::Capture {
-                            // 耳朵已切到录音但这次唤醒不算数：恢复模式并丢掉已录下的，免得堆积或串入下一轮
-                            a.go_idle();
-                        }
-                    }
-                    Command::Talk => a.conversation(None, Origin::Manual).await,
-                    Command::PhoneTalk => {
-                        // 手机按一下就松开了（没存下声音）时不用开始
-                        if audio::phone_begin_turn() {
-                            a.phone = true;
-                            a.conversation(None, Origin::Phone).await;
-                        } else {
-                            a.go_idle();
-                        }
-                    }
-                    Command::Text(text) => a.text_command(&text, true).await,
-                    Command::TextSubmitted { text, generation } => {
-                        a.emit(UiEvent::TextStarted(generation));
-                        if !text_is_stale(generation) {
-                            a.text_command(&text, false).await;
-                        }
-                    }
-                    Command::SetListening(on) => {
-                        a.listening = on;
-                        a.go_idle();
-                    }
-                    Command::MicChanged => {
-                        let was_ok = a.ear.is_some();
-                        a.ear = None; // 先释放旧的
-                        match a.restart_ear() {
-                            Ok(name) if !was_ok => a.chat(Role::System, crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string()),
-                            Ok(_) => {}
-                            Err(_) => a.chat(Role::System, crate::locale::pick("Microphone disconnected. It will recover when reconnected; you can type for now.", "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。")),
-                        }
-                        a.go_idle();
-                    }
-                    Command::ClearHistory => {
-                        if let Some(agent) = a.agent.as_mut() {
-                            agent.clear();
-                        }
-                    }
-                    Command::Reload(new_cfg) => a.reload(new_cfg),
-                }
+                a.run_command(cmd).await;
             }
             done = a.done_rx.recv() => {
                 if let Some(done) = done {
@@ -313,6 +296,79 @@ pub async fn run(cfg: Config, mut rx: UnboundedReceiver<Command>, cmd_tx: Unboun
 }
 
 impl Assistant {
+    async fn run_deferred(&mut self, deferred: DeferredCmd) {
+        match deferred {
+            DeferredCmd::Cmd(cmd) => self.run_command(cmd).await,
+            DeferredCmd::EchoedText { text, generation } => {
+                self.turn = STOP.turn();
+                if !text_is_stale(generation) {
+                    self.text_command(&text, false).await;
+                }
+            }
+        }
+    }
+
+    async fn run_command(&mut self, cmd: Command) {
+        self.turn = STOP.turn();
+        match cmd {
+            Command::Wake(_word) => {
+                // 耳朵检测到唤醒词时会立刻切到录音模式；如果此后模式被改过（比如期间在处理别的命令），这个唤醒已过时
+                let fresh = self.ear.is_some() && self.mode() == Mode::Capture;
+                if self.listening && fresh {
+                    #[cfg(debug_assertions)]
+                    println!("[唤醒] {_word}");
+                    self.conversation(None, Origin::Wake).await;
+                } else if self.mode() == Mode::Capture {
+                    // 耳朵已切到录音但这次唤醒不算数：恢复模式并丢掉已录下的，免得堆积或串入下一轮
+                    self.go_idle();
+                }
+            }
+            Command::Talk => self.conversation(None, Origin::Manual).await,
+            Command::PhoneTalk => {
+                // 手机按一下就松开了（没存下声音）时不用开始
+                if audio::phone_begin_turn() {
+                    self.phone = true;
+                    self.conversation(None, Origin::Phone).await;
+                } else {
+                    self.go_idle();
+                }
+            }
+            Command::Text(text) => self.text_command(&text, true).await,
+            Command::TextSubmitted { text, generation } => {
+                self.emit(UiEvent::TextStarted(generation));
+                if !text_is_stale(generation) {
+                    self.text_command(&text, false).await;
+                }
+            }
+            Command::SetListening(on) => {
+                self.listening = on;
+                self.go_idle();
+            }
+            Command::MicChanged => {
+                let was_ok = self.ear.is_some();
+                self.ear = None; // 先释放旧的
+                match self.restart_ear() {
+                    Ok(name) if !was_ok => self.chat(Role::System, crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string()),
+                    Ok(_) => {}
+                    Err(_) => self.chat(Role::System, crate::locale::pick("Microphone disconnected. It will recover when reconnected; you can type for now.", "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。")),
+                }
+                self.go_idle();
+            }
+            Command::ClearHistory => {
+                if let Some(agent) = self.agent.as_mut() {
+                    agent.clear();
+                }
+            }
+            Command::Reload(new_cfg) => self.reload(new_cfg),
+        }
+    }
+
+    fn apply_pending_reload(&mut self) {
+        if let Some(new_cfg) = self.pending_reload.take() {
+            self.reload(new_cfg);
+        }
+    }
+
     fn emit(&self, ev: UiEvent) {
         (self.ui)(ev);
     }
@@ -327,6 +383,7 @@ impl Assistant {
             self.classic_conversation(true).await; // 播报被唤醒词打断，接着听
         }
         self.go_idle();
+        self.apply_pending_reload();
     }
 
     fn set_mode(&self, mode: Mode) {
@@ -380,6 +437,7 @@ impl Assistant {
         let mode = if self.listening { Mode::Idle } else { Mode::Paused };
         match audio::start_ear(settings, mode, self.cmd_tx.clone(), self.audio_tx.clone()) {
             Ok((ear, name, problems)) => {
+                self.mic_missing = false;
                 self.ear = Some(ear);
                 self.emit(UiEvent::Mic(name.clone()));
                 for p in problems {
@@ -416,23 +474,69 @@ impl Assistant {
 
     /// 一次语音对话。notice：后台任务完成时要先告诉用户的内容
     async fn conversation(&mut self, notice: Option<String>, origin: Origin) {
-        // 结束时 go_idle 会恢复
-        self.ducker.set(self.cfg.duck_others);
         if !matches!(origin, Origin::Wake | Origin::Phone) {
             // 只有唤醒词和手机触发的这轮，队列里才是用户刚说的话；其余情况都是残留
             while self.audio_rx.try_recv().is_ok() {}
         }
+        if notice.is_none() {
+            if self.ear.is_none() && origin != Origin::Phone {
+                self.chat(Role::System, crate::locale::pick("Microphone unavailable. You can type a command below.", "麦克风不可用，可以在下方输入文字命令。"));
+                self.go_idle();
+                self.apply_pending_reload();
+                return;
+            }
+            if !self.realtime_enabled() && config::asr_key(&self.cfg).is_none() {
+                self.chat(Role::System, missing_asr_key_msg());
+                self.go_idle();
+                self.apply_pending_reload();
+                return;
+            }
+            if self.realtime_enabled() && config::realtime_key(&self.cfg).is_none() && config::asr_key(&self.cfg).is_none() {
+                self.chat(Role::System, missing_voice_key_msg());
+                self.go_idle();
+                self.apply_pending_reload();
+                return;
+            }
+        }
+        // 结束时 go_idle 会恢复
+        self.ducker.set(self.cfg.duck_others);
         if self.realtime_enabled() {
-            match self.realtime_conversation(notice.as_deref(), origin).await {
-                Ok(()) => {}
-                // 用户点了停止：不提示错误、不降级、不再听
-                Err(_) if self.turn.cancelled() => {}
-                Err(e) => {
-                    self.chat(Role::System, crate::locale::pick(&format!("{e:#}; using speech recognition and the language model for this turn."), &format!("{e:#}；这次改用“识别 + 大模型”。")).to_string());
-                    if let Some(text) = notice {
-                        self.speak(&text).await;
-                    } else {
-                        self.classic_conversation(true).await;
+            if notice.is_some() && config::realtime_key(&self.cfg).is_none() {
+                if let Some(text) = notice {
+                    self.chat(Role::Assistant, text.clone());
+                    let _ = self.speak(&text).await;
+                }
+            } else {
+                match self.realtime_conversation(notice.as_deref(), origin).await {
+                    Ok(()) => {}
+                    // 用户点了停止：不提示错误、不降级、不再听
+                    Err(_) if self.turn.cancelled() => {}
+                    Err(e) if config::asr_key(&self.cfg).is_none() => {
+                        if let Some(text) = notice {
+                            self.chat(Role::Assistant, text.clone());
+                            let _ = self.speak(&text).await;
+                        } else {
+                            self.chat(Role::System, format!("{e:#}"));
+                        }
+                    }
+                    Err(_) if self.ear.is_none() && notice.is_none() && origin != Origin::Phone => {
+                        self.chat(Role::System, crate::locale::pick("Microphone unavailable. You can type a command below.", "麦克风不可用，可以在下方输入文字命令。"));
+                    }
+                    Err(e) => {
+                        self.chat(
+                            Role::System,
+                            crate::locale::pick(
+                                &format!("{e:#}; using speech recognition and the language model for this turn."),
+                                &format!("{e:#}；这次改用“识别 + 大模型”。"),
+                            )
+                            .to_string(),
+                        );
+                        if let Some(text) = notice {
+                            self.chat(Role::Assistant, text.clone());
+                            let _ = self.speak(&text).await;
+                        } else {
+                            self.classic_conversation(true).await;
+                        }
                     }
                 }
             }
@@ -443,21 +547,115 @@ impl Assistant {
                 barged = self.speak(&text).await;
                 if !barged {
                     self.go_idle();
+                    self.apply_pending_reload();
                     return;
                 }
             }
             self.classic_conversation(!barged).await;
         }
         self.go_idle();
+        self.apply_pending_reload();
     }
 
-    /// 后台任务做完了：主动告诉用户
+    /// 提醒或后台任务做完了：主动告诉用户；已暂停唤醒或全屏时保持安静只发文字
     async fn announce(&mut self, done: TaskDone) {
         let text = done.message();
+        if should_silence_notice(self.listening, screen::front_is_fullscreen()) {
+            self.chat(Role::Assistant, text);
+            return;
+        }
+        if done.reminder {
+            sys::beep(988, 180);
+        }
         self.conversation(Some(text), Origin::Notice).await;
     }
 
     // ---------- 识别 + 大模型 ----------
+
+    /// 处理思考/播报期间积压在通道里的非阻塞控制命令
+    fn drain_commands_between_turns(&mut self) {
+        while let Ok(cmd) = self.cmd_rx.try_recv() {
+            let _ = self.on_listen_command(cmd, true);
+        }
+    }
+
+    /// listen 等待期间收到控制命令：返回 true 表示立即结束本次收音等待
+    fn on_listen_command(&mut self, cmd: Command, idle: bool) -> bool {
+        match cmd {
+            Command::MicChanged => {
+                let was_capture = self.mode() == Mode::Capture;
+                let was_ok = self.ear.is_some();
+                self.ear = None;
+                match self.restart_ear() {
+                    Ok(name) => {
+                        if !was_ok {
+                            self.chat(
+                                Role::System,
+                                crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string(),
+                            );
+                        }
+                        if was_capture {
+                            self.set_mode(Mode::Capture);
+                        }
+                        false
+                    }
+                    Err(_) => {
+                        if was_capture {
+                            self.set_mode(Mode::Capture);
+                        }
+                        if !self.phone && !audio::phone_active() {
+                            self.chat(
+                                Role::System,
+                                crate::locale::pick(
+                                    "Microphone disconnected. It will recover when reconnected; you can type for now.",
+                                    "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。",
+                                ),
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+            Command::SetListening(on) => {
+                self.listening = on;
+                !on && idle && !self.phone && !audio::phone_active()
+            }
+            Command::ClearHistory => {
+                if let Some(a) = self.agent.as_mut() {
+                    a.clear();
+                }
+                false
+            }
+            Command::Reload(new_cfg) => {
+                self.pending_reload = Some(new_cfg);
+                idle
+            }
+            Command::Text(text) => {
+                self.chat(Role::User, text.clone());
+                self.deferred_cmds.push_back(DeferredCmd::EchoedText { text, generation: text_generation() });
+                idle
+            }
+            Command::TextSubmitted { text, generation } => {
+                self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::TextSubmitted { text, generation }));
+                idle
+            }
+            Command::PhoneTalk => {
+                self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::PhoneTalk));
+                idle && !self.phone
+            }
+            Command::Talk => {
+                if self.phone {
+                    self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::Talk));
+                    idle
+                } else {
+                    false
+                }
+            }
+            Command::Wake(_) => false,
+        }
+    }
 
     /// 一轮对话；开启“继续聆听”或播报被打断时，接着听下一句
     async fn classic_conversation(&mut self, beep: bool) {
@@ -467,13 +665,23 @@ impl Assistant {
             if self.turn.cancelled() {
                 break;
             }
-            if barged || (self.cfg.follow_up && self.listening) {
+            self.drain_commands_between_turns();
+            let has_pending = self.pending_reload.is_some() || !self.deferred_cmds.is_empty();
+            if barged
+                || should_continue_classic_followup(
+                    self.cfg.follow_up,
+                    self.listening,
+                    self.phone || audio::phone_active(),
+                    self.ear.is_some(),
+                    has_pending,
+                )
+            {
                 next = self.listen(barged).await;
             }
         }
     }
 
-    /// 听一句话（云端流式识别）。没听到内容时返回 None。
+    /// 听一句话（流式或离线识别）。没听到内容时返回 None。
     async fn listen(&mut self, beep: bool) -> Option<String> {
         if self.turn.cancelled() {
             return None;
@@ -483,13 +691,13 @@ impl Assistant {
             return None;
         }
         let Some(api_key) = config::asr_key(&self.cfg) else {
-            self.chat(Role::System, crate::locale::pick("Speech recognition needs an API key for the selected provider. Add it in Settings and select Save.", "还没有设置所选语音识别服务的 API Key：请在“设置”页填写后点“保存并应用”。"));
+            self.chat(Role::System, missing_asr_key_msg());
             return None;
         };
         let settings = AsrSettings {
             provider: asr::Provider::from_id(&self.cfg.asr_provider),
-                        region: config::azure_region(&self.cfg),
-                        local_model: self.cfg.local_asr_model.clone(),
+            region: config::azure_region(&self.cfg),
+            local_model: self.cfg.local_asr_model.clone(),
             url: self.cfg.asr_url.clone(),
             model: self.cfg.asr_model.clone(),
             api_key,
@@ -499,27 +707,66 @@ impl Assistant {
         if settings.provider == asr::Provider::Local {
             let ui = self.ui.clone();
             let prepared = tokio::select! {
-                result = asr::prepare_local(&self.cfg.local_asr_model,|status| ui(UiEvent::Chat(Role::System, status.into()))) => Some(result),
+                result = asr::prepare_local(&self.cfg.local_asr_model, |status| ui(UiEvent::Chat(Role::System, status.into()))) => Some(result),
                 _ = self.turn.stopped() => None,
             };
             match prepared {
-                Some(Ok(_)) => {},
-                Some(Err(e)) => { self.chat(Role::System, format!("{e:#}")); return None; },
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    self.chat(Role::System, format!("{e:#}"));
+                    return None;
+                }
                 None => return None,
             }
         }
-        self.set_mode(Mode::Capture);
         if beep && !self.phone {
-            sys::beep(880, 120);
+            // 先保存唤醒词后已录下的音频，静音播完提示音后再放回队列并切回录音，防止把提示音录进去
+            let mut saved = Vec::new();
+            if self.mode() == Mode::Capture {
+                while let Ok(chunk) = self.audio_rx.try_recv() {
+                    saved.push(chunk);
+                }
+            }
+            self.set_mode(Mode::Muted);
+            if self.turn.guard(tokio::task::spawn_blocking(|| sys::beep_sync(880, 100))).await.is_none() {
+                return None;
+            }
+            while self.audio_rx.try_recv().is_ok() {}
+            for chunk in saved {
+                let _ = self.audio_tx.send(chunk);
+            }
         }
+        self.set_mode(Mode::Capture);
         self.emit(UiEvent::Status(Status::Listening));
+        let mut audio_rx = std::mem::replace(&mut self.audio_rx, unbounded_channel().1);
+        let turn = self.turn;
         let ui = self.ui.clone();
-        let result = tokio::select! {
-            r = asr::recognize(&settings, &mut self.audio_rx, |partial| ui(UiEvent::Partial(partial.to_string()))) => r,
-            _ = self.turn.stopped() => Ok(None),
+        let heard_any = AtomicBool::new(false);
+        let result = {
+            let recognize_fut = asr::recognize(&settings, &mut audio_rx, |partial| {
+                if !partial.is_empty() {
+                    heard_any.store(true, Ordering::SeqCst);
+                }
+                ui(UiEvent::Partial(partial.to_string()));
+            });
+            tokio::pin!(recognize_fut);
+            loop {
+                tokio::select! {
+                    r = &mut recognize_fut => break r,
+                    _ = turn.stopped() => break Ok(None),
+                    cmd = self.cmd_rx.recv() => {
+                        let Some(cmd) = cmd else { break Ok(None) };
+                        let idle = !heard_any.load(Ordering::SeqCst) && !audio::phone_is_held();
+                        if self.on_listen_command(cmd, idle) {
+                            break Ok(None);
+                        }
+                    }
+                }
+            }
         };
         self.set_mode(Mode::Muted);
-        while self.audio_rx.try_recv().is_ok() {}
+        while audio_rx.try_recv().is_ok() {}
+        self.audio_rx = audio_rx;
         self.emit(UiEvent::Partial(String::new()));
         match result {
             Ok(text) => text,
@@ -537,7 +784,7 @@ impl Assistant {
         }
         self.emit(UiEvent::Status(Status::Thinking));
         // 直达规则里关闭程序要等它退出（最多几秒），不能占着异步线程干等
-        let reply = if let Some(r) = tokio::task::block_in_place(|| fastpath::try_handle(text, &self.apps)) {
+        let reply = if let Some(r) = run_fastpath(text, &self.apps) {
             r
         } else if let Some(agent) = self.agent.as_mut() {
             let ui = self.ui.clone();
@@ -587,12 +834,14 @@ impl Assistant {
         let speaking = self.tts.speak_configured(&self.cfg, text, |note| ui(UiEvent::Chat(Role::System, note.into())));
         tokio::pin!(speaking);
         let notify = self.ear.as_ref().map(|e| e.barge.clone());
+        let mut stopped = false;
         loop {
             tokio::select! {
                 _ = &mut speaking => break,
                 _ = self.turn.stopped() => {
                     self.tts.stop();
                     (&mut speaking).await;
+                    stopped = true;
                     break;
                 }
                 _ = async { notify.as_ref().unwrap().notified().await }, if barge => {
@@ -606,8 +855,13 @@ impl Assistant {
             }
         }
         self.set_mode(Mode::Muted);
-        // 扬声器还有余音，多等一会儿再恢复收音，避免播报内容误触发唤醒
-        tokio::time::sleep(Duration::from_millis(600)).await;
+        if !stopped && !self.turn.cancelled() {
+            // 扬声器还有余音，多等一会儿再恢复收音，避免播报内容误触发唤醒；被停止时跳过等待立即返回
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(600)) => {}
+                _ = self.turn.stopped() => {}
+            }
+        }
         false
     }
 
@@ -657,12 +911,54 @@ impl Assistant {
             while self.audio_rx.try_recv().is_ok() {}
         }
         let mut thinking = Thinking::default();
-        let result = self.realtime_loop(&mut session, &mut player, notice, local, &mut thinking, preroll).await;
+        let server_auto_turns = local && settings.provider == realtime::Provider::DashScope;
+        let result = self
+            .realtime_loop(&mut session, &mut player, notice, origin, local, server_auto_turns, &mut thinking, preroll)
+            .await;
         player.clear();
         self.stop_thinking(&mut thinking).await;
         // 关闭连接是尽力而为，别让它挡住回到待机
         let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
         result
+    }
+
+    /// 本地大模型模式下处理一句用户识别文字：优先走本地极速直达规则，未命中再交给后台思考
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_local_text(
+        &mut self,
+        user_text: String,
+        session: &mut realtime::Session,
+        thinking: &mut Thinking,
+        to_think: &mut Vec<String>,
+        to_speak: &mut Vec<String>,
+        responding: &mut bool,
+        speech: Speech,
+        auto_turn_active: bool,
+        ours_requested: &mut bool,
+        watch: &mut ResponseWatch,
+    ) -> anyhow::Result<()> {
+        self.chat(Role::User, user_text.clone());
+        let fast = if thinking.job.is_none() && to_think.is_empty() {
+            run_fastpath(&user_text, &self.apps)
+        } else {
+            None
+        };
+        if let Some(reply) = fast {
+            self.chat(Role::Assistant, reply.clone());
+            if *responding || speech != Speech::None || auto_turn_active {
+                to_speak.push(reply);
+            } else {
+                session.read_aloud(&reply).await?;
+                *ours_requested = true;
+                *responding = true;
+                watch.start(Instant::now());
+            }
+        } else if thinking.job.is_some() {
+            to_think.push(user_text);
+        } else {
+            self.think(thinking, &user_text);
+        }
+        Ok(())
     }
 
     /// 让自己的大模型在后台想这句话（不挡住收音和打断），想完由实时语音模型读出来
@@ -705,14 +1001,17 @@ impl Assistant {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn realtime_loop(
         &mut self,
         session: &mut realtime::Session,
         player: &mut Player,
         notice: Option<&str>,
+        origin: Origin,
         local: bool,
+        server_auto_turns: bool,
         thinking: &mut Thinking,
-        preroll: audio::PreRoll,
+        mut preroll: audio::PreRoll,
     ) -> anyhow::Result<()> {
         let turn = self.turn;
         // 已在 realtime_conversation 里检查过；这里再兜一次底，停止后绝不进入收音
@@ -720,8 +1019,9 @@ impl Assistant {
             return Err(Cancelled.into());
         }
         let duplex = self.cfg.full_duplex;
-        let barge = self.cfg.barge_in && self.listening;
-        let notify = self.ear.as_ref().map(|e| e.barge.clone());
+        let mut barge = (self.cfg.barge_in || self.cfg.talk_barge) && self.listening;
+        crate::audio::set_talk_barge(self.cfg.talk_barge);
+        let mut notify = self.ear.as_ref().map(|e| e.barge.clone());
         let mut responding = false; // 模型正在生成（我们要的）回复
         let mut transcript = String::new();
         let mut calls: Vec<(String, String, String)> = Vec::new();
@@ -731,6 +1031,12 @@ impl Assistant {
         let mut to_speak: Vec<String> = Vec::new();
         let mut speech = Speech::None;
         let mut ours_requested = false;
+        let mut auto_turn_active = false;
+        let mut auto_turn_deadline: Option<Instant> = None;
+        let mut phone_buffer = String::new();
+        let mut clear_agent_on_return = false;
+        let mut end_after_reply = false;
+        let mut completed_turn = false;
         let mut resume_at: Option<Instant> = None; // 播完后什么时候恢复收音
         let mut user_speaking = false;
         // “正在说”最长多久：服务端漏发说话结束时，不能让空闲退出永久失效
@@ -758,10 +1064,22 @@ impl Assistant {
             }
             self.set_mode(Mode::Muted);
         } else {
-            self.set_mode(Mode::Capture);
+            if matches!(origin, Origin::Wake | Origin::Phone) && self.mode() == Mode::Capture {
+                while let Ok(chunk) = self.audio_rx.try_recv() {
+                    preroll.push(chunk);
+                }
+            }
+            if !self.phone {
+                // 在静音态下同步播完提示音再开麦，避免把蜂鸣声录进去（唤醒预录音频保留在 preroll 中）
+                self.set_mode(Mode::Muted);
+                if turn.guard(tokio::task::spawn_blocking(|| sys::beep_sync(880, 100))).await.is_none() {
+                    return Err(Cancelled.into());
+                }
+                while self.audio_rx.try_recv().is_ok() {}
+            }
             // 唤醒后已经说出口的部分先按顺序补发（realtime_conversation 已经把残留和本轮分开）
             for chunk in preroll.into_chunks() {
-                // 补发期间也能停止；停止后不再提示音、不进入“正在听”
+                // 补发期间也能停止；停止后不再进入“正在听”
                 match turn.guard(session.send_audio(&chunk)).await {
                     None => return Err(Cancelled.into()),
                     Some(r) => r?,
@@ -770,10 +1088,9 @@ impl Assistant {
             if turn.cancelled() {
                 return Err(Cancelled.into());
             }
-            if !self.phone {
-                sys::beep(880, 120);
-            }
+            self.set_mode(Mode::Capture);
             self.emit(UiEvent::Status(Status::Listening));
+            last_activity = Instant::now();
         }
 
         loop {
@@ -802,7 +1119,7 @@ impl Assistant {
                     let output = matches!(event, realtime::Event::Transcript(_) | realtime::Event::Audio(_) | realtime::Event::FunctionCall { .. });
                     if local && output && speech != Speech::Ours {
                         // 服务端没发 response.created 时，按第一段输出来分：是我们要读的就留下，否则取消
-                        if speech == Speech::None && std::mem::take(&mut ours_requested) {
+                        if speech == Speech::None && !auto_turn_active && std::mem::take(&mut ours_requested) {
                             speech = Speech::Ours;
                         } else {
                             if speech == Speech::None {
@@ -814,10 +1131,22 @@ impl Assistant {
                     }
                     match event {
                         realtime::Event::SpeechStarted => {
-                            // 用户插话：服务端已经取消回复，本地也别再播了
+                            // 用户插话：服务端已经取消回复，本地也立即停下旧思考、清空待读和旧工具调用
                             user_speaking = true;
+                            completed_turn = false;
                             speaking_due = Some(Instant::now() + SPEAKING_MAX);
                             player.clear();
+                            self.stop_thinking(thinking).await;
+                            to_think.clear();
+                            to_speak.clear();
+                            calls.clear();
+                            transcript.clear();
+                            speech = Speech::None;
+                            ours_requested = false;
+                            auto_turn_active = false;
+                            auto_turn_deadline = None;
+                            responding = false;
+                            watch.finish();
                             self.emit(UiEvent::Status(Status::Listening));
                         }
                         realtime::Event::SpeechStopped => {
@@ -825,52 +1154,126 @@ impl Assistant {
                             speaking_due = None;
                             awaiting_user_text = true;
                             transcript_due = Some(Instant::now() + TRANSCRIPT_DEADLINE);
-                            if !local {
+                            if server_auto_turns {
+                                auto_turn_active = true;
+                                auto_turn_deadline = Some(Instant::now() + AUTO_TURN_MAX_WAIT);
+                            } else if !local {
                                 responding = true;
                                 watch.start(Instant::now());
                             }
-                            self.emit(UiEvent::Status(Status::Thinking));
+                            if !((origin == Origin::Phone || audio::phone_active()) && audio::phone_is_held()) {
+                                self.emit(UiEvent::Status(Status::Thinking));
+                            }
                         }
                         realtime::Event::SpeechInvalid => {
-                            // 服务端判定刚才不算一句话：不会有回复，回到等待说话
+                            // 服务端判定刚才不算一句话：不会有自发回复，回到等待说话
                             user_speaking = false;
                             speaking_due = None;
+                            auto_turn_active = false;
+                            auto_turn_deadline = None;
                             last_activity = Instant::now();
-                            self.emit(UiEvent::Partial(String::new()));
+                            if phone_buffer.is_empty() {
+                                self.emit(UiEvent::Partial(String::new()));
+                            }
+                            if local && !responding && speech == Speech::None && !to_speak.is_empty() {
+                                let reply = to_speak.remove(0);
+                                session.read_aloud(&reply).await?;
+                                ours_requested = true;
+                                responding = true;
+                                watch.start(Instant::now());
+                            }
                         }
-                        realtime::Event::UserPartial(text) => self.emit(UiEvent::Partial(text)),
+                        realtime::Event::UserPartial(part) => {
+                            if local && (origin == Origin::Phone || audio::phone_active()) && !phone_buffer.is_empty() {
+                                self.emit(UiEvent::Partial(format!("{phone_buffer}{part}")));
+                            } else {
+                                self.emit(UiEvent::Partial(part));
+                            }
+                        }
                         realtime::Event::UserText(text) => {
-                            self.emit(UiEvent::Partial(String::new()));
                             awaiting_user_text = false;
                             transcript_due = None;
-                            if !text.trim().is_empty() {
-                                self.chat(Role::User, text.clone());
-                                if local {
-                                    // 正在想上一句时先排队，想完接着想这句
-                                    if thinking.job.is_some() {
-                                        to_think.push(text);
-                                    } else {
-                                        self.think(thinking, &text);
+                            if local && (origin == Origin::Phone || audio::phone_active()) {
+                                let piece = text.trim();
+                                if !piece.is_empty() {
+                                    if !phone_buffer.is_empty() && piece.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                                        phone_buffer.push(' ');
+                                    }
+                                    phone_buffer.push_str(piece);
+                                }
+                                if audio::phone_is_held() {
+                                    self.emit(UiEvent::Partial(phone_buffer.clone()));
+                                } else {
+                                    self.emit(UiEvent::Partial(String::new()));
+                                    let full = std::mem::take(&mut phone_buffer);
+                                    if !full.trim().is_empty() {
+                                        self.dispatch_local_text(
+                                            full,
+                                            session,
+                                            thinking,
+                                            &mut to_think,
+                                            &mut to_speak,
+                                            &mut responding,
+                                            speech,
+                                            auto_turn_active,
+                                            &mut ours_requested,
+                                            &mut watch,
+                                        )
+                                        .await?;
+                                    } else if self.mode() == Mode::Capture && !player.is_playing() && !responding && thinking.job.is_none() {
+                                        self.emit(UiEvent::Status(Status::Listening));
                                     }
                                 }
-                            }
-                            if let Some(reply) = held_reply.take() {
-                                self.chat(Role::Assistant, reply);
+                            } else {
+                                self.emit(UiEvent::Partial(String::new()));
+                                if !text.trim().is_empty() {
+                                    if local {
+                                        self.dispatch_local_text(
+                                            text,
+                                            session,
+                                            thinking,
+                                            &mut to_think,
+                                            &mut to_speak,
+                                            &mut responding,
+                                            speech,
+                                            auto_turn_active,
+                                            &mut ours_requested,
+                                            &mut watch,
+                                        )
+                                        .await?;
+                                    } else {
+                                        self.chat(Role::User, text);
+                                    }
+                                } else if local && self.mode() == Mode::Capture && !player.is_playing() && !responding && thinking.job.is_none() {
+                                    self.emit(UiEvent::Status(Status::Listening));
+                                }
+                                if let Some(reply) = held_reply.take() {
+                                    self.chat(Role::Assistant, reply);
+                                }
                             }
                         }
                         realtime::Event::ResponseCreated if local => {
                             // 服务端在用户说完话后会自己开始回答；只留我们要它读的那轮，其余的马上取消
-                            speech = if std::mem::take(&mut ours_requested) { Speech::Ours } else { Speech::Auto };
+                            speech = if !auto_turn_active && std::mem::take(&mut ours_requested) {
+                                Speech::Ours
+                            } else {
+                                Speech::Auto
+                            };
                             if speech == Speech::Auto {
                                 session.cancel_response().await;
                             }
                         }
-                        realtime::Event::Transcript(delta) => transcript.push_str(&delta),
+                        realtime::Event::Transcript(delta) => {
+                            transcript.push_str(&delta);
+                            if !local && !awaiting_user_text && !user_speaking {
+                                self.emit(UiEvent::Partial(transcript.clone()));
+                            }
+                        }
                         realtime::Event::Audio(bytes) => {
                             if !player.is_playing() {
                                 self.emit(UiEvent::Status(Status::Speaking));
                                 if !duplex {
-                                    // 外放时不把麦克风发过去，否则模型会听到自己的声音；改为只听唤醒词
+                                    // 外放时不把麦克风发过去，否则模型会听到自己的声音；改为只听唤醒词或直接说话打断
                                     self.set_mode(if barge { Mode::Barge } else { Mode::Muted });
                                 }
                             }
@@ -884,21 +1287,35 @@ impl Assistant {
                             if was == Speech::Ours {
                                 responding = false;
                                 watch.finish();
+                                completed_turn = true;
                                 if status == "failed" {
                                     self.chat(Role::System, crate::locale::pick("Realtime voice playback failed for this turn.", "实时语音这一轮播报失败了"));
                                 }
+                            } else {
+                                auto_turn_active = false;
+                                auto_turn_deadline = None;
                             }
-                            if !responding && !to_speak.is_empty() {
+                            if !responding && speech == Speech::None && !auto_turn_active && !to_speak.is_empty() {
                                 let reply = to_speak.remove(0);
                                 session.read_aloud(&reply).await?;
                                 ours_requested = true;
                                 responding = true;
+                                completed_turn = false;
                                 watch.start(Instant::now());
                             }
                         }
                         realtime::Event::ResponseDone(status) => {
                             responding = false;
                             watch.finish();
+                            if !user_speaking {
+                                self.emit(UiEvent::Partial(String::new()));
+                            }
+                            if status == "cancelled" {
+                                // 已被打断的回复：绝不执行半截工具调用，清空残留
+                                calls.clear();
+                                transcript.clear();
+                                continue;
+                            }
                             if !transcript.trim().is_empty() {
                                 let reply = std::mem::take(&mut transcript);
                                 if awaiting_user_text {
@@ -915,6 +1332,9 @@ impl Assistant {
                                 // 执行工具，把结果交回去让模型接着说
                                 self.emit(UiEvent::Status(Status::Acting));
                                 for (call_id, name, arguments) in std::mem::take(&mut calls) {
+                                    if turn.cancelled() {
+                                        break;
+                                    }
                                     let input: Value = serde_json::from_str(&arguments).unwrap_or_default();
                                     let text = describe_tool(&name, &input);
                                     if !text.is_empty() {
@@ -925,13 +1345,17 @@ impl Assistant {
                                     let output: String = output.chars().take(8000).collect();
                                     session.send_function_output(&call_id, &output).await?;
                                 }
-                                responding = true;
-                                // 工具可能跑了很久，从交回结果时重新计时
-                                watch.start(Instant::now());
+                                if !turn.cancelled() {
+                                    responding = true;
+                                    // 工具可能跑了很久，从交回结果时重新计时
+                                    watch.start(Instant::now());
+                                }
                             } else if let Some(text) = pending_notices.pop() {
                                 session.say(&text).await?;
                                 responding = true;
                                 watch.start(Instant::now());
+                            } else {
+                                completed_turn = true;
                             }
                         }
                         realtime::Event::Error(message) => {
@@ -942,6 +1366,8 @@ impl Assistant {
                                 watch.finish();
                                 speech = Speech::None;
                                 ours_requested = false;
+                                auto_turn_active = false;
+                                auto_turn_deadline = None;
                                 self.emit(UiEvent::Status(Status::Listening));
                             }
                         }
@@ -951,7 +1377,10 @@ impl Assistant {
                 finished = async { (&mut thinking.job.as_mut().unwrap().0).await }, if thinking.job.is_some() => {
                     thinking.job = None;
                     let reply = match finished {
-                        Ok((agent, result)) => {
+                        Ok((mut agent, result)) => {
+                            if std::mem::take(&mut clear_agent_on_return) {
+                                agent.clear();
+                            }
                             self.agent = Some(agent);
                             match result {
                                 Some(Ok(reply)) => Some(reply),
@@ -963,57 +1392,246 @@ impl Assistant {
                             }
                         }
                         Err(e) => {
+                            clear_agent_on_return = false;
                             self.agent = self.build_agent();
                             Some(crate::locale::pick(&format!("An error occurred: {e}."), &format!("这次出错了：{e}。")).to_string())
                         }
                     };
                     if let Some(reply) = reply {
                         self.chat(Role::Assistant, reply.clone());
-                        if responding || speech != Speech::None {
+                        if responding || speech != Speech::None || auto_turn_active {
                             to_speak.push(reply);
                         } else {
                             session.read_aloud(&reply).await?;
                             ours_requested = true;
                             responding = true;
+                            completed_turn = false;
                             watch.start(Instant::now());
                         }
                     }
-                    if !to_think.is_empty() {
+                    while !to_think.is_empty() && thinking.job.is_none() {
                         let text = to_think.remove(0);
-                        self.think(thinking, &text);
+                        if let Some(reply) = run_fastpath(&text, &self.apps) {
+                            self.chat(Role::Assistant, reply.clone());
+                            if responding || speech != Speech::None || auto_turn_active {
+                                to_speak.push(reply);
+                            } else {
+                                session.read_aloud(&reply).await?;
+                                ours_requested = true;
+                                responding = true;
+                                completed_turn = false;
+                                watch.start(Instant::now());
+                            }
+                        } else {
+                            self.think(thinking, &text);
+                        }
                     }
                 }
                 done = self.done_rx.recv() => {
                     if let Some(done) = done {
                         let text = done.message();
-                        self.chat(Role::System, format!("（{}）{text}", if done.reminder { crate::locale::pick("Reminder", "提醒") } else { crate::locale::pick("Background task notification", "后台任务通知") }));
-                        let text = format!("(System notification, not a user message) {text}. Tell the user this result in one or two conversational sentences. Reply in the language the user speaks.");
-                        if local {
-                            if thinking.job.is_some() {
-                                to_think.push(text);
-                            } else {
-                                self.think(thinking, &text);
-                            }
-                        } else if responding || user_speaking {
-                            pending_notices.push(text);
+                        if should_silence_notice(self.listening, screen::front_is_fullscreen()) {
+                            self.chat(Role::Assistant, text);
                         } else {
-                            session.say(&text).await?;
-                            responding = true;
-                            watch.start(Instant::now());
+                            if done.reminder {
+                                sys::beep(988, 180);
+                            }
+                            let tag = if done.reminder {
+                                crate::locale::pick("Reminder", "提醒")
+                            } else if done.notice {
+                                crate::locale::pick("Notification", "通知")
+                            } else {
+                                crate::locale::pick("Background task notification", "后台任务通知")
+                            };
+                            self.chat(
+                                Role::System,
+                                crate::locale::pick(&format!("({tag}) {text}"), &format!("（{tag}）{text}")).to_string(),
+                            );
+                            let text = format!("(System notification, not a user message) {text}. Tell the user this result in one or two conversational sentences. Reply in the language the user speaks.");
+                            if local {
+                                if thinking.job.is_some() {
+                                    to_think.push(text);
+                                } else {
+                                    self.think(thinking, &text);
+                                }
+                            } else if responding || user_speaking {
+                                pending_notices.push(text);
+                            } else {
+                                session.say(&text).await?;
+                                responding = true;
+                                completed_turn = false;
+                                watch.start(Instant::now());
+                            }
                         }
                     }
                 }
-                _ = async { notify.as_ref().unwrap().notified().await }, if barge && notify.is_some() => {
-                    // 播报时说了唤醒词：停止播放、取消回复，开始听
-                    if self.mode() == Mode::Capture {
-                        player.clear();
-                        if responding {
-                            session.cancel_response().await;
-                            responding = false;
-                            watch.finish();
+                cmd = self.cmd_rx.recv() => {
+                    let Some(cmd) = cmd else { break };
+                    let playing = player.is_playing();
+                    let phone_holding = (origin == Origin::Phone || audio::phone_active())
+                        && (audio::phone_is_held() || !phone_buffer.is_empty());
+                    let busy = thinking.job.is_some()
+                        || !to_think.is_empty()
+                        || !to_speak.is_empty()
+                        || !calls.is_empty()
+                        || !pending_notices.is_empty();
+                    let idle_waiting = !playing
+                        && !responding
+                        && !busy
+                        && speech != Speech::Ours
+                        && !user_speaking
+                        && !awaiting_user_text
+                        && !phone_holding;
+                    match cmd {
+                        Command::MicChanged => {
+                            let was_capture = self.mode() == Mode::Capture;
+                            let was_barge = self.mode() == Mode::Barge;
+                            let was_ok = self.ear.is_some();
+                            self.ear = None;
+                            match self.restart_ear() {
+                                Ok(name) => {
+                                    notify = self.ear.as_ref().map(|e| e.barge.clone());
+                                    if !was_ok {
+                                        self.chat(
+                                            Role::System,
+                                            crate::locale::pick(&format!("Microphone restored: {name}"), &format!("麦克风已恢复：{name}")).to_string(),
+                                        );
+                                    }
+                                    if was_capture {
+                                        self.set_mode(Mode::Capture);
+                                    } else if was_barge && barge {
+                                        self.set_mode(Mode::Barge);
+                                    } else {
+                                        self.set_mode(Mode::Muted);
+                                    }
+                                }
+                                Err(_) => {
+                                    notify = None;
+                                    self.set_mode(if was_capture { Mode::Capture } else { Mode::Muted });
+                                    if !self.phone && !audio::phone_active() {
+                                        self.chat(
+                                            Role::System,
+                                            crate::locale::pick(
+                                                "Microphone disconnected. It will recover when reconnected; you can type for now.",
+                                                "麦克风断开了，重新接上后会自动恢复；现在可以打字使用。",
+                                            ),
+                                        );
+                                        if idle_waiting || user_speaking {
+                                            if responding {
+                                                session.cancel_response().await;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
+                        Command::SetListening(on) => {
+                            self.listening = on;
+                            barge = (self.cfg.barge_in || self.cfg.talk_barge) && self.listening;
+                            if !on {
+                                if self.mode() == Mode::Barge {
+                                    self.set_mode(Mode::Muted);
+                                }
+                                if idle_waiting {
+                                    break;
+                                }
+                            }
+                        }
+                        Command::ClearHistory => {
+                            if let Some(a) = self.agent.as_mut() {
+                                a.clear();
+                            } else {
+                                clear_agent_on_return = true;
+                            }
+                            if !local {
+                                if idle_waiting {
+                                    break;
+                                } else {
+                                    end_after_reply = true;
+                                }
+                            }
+                        }
+                        Command::Reload(new_cfg) => {
+                            self.pending_reload = Some(new_cfg);
+                            if idle_waiting {
+                                break;
+                            }
+                        }
+                        Command::Text(text) => {
+                            self.chat(Role::User, text.clone());
+                            self.deferred_cmds.push_back(DeferredCmd::EchoedText {
+                                text,
+                                generation: text_generation(),
+                            });
+                            if idle_waiting {
+                                break;
+                            }
+                        }
+                        Command::TextSubmitted { text, generation } => {
+                            self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::TextSubmitted { text, generation }));
+                            if idle_waiting {
+                                break;
+                            }
+                        }
+                        Command::PhoneTalk => {
+                            self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::PhoneTalk));
+                            if idle_waiting {
+                                break;
+                            }
+                        }
+                        Command::Talk => {
+                            if idle_waiting {
+                                if origin == Origin::Phone || notice.is_some() {
+                                    self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::Talk));
+                                    break;
+                                }
+                                resume_at = None;
+                                completed_turn = false;
+                                self.set_mode(Mode::Capture);
+                                self.emit(UiEvent::Status(Status::Listening));
+                                last_activity = Instant::now();
+                                wait_limit = REALTIME_FOLLOW_UP;
+                            } else {
+                                self.deferred_cmds.push_back(DeferredCmd::Cmd(Command::Talk));
+                            }
+                        }
+                        Command::Wake(_) => {}
+                    }
+                }
+                _ = async { notify.as_ref().unwrap().notified().await }, if barge && notify.is_some() => {
+                    // 播报时说了唤醒词或直接说话打断：停止播放、取消旧思考与回复，静音响完提示音后再开始听
+                    if self.mode() == Mode::Capture {
+                        let mut barge_preroll = Vec::new();
+                        while let Ok(chunk) = self.audio_rx.try_recv() {
+                            barge_preroll.push(chunk);
+                        }
+                        self.set_mode(Mode::Muted);
+                        player.clear();
+                        self.stop_thinking(thinking).await;
+                        to_think.clear();
+                        to_speak.clear();
+                        calls.clear();
+                        transcript.clear();
+                        speech = Speech::None;
+                        ours_requested = false;
+                        auto_turn_active = false;
+                        auto_turn_deadline = None;
+                        completed_turn = false;
+                        session.cancel_response().await;
+                        responding = false;
+                        watch.finish();
                         self.chat(Role::System, crate::locale::pick("(Interrupted)", "（已打断）"));
-                        sys::beep(880, 80);
+                        if !self.phone {
+                            if turn.guard(tokio::task::spawn_blocking(|| sys::beep_sync(880, 100))).await.is_none() {
+                                break;
+                            }
+                            while self.audio_rx.try_recv().is_ok() {}
+                        }
+                        for chunk in barge_preroll {
+                            session.send_audio(&chunk).await?;
+                        }
+                        self.set_mode(Mode::Capture);
                         self.emit(UiEvent::Status(Status::Listening));
                         last_activity = Instant::now();
                         wait_limit = REALTIME_FOLLOW_UP;
@@ -1027,6 +1645,45 @@ impl Assistant {
                         session.cancel_response().await;
                         self.chat(Role::System, crate::locale::pick(&format!("Realtime voice {reason}. This turn has ended; please try again."), &format!("实时语音{reason}，这一轮先结束了，可以再说一次。")).to_string());
                         break;
+                    }
+                    // 兜底：SpeechStopped 后最多等 1.5s，若百炼未发自发回复则直接放行待朗读内容
+                    if auto_turn_active && speech == Speech::None && auto_turn_deadline.is_some_and(|d| now >= d) {
+                        auto_turn_active = false;
+                        auto_turn_deadline = None;
+                        if !responding && !to_speak.is_empty() {
+                            let reply = to_speak.remove(0);
+                            session.read_aloud(&reply).await?;
+                            ours_requested = true;
+                            responding = true;
+                            completed_turn = false;
+                            watch.start(Instant::now());
+                        }
+                    }
+                    // 手机长按已松手，且没有后半句正在说或等待转写：将完整长句一次性送去处理
+                    if local
+                        && (origin == Origin::Phone || audio::phone_active())
+                        && !audio::phone_is_held()
+                        && !user_speaking
+                        && !awaiting_user_text
+                        && !phone_buffer.is_empty()
+                    {
+                        self.emit(UiEvent::Partial(String::new()));
+                        let full = std::mem::take(&mut phone_buffer);
+                        if !full.trim().is_empty() {
+                            self.dispatch_local_text(
+                                full,
+                                session,
+                                thinking,
+                                &mut to_think,
+                                &mut to_speak,
+                                &mut responding,
+                                speech,
+                                auto_turn_active,
+                                &mut ours_requested,
+                                &mut watch,
+                            )
+                            .await?;
+                        }
                     }
                     if speaking_due.is_some_and(|t| now >= t) {
                         speaking_due = None;
@@ -1044,29 +1701,67 @@ impl Assistant {
                         self.chat(Role::System, crate::locale::pick("No transcript was received for that sentence.", "没拿到刚才那句话的识别文字。"));
                     }
                     let playing = player.is_playing();
-                    // 播放中、自己的大模型还在想或还有回复没读：都是正常进展，不算空闲。
+                    let phone_holding = (origin == Origin::Phone || audio::phone_active())
+                        && (audio::phone_is_held() || !phone_buffer.is_empty());
+                    // 播放中、自己的大模型还在想、有回复待读或手机仍按着说话：都是正常进展，不算空闲。
                     // 服务端回复（responding）不在这里续命，它由上面的截止时间管
                     let busy = thinking.job.is_some() || !to_think.is_empty() || !to_speak.is_empty();
-                    if playing || busy {
+                    if playing || busy || phone_holding {
                         last_activity = now;
                     }
-                    let responding = responding || busy;
-                    // 播完了：等余音过去再恢复收音
-                    if !playing && !responding && self.mode() != Mode::Capture {
+                    let active_responding = responding || busy;
+                    if !playing
+                        && !active_responding
+                        && !user_speaking
+                        && !phone_holding
+                        && (!self.deferred_cmds.is_empty() || self.pending_reload.is_some() || end_after_reply)
+                    {
+                        break;
+                    }
+                    let can_follow_up = should_continue_realtime_followup(
+                        notice.is_some(),
+                        origin,
+                        audio::phone_active(),
+                        self.cfg.follow_up,
+                        self.listening,
+                        self.ear.is_some() || self.phone,
+                    );
+                    if completed_turn && !playing && !active_responding && !user_speaking && !phone_holding {
+                        if !can_follow_up {
+                            break;
+                        }
+                        if self.mode() == Mode::Capture {
+                            completed_turn = false;
+                            self.emit(UiEvent::Status(Status::Listening));
+                            last_activity = Instant::now();
+                            wait_limit = REALTIME_FOLLOW_UP;
+                        }
+                    }
+                    // 播完了：允许追问（或手机仍按住说话）则等余音过去再恢复收音；不允许（通知、手机按住已松手、关闭继续聆听、暂停唤醒）立即结束
+                    if !playing && !active_responding && self.mode() != Mode::Capture {
+                        if !can_follow_up && !phone_holding {
+                            break;
+                        }
                         let at = *resume_at.get_or_insert_with(|| Instant::now() + ECHO_TAIL);
                         if Instant::now() >= at {
                             resume_at = None;
-                            if !self.cfg.follow_up && notice.is_none() {
-                                break;
+                            completed_turn = false;
+                            if !phone_holding {
+                                while self.audio_rx.try_recv().is_ok() {}
                             }
-                            while self.audio_rx.try_recv().is_ok() {}
                             self.set_mode(Mode::Capture);
                             self.emit(UiEvent::Status(Status::Listening));
                             last_activity = Instant::now();
                             wait_limit = REALTIME_FOLLOW_UP;
                         }
                     }
-                    if !playing && !responding && !user_speaking && self.mode() == Mode::Capture && last_activity.elapsed() > wait_limit {
+                    if !playing
+                        && !active_responding
+                        && !user_speaking
+                        && !phone_holding
+                        && self.mode() == Mode::Capture
+                        && last_activity.elapsed() > wait_limit
+                    {
                         break; // 没人说话了，回到待机
                     }
                 }
@@ -1159,6 +1854,45 @@ fn with_screen(text: &str) -> String {
         }
     }
     out
+}
+
+/// 在多线程运行时里放到阻塞线程池跑直达规则（关闭程序等可能短暂停留），在单线程测试运行时里直接跑
+fn run_fastpath(text: &str, apps: &AppIndex) -> Option<String> {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(|| fastpath::try_handle(text, apps))
+    } else {
+        fastpath::try_handle(text, apps)
+    }
+}
+
+/// 已暂停唤醒或前台全屏时，通知与提醒保持静默（只写文字与历史，不压音、不外放）
+fn should_silence_notice(listening: bool, fullscreen: bool) -> bool {
+    !listening || fullscreen
+}
+
+/// 实时对话播报结束后是否允许自动开麦追问（提醒/后台通知、手机按住说话、暂停唤醒、无麦克风时一律禁止开麦）
+fn should_continue_realtime_followup(
+    has_notice: bool,
+    origin: Origin,
+    phone_active: bool,
+    follow_up: bool,
+    listening: bool,
+    mic_ready: bool,
+) -> bool {
+    !has_notice && origin != Origin::Phone && !phone_active && follow_up && listening && mic_ready
+}
+
+/// 经典模式播报结束后是否允许进入下一轮继续聆听
+fn should_continue_classic_followup(
+    follow_up: bool,
+    listening: bool,
+    phone: bool,
+    mic_ready: bool,
+    has_pending_control: bool,
+) -> bool {
+    follow_up && listening && !phone && mic_ready && !has_pending_control
 }
 
 /// 实时语音里正在后台想的大模型：任务拿着 Agent，想完连同结果一起还回来
@@ -1378,5 +2112,35 @@ mod tests {
         assert_eq!(describe_tool("start_task", &json!({"task": "整理桌面"})), "");
         let long = describe_tool("desktop_type", &json!({"text": "字".repeat(60)}));
         assert!(long.ends_with('…') && long.chars().count() < 50);
+    }
+
+    #[test]
+    fn notice_phone_and_paused_never_auto_open_mic_for_followup() {
+        // 已暂停唤醒或全屏时通知保持静默
+        assert!(should_silence_notice(false, false));
+        assert!(should_silence_notice(true, true));
+        assert!(should_silence_notice(false, true));
+        assert!(!should_silence_notice(true, false));
+
+        // 正常唤醒或手动点击、开启继续聆听、未暂停唤醒且有麦克风时才允许追问
+        assert!(should_continue_realtime_followup(false, Origin::Wake, false, true, true, true));
+        assert!(should_continue_realtime_followup(false, Origin::Manual, false, true, true, true));
+
+        // 提醒 / 后台任务通知播完绝不擅自开麦
+        assert!(!should_continue_realtime_followup(true, Origin::Notice, false, true, true, true));
+        // 手机按住说话回答完立即结束，不卡 8 秒压低音量
+        assert!(!should_continue_realtime_followup(false, Origin::Phone, false, true, true, true));
+        assert!(!should_continue_realtime_followup(false, Origin::Wake, true, true, true, true));
+        // 关闭继续聆听、暂停唤醒或麦克风断开时绝不进入追问
+        assert!(!should_continue_realtime_followup(false, Origin::Wake, false, false, true, true));
+        assert!(!should_continue_realtime_followup(false, Origin::Wake, false, true, false, true));
+        assert!(!should_continue_realtime_followup(false, Origin::Wake, false, true, true, false));
+
+        // 经典模式同样遵守手机按住说话、暂停唤醒与待执行命令边界
+        assert!(should_continue_classic_followup(true, true, false, true, false));
+        assert!(!should_continue_classic_followup(true, true, true, true, false));
+        assert!(!should_continue_classic_followup(true, false, false, true, false));
+        assert!(!should_continue_classic_followup(true, true, false, false, false));
+        assert!(!should_continue_classic_followup(true, true, false, true, true));
     }
 }

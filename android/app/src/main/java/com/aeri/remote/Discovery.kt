@@ -47,9 +47,10 @@ object Discovery {
                     }
                     val json = runCatching { JSONObject(String(packet.data, 0, packet.length)) }.getOrNull() ?: continue
                     if (json.optString("t") != "aeri") continue
-                    val host = packet.address?.hostAddress ?: continue
+                    val host = packet.address?.hostAddress?.substringBefore('%') ?: continue
                     val id = json.optString("id")
-                    val pc = FoundPc(host, json.optInt("port", port), json.optString("pc", host), id)
+                    val replyPort = json.optInt("port", port).let { if (it in 1..65535) it else port }
+                    val pc = FoundPc(host, replyPort, json.optString("pc", host), id)
                     found[id.ifEmpty { host }] = pc
                     if (stopWhen(pc)) break
                 }
@@ -62,7 +63,8 @@ object Discovery {
     private fun broadcastTargets(): List<InetAddress> {
         val list = mutableListOf(InetAddress.getByName("255.255.255.255"))
         runCatching {
-            for (nif in NetworkInterface.getNetworkInterfaces()) {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching
+            for (nif in interfaces) {
                 if (!nif.isUp || nif.isLoopback) continue
                 for (address in nif.interfaceAddresses) {
                     val broadcast = address.broadcast ?: continue

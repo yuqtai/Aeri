@@ -14,6 +14,9 @@ models/
 .env.*
 *.pem
 *.key
+*.jks
+*.keystore
+android/keystore.properties
 
 # 个人使用记录
 /AI_LOG.md

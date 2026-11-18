@@ -13,13 +13,14 @@ $dist = Join-Path $root 'dist'
 $notices = Join-Path $root 'assets\THIRD-PARTY-NOTICES.txt'
 $out = Join-Path $env:TEMP "aeri-release-$version"
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path "$out\pkg" | Out-Null
-Copy-Item "$dist\*" "$out\pkg" -Recurse
-Copy-Item $notices "$out\pkg"
+$pkgDir = Join-Path $out 'pkg\Aeri'
+New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
+Copy-Item "$dist\*" $pkgDir -Recurse
+Copy-Item $notices $pkgDir
 $zipName = "Aeri-$tag-windows-x64.zip"
 $zip = Join-Path $out $zipName
-# Windows 10 起自带的 tar 打 zip，路径分隔符是 /，各种解压工具都认
-tar.exe -a -c -f $zip -C "$out\pkg" *
+# Windows 10 起自带的 tar 打 zip，自带顶层 Aeri/ 目录防止解压污染公共文件夹，路径分隔符是 /
+tar.exe -a -c -f $zip -C "$out\pkg" Aeri
 if ($LASTEXITCODE) { throw '打包失败' }
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 "$hash  $zipName" | Set-Content -Encoding ascii "$zip.sha256"

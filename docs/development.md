@@ -1,6 +1,6 @@
 # Development, builds, and releases
 
-Applies to source version 0.4.0. [简体中文](zh-CN/development.md)
+Applies to source version 0.4.9. [简体中文](zh-CN/development.md)
 
 ## Architecture
 
@@ -76,19 +76,19 @@ Use an ASCII-only checkout path for Android builds. Android's build tools may re
 
 `build.ps1 -Android` adds the APK to a debug build; release builds always attempt Android. Missing JDK/SDK produces a warning and skips the app. The script puts `Aeri.apk` and version/size/SHA-256 metadata `Aeri.json` under `android` beside the PC executable. Version name/code come from `Cargo.toml`.
 
-The current Android release type uses `%USERPROFILE%\.android\debug.keystore`. Preserve this certificate when changing build machines: a different signature prevents an in-place Android update. Do not commit the private key.
+Release signing reads `AERI_KEYSTORE_FILE` / `AERI_KEYSTORE_PASSWORD` / `AERI_KEY_ALIAS` / `AERI_KEY_PASSWORD` (or `android/keystore.properties`) when provided; otherwise Gradle automatically generates and persists a 30-year release keystore (`android-release.jks` and `android-release.properties`) under `%APPDATA%\VoiceAssistant` (falling back to `debug.keystore` only if `keytool` is unavailable). Copy that keystore and properties file when changing build machines so phones can install updates in place without losing pairing. Never commit the private key.
 
 ## Installation and updates
 
-`install.ps1 -Launch` installs staged release files per user under `%LOCALAPPDATA%\Programs\VoiceAssistant`, creates shortcuts and an uninstall entry, and needs no admin rights. Settings, keys, reminders, plugins, and history remain under `%APPDATA%\VoiceAssistant`. Installation updates and uninstall preserve that user data.
+`install.ps1 -Launch` installs staged release files per user under `%LOCALAPPDATA%\Programs\VoiceAssistant`, resolves the version dynamically from `Cargo.toml` / `Aeri.json`, stops any running `aeri.exe` and `agent-desktop.exe` in the target folder, creates shortcuts and an uninstall entry, and needs no admin rights. Settings, keys, reminders, plugins, and history remain under `%APPDATA%\VoiceAssistant`. Installation updates preserve user data; `uninstall.ps1` prompts whether to keep personal settings/keys or remove `%APPDATA%\VoiceAssistant`, and verifies binaries are unlocked before removing the registry entry.
 
-Startup uses the current-user Run registry entry. Moving the executable requires launching it once to update its registered path. Autostart normally shows only the orb.
+Startup uses the current-user Run registry entry. Moving the executable requires launching it once to update its registered path. Autostart normally shows only the orb; launching `aeri.exe` a second time signals the running instance via `Local\VoiceAssistantActivateEvent` to bring the main window to the front. Quitting Aeri cancels any active background task process tree and immediately restores ducked app volumes.
 
-In-app updates check GitHub Releases, verify the asset digest, extract to `%TEMP%\aeri-update`, wait for exit, replace files, roll back on replacement failure, and restart. Daily checks notify; they do not install silently. `aeri.exe --update` starts the command-line update path.
+In-app updates check GitHub Releases, refuse to start while a background task is running, verify the asset SHA-256 digest, extract to `%TEMP%\aeri-update` (supporting both the top-level `Aeri/` folder and flat archives), wait for the old `aeri.exe` and `agent-desktop.exe` in the install folder to exit, replace files, roll back on replacement failure, and restart with `--post-update` to show the result. Daily checks notify; they do not install silently. `aeri.exe --update` runs the command-line update path (restarting GUI only if an installed instance was already running).
 
 ## Maintainer release workflow
 
-This section describes publishing; it is not part of a debug/test run. Commit the intended `Cargo.toml` version and all changes, then a maintainer can run `scripts/release.ps1 -Notes <notes-file>`. It requires a clean worktree, invokes the release build unless `-SkipBuild` is supplied, packages `dist` with third-party notices, writes SHA-256, creates an annotated version tag, **pushes HEAD to main and the tag**, and creates the GitHub Release through `gh`.
+This section describes publishing; it is not part of a debug/test run. Commit the intended `Cargo.toml` version and all changes, then a maintainer can run `scripts/release.ps1 -Notes <notes-file>`. It requires a clean worktree, invokes the release build unless `-SkipBuild` is supplied, packages `dist` with third-party notices inside a top-level `Aeri/` directory in the ZIP, writes SHA-256, creates an annotated version tag, **pushes HEAD to main and the tag**, and creates the GitHub Release through `gh`.
 
 Do not invoke it from a feature branch just to test packaging. `-SkipBuild` skips compilation, not publishing. Auto-update expects `Aeri-vX.Y.Z-windows-x64.zip`; the script also uploads its `.sha256` and, if present, `Aeri-vX.Y.Z-android.apk`. Preserve those names.
 

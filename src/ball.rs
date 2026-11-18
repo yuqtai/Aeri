@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC,
     CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
     MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
-    SelectObject,
+    ScreenToClient, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -21,14 +21,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
     TrackMouseEvent, UnregisterHotKey, VK_SPACE,
 };
-use windows::Win32::UI::Shell::{QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos, GetWindowRect,
-    IDC_HAND, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, ULW_ALPHA, UpdateLayeredWindow, WM_CAPTURECHANGED,
-    WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    HTCLIENT, HTTRANSPARENT, IDC_HAND, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
+    ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, ULW_ALPHA, UpdateLayeredWindow,
+    WM_CAPTURECHANGED, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -115,6 +114,10 @@ fn size_px(scale: f32) -> i32 {
     (BOX * scale).round() as i32
 }
 
+fn dpi_for(hwnd: HWND) -> f32 {
+    (unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0).max(1.0)
+}
+
 /// 创建悬浮球（先隐藏）。pos 是上次保存的窗口位置。
 pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEvent) + 'static) -> anyhow::Result<()> {
     unsafe {
@@ -142,7 +145,7 @@ pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEven
             Some(instance.into()),
             None,
         )?;
-        let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
+        let mut scale = dpi_for(hwnd);
         BALL.with_borrow_mut(|b| {
             *b = Some(Ball {
                 hwnd,
@@ -161,12 +164,21 @@ pub fn create(pos: Option<(i32, i32)>, enabled: bool, on_event: impl Fn(BallEven
                 on_event: Rc::new(on_event),
             })
         });
-        let n = size_px(scale);
-        let (x, y) = match pos {
-            Some((x, y)) if on_screen(x + n / 2, y + n / 2) => (x, y),
-            _ => default_position(n, scale),
-        };
+        let mut n = size_px(scale);
+        let saved_valid = pos.filter(|&(x, y)| on_screen(x + n / 2, y + n / 2));
+        let (mut x, mut y) = saved_valid.unwrap_or_else(|| default_position(n, scale));
         let _ = SetWindowPos(hwnd, None, x, y, n, n, SWP_NOZORDER | SWP_NOACTIVATE);
+        // 移到目标坐标后重新读取目标显示器的实际 DPI，防止副屏不同缩放比下球体尺寸被主屏覆盖
+        let target_scale = dpi_for(hwnd);
+        if (target_scale - scale).abs() > 0.01 {
+            scale = target_scale;
+            with_ball(|b| b.scale = scale);
+            n = size_px(scale);
+            if saved_valid.is_none() {
+                (x, y) = default_position(n, scale);
+            }
+            let _ = SetWindowPos(hwnd, None, x, y, n, n, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         redraw();
     }
     Ok(())
@@ -259,19 +271,21 @@ pub fn set_visible(visible: bool) {
     apply_visibility();
 }
 
-/// 前台是全屏程序：游戏、全屏视频、PPT 放映
-fn fullscreen_app_in_front() -> bool {
-    unsafe { SHQueryUserNotificationState() }
-        .is_ok_and(|s| s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+/// 同一块显示器上最前面的可见窗口是否全屏（游戏、全屏视频、PPT 放映）
+fn fullscreen_app_in_front(hwnd: HWND) -> bool {
+    crate::screen::fullscreen_on_monitor_of(hwnd)
 }
 
-/// 按“想不想显示”和“前台是不是全屏”决定实际显示与否，有变化才动窗口
+/// 按“想不想显示”和“所在显示器前台是不是全屏”决定实际显示与否，有变化才动窗口
 fn apply_visibility() {
-    let show = with_ball(|b| b.visible).unwrap_or(false) && !fullscreen_app_in_front();
-    let Some((hwnd, mode, changed)) = with_ball(|b| {
+    let Some((hwnd, visible)) = with_ball(|b| (b.hwnd, b.visible)) else {
+        return;
+    };
+    let show = visible && !fullscreen_app_in_front(hwnd);
+    let Some((mode, changed)) = with_ball(|b| {
         let changed = b.shown != show;
         b.shown = show;
-        (b.hwnd, b.mode, changed)
+        (b.mode, changed)
     }) else {
         return;
     };
@@ -313,6 +327,14 @@ pub fn rect() -> Option<RECT> {
     let mut r = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut r).ok()? };
     Some(r)
+}
+
+/// 悬浮球所在显示器的缩放比例（1.0 = 100%, 1.5 = 150%）
+pub fn scale() -> f32 {
+    match with_ball(|b| (b.hwnd, b.scale)) {
+        Some((hwnd, s)) => dpi_for(hwnd).max(s),
+        None => 1.0,
+    }
 }
 
 /// 悬浮球所在屏幕的工作区（不含任务栏）
@@ -589,6 +611,24 @@ unsafe fn show_menu(hwnd: HWND) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            WM_NCHITTEST => {
+                // 外圈柔和光晕照常显示，球体以外区域返回 HTTRANSPARENT 让鼠标点击穿透给底层窗口
+                let mut pt = POINT {
+                    x: (lparam.0 & 0xFFFF) as i16 as i32,
+                    y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let scale = with_ball(|b| b.scale).unwrap_or(1.0);
+                let center = size_px(scale) as f32 / 2.0;
+                let dx = pt.x as f32 + 0.5 - center;
+                let dy = pt.y as f32 + 0.5 - center;
+                let hit_r = (RADIUS + 2.0) * scale;
+                if dx * dx + dy * dy > hit_r * hit_r {
+                    LRESULT(HTTRANSPARENT as isize)
+                } else {
+                    LRESULT(HTCLIENT as isize)
+                }
+            }
             WM_LBUTTONDOWN => {
                 let mut pt = POINT::default();
                 let _ = GetCursorPos(&mut pt);

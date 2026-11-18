@@ -107,7 +107,10 @@ pub(super) async fn deepgram(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<
     let mut ws = open_deepgram(s).await?;
     let start = Instant::now();
     let mut final_text = String::new();
+    let mut latest_interim = String::new();
     let mut heard = false;
+    let mut saw_phone_held = crate::audio::phone_is_held();
+    let mut released_at: Option<Instant> = None;
     let mut finished = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     loop {
@@ -121,16 +124,36 @@ pub(super) async fn deepgram(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<
                 let Some(message) = message else { break };
                 if let Message::Text(text) = message? {
                     let v: Value = serde_json::from_str(&text)?;
-                    anyhow::ensure!(v["type"] != "Error", "Deepgram rejected the audio stream");
+                    anyhow::ensure!(v["type"] != "Error", crate::locale::pick("Deepgram rejected the audio stream", "Deepgram 拒绝了音频流"));
                     if let Some((text,is_final,speech_final)) = deepgram_result(&v) {
+                        let held = crate::audio::phone_is_held();
+                        if held { saw_phone_held = true; released_at = None; }
                         if !text.is_empty() { heard = true; partial(&format!("{final_text}{text}")); }
-                        if is_final && !text.is_empty() { final_text.push_str(text); final_text.push(' '); }
-                        if speech_final { break; }
+                        if is_final {
+                            latest_interim.clear();
+                            if !text.is_empty() { final_text.push_str(text); final_text.push(' '); }
+                        } else if !text.is_empty() {
+                            latest_interim.clear();
+                            latest_interim.push_str(text);
+                        }
+                        if speech_final && !held { break; }
                     }
                 }
             }
             _ = ticker.tick() => {
-                if finished.is_none() && (start.elapsed() >= MAX_SESSION || (!heard && start.elapsed() >= s.speech_timeout)) {
+                let held = crate::audio::phone_is_held();
+                if held {
+                    saw_phone_held = true;
+                    released_at = None;
+                } else if saw_phone_held && released_at.is_none() {
+                    released_at = Some(Instant::now());
+                }
+                let release_done = released_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2));
+                if finished.is_none()
+                    && (start.elapsed() >= MAX_SESSION
+                        || release_done
+                        || (!held && !heard && start.elapsed() >= s.speech_timeout))
+                {
                     ws.send(Message::text(r#"{"type":"Finalize"}"#)).await?;
                     finished = Some(Instant::now());
                 }
@@ -139,6 +162,9 @@ pub(super) async fn deepgram(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<
         }
     }
     let _ = ws.close(None).await;
+    if !latest_interim.is_empty() {
+        final_text.push_str(&latest_interim);
+    }
     Ok((!final_text.trim().is_empty()).then(|| final_text.trim().to_string()))
 }
 

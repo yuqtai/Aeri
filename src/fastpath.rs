@@ -59,6 +59,26 @@ fn normalize(text: &str) -> String {
     t.trim().to_string()
 }
 
+fn is_cancel_power(t: &str) -> bool {
+    let compact = t.replace(['，', ',', ' '], "");
+    matches!(
+        compact.as_str(),
+        "取消关机"
+            | "取消重启"
+            | "取消定时关机"
+            | "取消定时重启"
+            | "别关机了"
+            | "别重启了"
+            | "不要关机"
+            | "不要关机了"
+            | "不要重启"
+            | "不要重启了"
+            | "不关机了"
+            | "不重启了"
+            | "取消吧不关机了"
+    )
+}
+
 pub fn try_handle(text: &str, apps: &AppIndex) -> Option<String> {
     if crate::locale::is_zh() { try_handle_zh(text, apps) } else { try_handle_en(text, apps) }
 }
@@ -88,6 +108,13 @@ fn try_handle_zh(text: &str, apps: &AppIndex) -> Option<String> {
                 return Some(format!("音量已调到{p}。"));
             }
         }
+    }
+
+    if is_cancel_power(&t) {
+        return Some(match system::cancel_power() {
+            Ok(msg) => msg,
+            Err(msg) => format!("{}。", msg.trim_end_matches(['。', '.'])),
+        });
     }
 
     match t.as_str() {
@@ -159,6 +186,7 @@ enum EnglishCommand {
     Search(String, String),
     Volume(u32),
     Media(&'static str),
+    CancelPower,
     Lock,
     Desktop,
     Time,
@@ -178,6 +206,22 @@ fn english_command(text: &str) -> Option<EnglishCommand> {
     let lower = t.to_ascii_lowercase();
     match lower.as_str() {
         "what time is it" | "what's the time" | "what is the time" | "what is today's date" | "what day is it" => return Some(EnglishCommand::Time),
+        "cancel shutdown"
+        | "cancel the shutdown"
+        | "cancel scheduled shutdown"
+        | "abort shutdown"
+        | "stop shutdown"
+        | "don't shut down"
+        | "do not shut down"
+        | "dont shut down"
+        | "cancel restart"
+        | "cancel the restart"
+        | "cancel scheduled restart"
+        | "abort restart"
+        | "stop restart"
+        | "don't restart"
+        | "do not restart"
+        | "dont restart" => return Some(EnglishCommand::CancelPower),
         "lock the screen" | "lock screen" | "lock the computer" | "lock my computer" => return Some(EnglishCommand::Lock),
         "show desktop" | "show the desktop" | "minimize all windows" => return Some(EnglishCommand::Desktop),
         "mute" | "mute the sound" => return Some(EnglishCommand::Media("mute")),
@@ -214,6 +258,10 @@ fn try_handle_en(text: &str, apps: &AppIndex) -> Option<String> {
             let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
             Some(format!("It is {:02}:{:02}, {}-{:02}-{:02}.", t.wHour, t.wMinute, t.wYear, t.wMonth, t.wDay))
         }
+        EnglishCommand::CancelPower => Some(match system::cancel_power() {
+            Ok(msg) => msg,
+            Err(msg) => format!("{}.", msg.trim_end_matches(['.', '。'])),
+        }),
         EnglishCommand::Lock => {
             unsafe { windows::Win32::System::Shutdown::LockWorkStation() }.ok()?;
             Some("Screen locked.".into())
@@ -335,5 +383,41 @@ mod tests {
         let apps = AppIndex::load_cached();
         assert_eq!(try_handle("what time is it", &apps).is_some(), !crate::locale::is_zh());
         assert_eq!(try_handle("现在几点", &apps).is_some(), crate::locale::is_zh());
+    }
+
+    #[test]
+    fn cancel_power_phrases() {
+        let apps = AppIndex::load_cached();
+        for phrase in [
+            "取消关机",
+            "取消重启",
+            "取消定时关机",
+            "别关机了",
+            "不要关机",
+            "不要关机了",
+            "不关机了",
+            "取消吧不关机了",
+            "帮我取消关机。",
+            "取消吧，不关机了！",
+        ] {
+            assert!(is_cancel_power(&normalize(phrase)), "missed zh: {phrase}");
+            assert!(try_handle_zh(phrase, &apps).is_some(), "try_handle_zh returned None for {phrase}");
+        }
+        assert_eq!(try_handle_zh("30分钟后关机", &apps), None);
+        assert_eq!(try_handle_zh("关机", &apps), None);
+
+        for phrase in [
+            "cancel shutdown",
+            "Please abort shutdown!",
+            "stop shutdown",
+            "cancel restart",
+            "don't shut down.",
+        ] {
+            assert_eq!(english_command(phrase), Some(EnglishCommand::CancelPower), "missed en: {phrase}");
+            assert!(try_handle_en(phrase, &apps).is_some(), "try_handle_en returned None for {phrase}");
+        }
+        assert_eq!(english_command("shut down in 30 minutes"), None);
+        assert_eq!(english_command("shut down"), None);
+        assert!(try_handle(crate::locale::pick("cancel shutdown", "取消关机"), &apps).is_some());
     }
 }

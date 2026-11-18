@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -119,6 +119,34 @@ pub fn executor_name(executor: &str) -> &'static str {
     }
 }
 
+static GLOBAL_TASKS: OnceLock<Mutex<Weak<TaskManager>>> = OnceLock::new();
+
+fn global_slot() -> &'static Mutex<Weak<TaskManager>> {
+    GLOBAL_TASKS.get_or_init(|| Mutex::new(Weak::new()))
+}
+
+/// 当前是否有正在运行的后台任务
+pub fn is_running() -> bool {
+    let weak = global_slot().lock().unwrap().clone();
+    let Some(mgr) = weak.upgrade() else { return false };
+    mgr.tasks.lock().unwrap().iter().any(|t| t.state == State::Running)
+}
+
+/// 取消当前正在运行的后台任务并结束子进程树；有任务被取消返回 true
+pub fn cancel_running() -> bool {
+    let weak = global_slot().lock().unwrap().clone();
+    let Some(mgr) = weak.upgrade() else { return false };
+    !mgr.cancel(None).1
+}
+
+/// 程序退出时清理所有运行中后台任务及外部 CLI 子进程树
+pub fn cancel_all_global() {
+    let weak = global_slot().lock().unwrap().clone();
+    if let Some(mgr) = weak.upgrade() {
+        mgr.cancel_all();
+    }
+}
+
 pub struct TaskManager {
     tasks: Mutex<Vec<TaskInfo>>,
     settings: Mutex<Option<TaskSettings>>,
@@ -128,7 +156,9 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub fn new(done_tx: UnboundedSender<TaskDone>, ui: UiSink) -> Arc<Self> {
-        Arc::new(Self { tasks: Mutex::new(Vec::new()), settings: Mutex::new(None), done_tx, ui })
+        let me = Arc::new(Self { tasks: Mutex::new(Vec::new()), settings: Mutex::new(None), done_tx, ui });
+        *global_slot().lock().unwrap() = Arc::downgrade(&me);
+        me
     }
 
     pub fn update_settings(&self, s: TaskSettings) {
@@ -297,9 +327,16 @@ impl TaskManager {
     async fn run_builtin(&self, id: u32, s: &TaskSettings, prompt: &str) -> anyhow::Result<String> {
         let (cfg, key) = s.builtin.clone().ok_or_else(|| anyhow::anyhow!(crate::locale::pick("The built-in assistant needs a language model API key in Settings", "内置助手需要先在设置里填大模型的 API Key")))?;
         let tools = s.full_tools.clone().ok_or_else(|| anyhow::anyhow!(crate::locale::pick("Tools are not ready", "工具没有准备好")))?;
-        let llm = Llm::new(&cfg.llm_provider, &cfg.llm_base_url, key, &cfg.llm_model, cfg.llm_thinking, &cfg.llm_effort)?;
+        let tools = Arc::new(tools.with_access(&s.access, s.workdir.clone()));
+        let model = if s.model.trim().is_empty() { &cfg.llm_model } else { s.model.trim() };
+        let llm = Llm::new(&cfg.llm_provider, &cfg.llm_base_url, key, model, cfg.llm_thinking, &cfg.llm_effort)?;
         let mut agent = Agent::backend(llm, tools);
-        agent.ask(prompt, |name, input| self.progress(id, &crate::assistant::describe_tool(name, input))).await
+        let full_prompt = crate::locale::pick(
+            &format!("[Working directory: {}]\n{prompt}", s.workdir.display()),
+            &format!("【工作目录：{}】\n{prompt}", s.workdir.display()),
+        )
+        .to_string();
+        agent.ask(&full_prompt, |name, input| self.progress(id, &crate::assistant::describe_tool(name, input))).await
     }
 
     async fn run_external(&self, id: u32, executor: &str, s: &TaskSettings, prompt: &str) -> anyhow::Result<String> {

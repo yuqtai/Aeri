@@ -1,6 +1,6 @@
 //! Windows 系统调用的小封装：单实例、内存占用、提示音、时间、媒体键、打开网址、开机自启。
 
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW,
     RegQueryValueExW, RegSetValueExW,
@@ -8,23 +8,62 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Diagnostics::Debug::Beep;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, GetCurrentProcess, INFINITE, OpenEventW, SetEvent,
+    WaitForSingleObject,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_MEDIA_NEXT_TRACK,
     VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-use windows::core::{HSTRING, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
-/// 只允许运行一个实例（两个实例会同时抢麦克风）
+const ACTIVATE_EVENT: PCWSTR = w!("Local\\VoiceAssistantActivateEvent");
+
+/// 只允许运行一个实例（两个实例会同时抢麦克风）；已有实例运行时通知它打开主界面
 pub fn single_instance() -> bool {
     unsafe {
         match CreateMutexW(None, true, w!("Local\\VoiceAssistantSingleInstance")) {
-            Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS, // 句柄不关闭，进程退出时自动释放
+            Ok(handle) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = CloseHandle(handle);
+                    if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, ACTIVATE_EVENT)
+                        .or_else(|_| CreateEventW(None, false, false, ACTIVATE_EVENT))
+                    {
+                        let _ = SetEvent(ev);
+                        let _ = CloseHandle(ev);
+                    }
+                    false
+                } else {
+                    true // 句柄不关闭，进程退出时自动释放
+                }
+            }
             Err(_) => true,
         }
     }
+}
+
+/// 监听重复启动时发来的唤起信号，每次收到信号回调 on_activate
+pub fn wait_activate_signal(on_activate: impl Fn() + Send + 'static) {
+    let raw = unsafe {
+        match CreateEventW(None, false, false, ACTIVATE_EVENT) {
+            Ok(ev) if !ev.is_invalid() => ev.0 as isize,
+            _ => return,
+        }
+    };
+    let _ = std::thread::Builder::new().name("activate-signal".into()).spawn(move || {
+        let ev = HANDLE(raw as *mut _);
+        loop {
+            let waited = unsafe { WaitForSingleObject(ev, INFINITE) };
+            if waited == WAIT_OBJECT_0 {
+                on_activate();
+            } else {
+                break;
+            }
+        }
+    });
 }
 
 /// 本进程的私有内存（MB），即任务管理器里“内存”一列
@@ -44,6 +83,13 @@ pub fn beep(freq: u32, ms: u32) {
     std::thread::spawn(move || unsafe {
         let _ = Beep(freq, ms);
     });
+}
+
+/// 同步提示音（收音前等待蜂鸣播完，避免麦克风把提示音录进去）
+pub fn beep_sync(freq: u32, ms: u32) {
+    unsafe {
+        let _ = Beep(freq, ms);
+    }
 }
 
 pub fn now_text() -> String {

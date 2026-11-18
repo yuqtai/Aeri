@@ -120,21 +120,21 @@ Rust 编写，一个进程，不带浏览器内核，不占显卡。
 
 ## 快速开始
 
-1. 到 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 下载 `Aeri-vX.Y.Z-windows-x64.zip`，解压
-2. 双击 `aeri.exe`
+1. 到 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 下载 `Aeri-vX.Y.Z-windows-x64.zip`，解压出 `Aeri` 文件夹
+2. 双击里面的 `aeri.exe`（首次运行会自动打开主界面引导配置；已在运行时再次双击也会唤起主界面）
 3. 打开 设置 → 大模型，填一个 API Key（默认 DeepSeek，在 [platform.deepseek.com](https://platform.deepseek.com/api_keys) 创建），点“保存并应用”
 
-语音也可以自由选择：识别可以用内置的离线模型（Moonshine、Whisper、SenseVoice、Parakeet）、本机自己搭的识别服务（Qwen3-ASR、faster-whisper 等兼容 OpenAI 接口的），或 OpenAI、Groq、Deepgram、ElevenLabs、Azure、Gemini、阿里云；朗读可以用 Windows 声音或 OpenAI、ElevenLabs、Azure。
+语音也可以自由选择：识别可以用内置的离线模型（Zipformer、Moonshine、Whisper、SenseVoice、Parakeet）、本机自己搭的识别服务（Qwen3-ASR、faster-whisper 等兼容 OpenAI 接口的），或 OpenAI、Groq、Deepgram、ElevenLabs、Azure、Gemini、阿里云；朗读可以用 Windows 声音或 OpenAI、ElevenLabs、Azure、自定义（OpenAI 语音 / 阿里 CosyVoice）。
 
 只需要这一个 Key：语音识别默认在本机离线完成（第一次使用时自动下载模型），回答用 Windows 自带的声音读出来。想要更自然的实时语音，可以在 设置 → 语音对话 里换成实时语音：阿里云百炼、OpenAI、Azure OpenAI、xAI Grok，或任何兼容 OpenAI Realtime 接口的服务。
 
 想用手机操控（可选）：
 
-1. 电脑上打开 设置 → 手机控制 → “允许手机控制”，点“保存并应用”（Windows 防火墙询问时允许“专用网络”）
-2. 安卓手机装 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 里的 `Aeri-vX.Y.Z-android.apk`，和电脑连同一个 Wi-Fi，打开后会自动找到电脑
+1. 电脑上打开 设置 → 手机控制 → “允许手机控制”，点“保存并应用”——Windows 防火墙询问时请允许 Aeri 访问当前网络（**专用网络和公用网络都勾上**，家庭 Wi-Fi 常被系统默认设为公用网络）
+2. 安卓手机装 `aeri.exe` 旁边的 `android\Aeri.apk`（或 [Releases](https://github.com/yuqtai/Aeri/releases/latest) 里的 `Aeri-vX.Y.Z-android.apk`），和电脑连同一个 Wi-Fi，打开后会自动找到电脑
 3. 电脑上点“配对新手机”，把 6 位配对码填进手机
 
-之后有新版本，设置页里点一下就能更新；手机 App 跟着电脑一起更新，手机上点一下就装好，不用再去下载。
+之后有新版本，在“设置 → 软件更新”里点一下就能更新；手机 App 跟着电脑一起更新，手机上点一下就装好，不用再去下载。
 
 ## 文档
 

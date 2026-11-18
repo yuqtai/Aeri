@@ -1,14 +1,16 @@
 # Safety and known limitations
 
-Applies to Aeri 0.4.0. [简体中文](zh-CN/safety.md)
+Applies to Aeri 0.4.9. [简体中文](zh-CN/safety.md)
 
 ## Access and data
 
 - Desktop and browser control can be disabled separately in settings.
-- The background executor defaults to **Full access**. It can change files and run commands without per-action approval. A misheard request can have consequences. Choose **Working directory** or **Read only** to reduce access. Codex uses its sandbox; Claude Code uses its configured tool permissions. These modes do not have identical enforcement across executors.
-- Background instructions tell agents to stop before irreversible actions such as deleting files, sending messages, paying, or submitting forms. This is a prompt constraint, not a security boundary. A task's returned text is not proof that every requested action succeeded.
-- Task requests go to external CLIs over standard input, not through shell interpolation. Cancellation terminates the task process tree.
-- API keys are DPAPI-protected in `%APPDATA%\VoiceAssistant\config.json` and decryptable by the current Windows account. Chat and task history is local, **not DPAPI-encrypted**, and retained for 30 days when enabled. It may contain sensitive request and result text; view, disable, or clear it in **History** settings.
+- The background executor defaults to **Full access**. It can change files and run commands without per-action approval. A misheard request can have consequences. Choose **Working directory** or **Read only** in **Settings → Computer control** to restrict access — these modes are passed to Codex (`workspace-write` / `read-only` sandbox) and Claude Code permissions, and are **also hard-enforced at Aeri's own tool layer** (shared by MCP and the built-in assistant):
+  - **Read only**: blocks all side-effect tools (file rename/move/copy/delete, closing apps, desktop click/type/shortcut, browser actions, volume/system toggles, power actions), allowing only inspection, screen-reading, and query tools.
+  - **Working directory**: validates that every file-modifying tool target resolves inside the configured working directory (rejecting out-of-bounds paths), enforcing consistent boundaries across Codex, Claude Code, and the built-in assistant.
+- Within Full access or allowed write paths, background instructions still tell agents to stop before irreversible actions such as deleting files, sending messages, paying, or submitting forms. That part is a prompt constraint, not a security boundary. A task's returned text is not proof that every requested action succeeded.
+- Task requests go to external CLIs over standard input, not through shell interpolation. Cancelling a task or quitting Aeri terminates the external agent process tree.
+- API keys are stored in `%APPDATA%\VoiceAssistant\config.json` as plain text so Settings can reveal them behind the eye button (older DPAPI-encrypted keys are converted on load); use OS environment variables instead if you prefer not to store keys in `config.json`. Chat and task history is local, unencrypted, and retained for 30 days when enabled. It may contain sensitive request and result text; view, disable, or clear it in **History** settings.
 
 Wake-word detection stays local. In Standard mode with local recognition, microphone audio is recognized locally after a one-time model download; recognized text, screen context, and tool results may still go to the configured language model. Cloud recognition and realtime send audio to the selected provider after activation, including follow-up turns. Headphone interruption keeps the microphone active during speech; leave it off with speakers to avoid feedback. Provider billing and data policies apply to those requests.
 
@@ -39,6 +41,6 @@ Only one background task runs at a time. In-memory task continuation is session-
 
 ## Checks still needing real hardware or interaction
 
-The earlier project notes did not establish real microphone unplug/replug behavior, startup after an actual reboot, mixed-DPI/multi-monitor orb behavior, or real changes to Wi-Fi, Bluetooth, brightness, theme, and power. They also recorded an intermittent first-click issue after simulated typing and had not established whether physical typing/pasting reproduced it. Wake-word interruption with loud speakers needs a real speaking test. These notes are retained as open verification items, not claims that 0.4.0 was tested on those paths.
+The floating orb supports multi-monitor per-monitor DPI scaling, same-monitor full-screen detection, and click-through on its outer halo, though unusual monitor layouts may still benefit from dragging it into place. Earlier project notes did not establish physical reboot autostart verification, or real hardware toggles for Wi-Fi, Bluetooth, brightness, theme, and power across varied laptops. They also recorded an intermittent first-click issue after simulated typing and had not established whether physical typing/pasting reproduced it. Wake-word/talk interruption with loud speakers still benefits from testing in your own room acoustics.
 
 [User guide](guide.md) · [← README](../README.md)

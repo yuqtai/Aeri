@@ -13,7 +13,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -46,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,7 +102,11 @@ private fun TopBar(vm: MainViewModel, ui: UiState) {
                 val (color, text) = when (ui.link) {
                     Link.Online -> pal.ok to "已连接"
                     Link.Connecting -> pal.warn to "正在连接…"
-                    Link.Offline -> pal.danger to if (ui.failures > 0) "连不上电脑，正在重试" else "未连接"
+                    Link.Offline -> pal.danger to when {
+                        ui.failures >= 3 -> "连不上电脑（检查同 Wi-Fi 与 Windows 防火墙）"
+                        ui.failures > 0 -> "连不上电脑，正在重试"
+                        else -> "未连接"
+                    }
                 }
                 Dot(color, 7.dp)
                 Text(text, fontSize = 12.sp, color = pal.ink3)
@@ -147,6 +154,7 @@ private fun TopBar(vm: MainViewModel, ui: UiState) {
 private fun StatusRow(vm: MainViewModel, ui: UiState) {
     val online = ui.link == Link.Online
     val busy = online && Status.busy(ui.status)
+    val canStop = online && (Status.busy(ui.status) || ui.taskRunning)
     Row(
         Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -168,7 +176,7 @@ private fun StatusRow(vm: MainViewModel, ui: UiState) {
             if (ui.taskRunning) Pill("后台任务进行中", pal.ok, pal.okSoft)
         }
         Spacer(Modifier.weight(1f))
-        if (busy) {
+        if (canStop) {
             Row(
                 Modifier
                     .clip(RoundedCornerShape(50))
@@ -258,37 +266,44 @@ private fun ChatList(vm: MainViewModel, ui: UiState, modifier: Modifier) {
 private fun ChatRow(chat: Chat) {
     when (chat.role) {
         0 -> UserBubble(chat.text)
-        1 -> Text(chat.text, Modifier.fillMaxWidth().padding(end = 24.dp), fontSize = 15.sp, lineHeight = 23.sp, color = pal.ink)
+        1 -> SelectionContainer(Modifier.fillMaxWidth().padding(end = 24.dp)) {
+            Text(chat.text, fontSize = 15.sp, lineHeight = 23.sp, color = pal.ink)
+        }
         2 -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Dot(pal.ink4, 5.dp)
-            Text(chat.text, fontSize = 13.sp, lineHeight = 18.sp, color = pal.ink3)
+            SelectionContainer {
+                Text(chat.text, fontSize = 13.sp, lineHeight = 18.sp, color = pal.ink3)
+            }
         }
 
-        else -> Text(
-            chat.text,
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
-            color = pal.ink3,
-            textAlign = TextAlign.Center,
-        )
+        else -> SelectionContainer(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            Text(
+                chat.text,
+                Modifier.fillMaxWidth(),
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                color = pal.ink3,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
 @Composable
 private fun UserBubble(text: String, partial: Boolean = false) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Text(
-            text,
-            Modifier
-                .widthIn(max = 300.dp)
-                .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 6.dp))
-                .background(if (partial) pal.signalSoft else pal.surface)
-                .padding(horizontal = 14.dp, vertical = 9.dp),
-            fontSize = 15.sp,
-            lineHeight = 22.sp,
-            color = if (partial) pal.signalInk else pal.ink,
-        )
+        val bubbleModifier = Modifier
+            .widthIn(max = 300.dp)
+            .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 6.dp))
+            .background(if (partial) pal.signalSoft else pal.surface)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
+        if (partial) {
+            Text(text, bubbleModifier, fontSize = 15.sp, lineHeight = 22.sp, color = pal.signalInk)
+        } else {
+            SelectionContainer(bubbleModifier) {
+                Text(text, fontSize = 15.sp, lineHeight = 22.sp, color = pal.ink)
+            }
+        }
     }
 }
 
@@ -339,30 +354,50 @@ private fun EmptyState(vm: MainViewModel, ui: UiState, modifier: Modifier) {
 @Composable
 private fun MediaRow(vm: MainViewModel, ui: UiState) {
     val online = ui.link == Link.Online
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(50))
-                .background(if (ui.listenOn && online) pal.signalSoft else pal.inset)
-                .clickable(enabled = online) { vm.setListening(!ui.listenOn) }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            val on = ui.listenOn && online
-            Icon(if (ui.listenOn) AeriIcons.mic else AeriIcons.micOff, null, Modifier.size(18.dp), tint = if (on) pal.signal else pal.ink3)
-            Text("唤醒", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (on) pal.signalInk else pal.ink3)
+    val muted = online && ui.volumeMuted
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        if (online && (ui.volumePercent != null || ui.volumeMuted)) {
+            val volLabel = if (ui.volumeMuted) "已静音" else "音量 ${ui.volumePercent}%"
+            Text(
+                volLabel,
+                Modifier.padding(start = 6.dp, bottom = 2.dp),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (ui.volumeMuted) pal.danger else pal.ink3,
+            )
         }
-        RoundIcon(AeriIcons.volumeDown, "音量减小", { vm.media("volume_down") }, enabled = online)
-        RoundIcon(AeriIcons.volumeUp, "音量增大", { vm.media("volume_up") }, enabled = online)
-        RoundIcon(AeriIcons.mute, "静音", { vm.media("mute") }, enabled = online)
-        RoundIcon(AeriIcons.previous, "上一首", { vm.media("previous") }, enabled = online)
-        RoundIcon(AeriIcons.playPause, "播放或暂停", { vm.media("play_pause") }, enabled = online)
-        RoundIcon(AeriIcons.next, "下一首", { vm.media("next") }, enabled = online)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (ui.listenOn && online) pal.signalSoft else pal.inset)
+                    .clickable(enabled = online) { vm.setListening(!ui.listenOn) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                val on = ui.listenOn && online
+                Icon(if (ui.listenOn) AeriIcons.mic else AeriIcons.micOff, null, Modifier.size(18.dp), tint = if (on) pal.signal else pal.ink3)
+                Text("唤醒", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (on) pal.signalInk else pal.ink3)
+            }
+            RoundIcon(AeriIcons.volumeDown, "音量减小", { vm.media("volume_down") }, enabled = online)
+            RoundIcon(AeriIcons.volumeUp, "音量增大", { vm.media("volume_up") }, enabled = online)
+            RoundIcon(
+                AeriIcons.mute,
+                if (muted) "取消静音" else "静音",
+                { vm.media("mute") },
+                tint = if (muted) pal.danger else pal.ink2,
+                background = if (muted) pal.danger.copy(alpha = 0.14f) else Color.Transparent,
+                enabled = online,
+            )
+            RoundIcon(AeriIcons.previous, "上一首", { vm.media("previous") }, enabled = online)
+            RoundIcon(AeriIcons.playPause, "播放或暂停", { vm.media("play_pause") }, enabled = online)
+            RoundIcon(AeriIcons.next, "下一首", { vm.media("next") }, enabled = online)
+        }
     }
 }
 
@@ -411,20 +446,35 @@ private fun BottomBar(vm: MainViewModel, ui: UiState) {
                 enabled = online && text.isNotBlank(),
             )
         } else {
-            TalkButton(vm, ui.talking, online, Modifier.weight(1f))
+            TalkButton(vm, ui.talking, ui.status, online, Modifier.weight(1f))
         }
     }
 }
 
-/** 按住说话，松开结束（像发语音消息一样）。声音从手机麦克风实时传给电脑 */
+/** 按住说话，松开结束，上滑或系统中断取消。声音从手机麦克风实时传给电脑 */
 @Composable
-private fun TalkButton(vm: MainViewModel, talking: Boolean, online: Boolean, modifier: Modifier) {
+private fun TalkButton(vm: MainViewModel, talking: Boolean, status: Int, online: Boolean, modifier: Modifier) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) vm.notifyMicDenied()
     }
-    val bg by animateColorAsState(if (talking) pal.signal else pal.inset, label = "talk-bg")
+    var willCancel by remember { mutableStateOf(false) }
+    LaunchedEffect(talking) {
+        if (!talking) willCancel = false
+    }
+    val currentOnline by rememberUpdatedState(online)
+    val currentBusy by rememberUpdatedState(Status.busy(status))
+
+    val canceling = talking && willCancel
+    val bg by animateColorAsState(
+        when {
+            canceling -> pal.danger
+            talking -> pal.signal
+            else -> pal.inset
+        },
+        label = "talk-bg",
+    )
     val scale by animateFloatAsState(if (talking) 0.97f else 1f, label = "talk-scale")
     val glow by rememberInfiniteTransition(label = "talk-glow").animateFloat(
         initialValue = 0.6f,
@@ -438,24 +488,91 @@ private fun TalkButton(vm: MainViewModel, talking: Boolean, online: Boolean, mod
             .scale(scale)
             .clip(RoundedCornerShape(26.dp))
             .background(bg)
-            .pointerInput(online) {
-                detectTapGestures(onPress = {
-                    if (!online) {
+            .pointerInput(Unit) {
+                val cancelThresholdPx = 60.dp.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val pointerId = down.id
+                    val startY = down.position.y
+                    var latestY = startY
+                    willCancel = false
+
+                    if (!currentOnline) {
                         vm.startTalking() // 会提示“还没连上电脑”
-                        return@detectTapGestures
+                        return@awaitEachGesture
                     }
                     val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                         PackageManager.PERMISSION_GRANTED
                     if (!granted) {
                         permission.launch(Manifest.permission.RECORD_AUDIO)
-                        return@detectTapGestures
+                        return@awaitEachGesture
                     }
-                    if (vm.startTalking()) {
+
+                    // 电脑正忙（正在听/思考/执行/回答）时先等 120ms，防拿起手机误擦屏幕就打断播报
+                    if (currentBusy) {
+                        val releasedEarly = withTimeoutOrNull(120L) {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == pointerId } ?: return@withTimeoutOrNull true
+                                if (change.isConsumed || !change.pressed) {
+                                    change.consume()
+                                    return@withTimeoutOrNull true
+                                }
+                                latestY = change.position.y
+                                change.consume()
+                            }
+                            @Suppress("UNREACHABLE_CODE")
+                            false
+                        } ?: false
+                        if (releasedEarly) {
+                            willCancel = false
+                            return@awaitEachGesture
+                        }
+                    }
+
+                    var started = false
+                    try {
+                        if (!vm.startTalking()) {
+                            willCancel = false
+                            return@awaitEachGesture
+                        }
+                        started = true
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        tryAwaitRelease()
-                        vm.stopTalking() // 连接中途断了时已经停过，这里什么也不做
+                        willCancel = (latestY - startY) < -cancelThresholdPx
+
+                        var canceled = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId }
+                            if (change == null || change.isConsumed) {
+                                // 来电、下拉通知栏、系统手势取消了触摸事件：一律取消，绝不把半截话发出去
+                                canceled = true
+                                break
+                            }
+                            latestY = change.position.y
+                            val swipeCancel = (latestY - startY) < -cancelThresholdPx
+                            if (swipeCancel != willCancel) {
+                                willCancel = swipeCancel
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            }
+                            if (!change.pressed) {
+                                change.consume()
+                                canceled = swipeCancel
+                                break
+                            }
+                            change.consume()
+                        }
+                        started = false
+                        willCancel = false
+                        vm.stopTalking(cancel = canceled)
+                    } finally {
+                        willCancel = false
+                        if (started) {
+                            vm.stopTalking(cancel = true)
+                        }
                     }
-                })
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -465,8 +582,13 @@ private fun TalkButton(vm: MainViewModel, talking: Boolean, online: Boolean, mod
             } else {
                 Icon(AeriIcons.mic, null, Modifier.size(20.dp), tint = if (online) pal.ink2 else pal.ink4)
             }
+            val label = when {
+                canceling -> "松开 取消"
+                talking -> "松开 结束"
+                else -> "按住 说话"
+            }
             Text(
-                if (talking) "松开 结束" else "按住 说话",
+                label,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
                 color = if (talking) Color.White else if (online) pal.ink else pal.ink4,

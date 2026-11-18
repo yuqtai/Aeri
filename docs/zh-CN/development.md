@@ -1,6 +1,6 @@
 # 开发、编译与发版
 
-适用于源码版本 0.4.0。[English](../development.md)
+适用于源码版本 0.4.9。[English](../development.md)
 
 ## 架构
 
@@ -76,19 +76,19 @@ Android 构建请使用 **纯 ASCII 路径**。Android 工具可能拒绝含中�
 
 `build.ps1 -Android` 可在调试版带上 App；发布版总会尝试构建。没有 JDK/SDK 则警告并跳过。脚本把 `Aeri.apk` 和版本/大小/SHA-256 元数据 `Aeri.json` 放到 exe 旁的 `android`。版本名与编号取自 `Cargo.toml`。
 
-当前 release 类型使用 `%USERPROFILE%\.android\debug.keystore` 签名。换构建电脑时保留同一证书，否则不能覆盖更新，必须卸载重装。不要提交私钥。
+Release 签名优先读取环境变量 `AERI_KEYSTORE_FILE` / `AERI_KEYSTORE_PASSWORD` / `AERI_KEY_ALIAS` / `AERI_KEY_PASSWORD` 或 `android/keystore.properties`；未配置时自动在 `%APPDATA%\VoiceAssistant` 生成并持久保存一份 30 年有效期的正式签名证书（`android-release.jks` 与 `android-release.properties`，仅在 `keytool` 不可用时降级到 `debug.keystore`）。换构建电脑发版前把该证书与属性文件拷过去，否则手机无法覆盖更新、需卸载重装并重做配对。绝不要提交私钥。
 
 ## 安装与更新
 
-`install.ps1 -Launch` 把已准备的发布文件安装到 `%LOCALAPPDATA%\Programs\VoiceAssistant`，创建快捷方式与卸载入口，不需要管理员。设置、Key、提醒、插件和历史在 `%APPDATA%\VoiceAssistant`，安装更新与卸载均保留。
+`install.ps1 -Launch` 把已准备的发布文件安装到 `%LOCALAPPDATA%\Programs\VoiceAssistant`，动态解析 `Cargo.toml` / `Aeri.json` 版本号，自动停止目录内运行中的 `aeri.exe` 与 `agent-desktop.exe`，创建快捷方式与卸载入口，不需要管理员权限。设置、Key、提醒、插件和历史在 `%APPDATA%\VoiceAssistant`；覆盖安装保留用户数据，`uninstall.ps1` 弹窗支持选择仅卸载程序（保留个人设置与 API Key）或连同个人数据一起清除，并在确认二进制无锁后再清理注册表项。
 
-开机启动使用当前用户 Run 注册表项。移动程序后启动一次以更新登记路径；自启通常只显示光球。
+开机启动使用当前用户 Run 注册表项。移动程序后启动一次以更新登记路径；自启通常只显示光球。程序已在运行时再次双击 `aeri.exe` 会通过命名事件 `Local\VoiceAssistantActivateEvent` 唤起并置顶已有主窗口；退出程序时会自动终止运行中的后台智能体子进程树并立即恢复被压低的其他软件音量。
 
-应用内更新从 GitHub Release 下载，核对附件摘要，解压到 `%TEMP%\aeri-update`，等待旧进程退出后替换，失败回滚，随后重启。每天检查只通知，不静默安装。也可用 `aeri.exe --update`。
+应用内更新从 GitHub Release 下载（有后台任务运行时先提示等待或取消），核对附件 SHA-256 摘要，解压到 `%TEMP%\aeri-update`（自动兼容顶层 `Aeri/` 目录与扁平目录），仅等待并结束安装目录内的旧 `aeri.exe` 与 `agent-desktop.exe` 后替换文件，失败回滚，随后带 `--post-update` 重启打开主界面显示更新结果。每天检查只通知，不静默安装。命令行 `aeri.exe --update` 仅在安装版原本运行时自动重启。
 
 ## 维护者发版
 
-本节描述发布，不属于调试/测试。提交版本与全部改动、保持工作区干净后，维护者可执行 `scripts/release.ps1 -Notes <说明文件>`。脚本默认调用发布构建，打包 `dist` 与第三方声明，写 SHA-256、创建版本标签，**推送 HEAD 到 main 和标签**，再用 `gh` 创建 Release。
+本节描述发布，不属于调试/测试。提交版本与全部改动、保持工作区干净后，维护者可执行 `scripts/release.ps1 -Notes <说明文件>`。脚本默认调用发布构建，把 `dist` 与第三方声明放进顶层 `Aeri/` 目录打进 ZIP，写 SHA-256、创建版本标签，**推送 HEAD 到 main 和标签**，再用 `gh` 创建 Release。
 
 不要在功能分支为测试打包而运行；`-SkipBuild` 只跳过编译，仍会发布。自动更新依赖 `Aeri-vX.Y.Z-windows-x64.zip`，同时上传 `.sha256` 和存在时的 `Aeri-vX.Y.Z-android.apk`，不要改附件名。
 

@@ -15,11 +15,20 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::{self, NoWindow};
+use crate::locale;
 
 pub const REPO: &str = "yuqtai/Aeri";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// 自动检查的间隔
 const CHECK_EVERY: u64 = 24 * 3600;
+
+macro_rules! lfmt {
+    ($en:literal, $zh:literal $(, $arg:expr)* $(,)?) => {{
+        let en = format!($en $(, $arg)*);
+        let zh = format!($zh $(, $arg)*);
+        locale::pick(&en, &zh).to_owned()
+    }};
+}
 
 #[derive(Clone, Debug)]
 pub struct Release {
@@ -59,11 +68,14 @@ pub async fn check() -> anyhow::Result<Option<Release>> {
         .timeout(Duration::from_secs(20))
         .send()
         .await
-        .context("连不上 GitHub")?;
+        .with_context(|| locale::pick("Could not reach GitHub", "连不上 GitHub").to_string())?;
     if !resp.status().is_success() {
-        bail!("GitHub 返回 {}", resp.status());
+        bail!("{}", lfmt!("GitHub returned {}", "GitHub 返回 {}", resp.status()));
     }
-    let v: Value = resp.json().await.context("GitHub 返回的内容看不懂")?;
+    let v: Value = resp
+        .json()
+        .await
+        .with_context(|| locale::pick("Unexpected response from GitHub", "GitHub 返回的内容看不懂").to_string())?;
     mark_checked();
     let version = v["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
     if !newer(&version, CURRENT) {
@@ -73,7 +85,7 @@ pub async fn check() -> anyhow::Result<Option<Release>> {
     let zip = assets
         .iter()
         .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with("-windows-x64.zip")))
-        .ok_or_else(|| anyhow!("v{version} 没有附带安装包"))?;
+        .ok_or_else(|| anyhow!("{}", lfmt!("Release v{version} has no Windows x64 package", "v{version} 没有附带安装包")))?;
     let name = zip["name"].as_str().unwrap_or("");
     // GitHub 会给每个附件算 SHA-256（digest 字段）；没有时找同名的 .sha256 文件
     let mut sha256 = zip["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).unwrap_or("").to_lowercase();
@@ -84,7 +96,13 @@ pub async fn check() -> anyhow::Result<Option<Release>> {
         }
     }
     if sha256.len() != 64 {
-        bail!("v{version} 的安装包没有校验值，为了安全不自动更新，请到 GitHub 手动下载");
+        bail!(
+            "{}",
+            lfmt!(
+                "Package for v{version} has no SHA-256 digest; skipping automatic update for safety. Please download manually from GitHub",
+                "v{version} 的安装包没有校验值，为了安全不自动更新，请到 GitHub 手动下载"
+            )
+        );
     }
     Ok(Some(Release {
         version,
@@ -105,7 +123,12 @@ pub fn newer(a: &str, b: &str) -> bool {
 /// 更新说明的前几行，给界面显示
 pub fn notes_summary(notes: &str) -> String {
     let lines: Vec<&str> = notes.lines().map(str::trim).filter(|l| l.starts_with("- ")).take(4).collect();
-    lines.iter().map(|l| l.trim_start_matches("- ").replace("**", "")).map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>().join("\n")
+    lines
+        .iter()
+        .map(|l| l.trim_start_matches("- ").replace("**", ""))
+        .map(|l| l.chars().take(60).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn work_dir() -> PathBuf {
@@ -115,10 +138,13 @@ fn work_dir() -> PathBuf {
 /// 安装目录 = 当前 exe 所在的文件夹；开发时编译出来的程序不更新
 pub fn install_dir() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    let dir = exe.parent().ok_or_else(|| anyhow!("找不到程序所在的文件夹"))?.to_path_buf();
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow!("{}", locale::pick("Could not find the application folder", "找不到程序所在的文件夹")))?
+        .to_path_buf();
     let s = dir.to_string_lossy().to_lowercase();
     if s.contains("\\target\\") || s.contains(".cargo-target") {
-        bail!("这是开发时编译的程序，不能自动更新");
+        bail!("{}", locale::pick("Development builds cannot auto-update", "这是开发时编译的程序，不能自动更新"));
     }
     Ok(dir)
 }
@@ -131,16 +157,22 @@ pub async fn download(rel: &Release, progress: impl Fn(u8)) -> anyhow::Result<Pa
     std::fs::create_dir_all(&base)?;
     let zip_path = base.join("update.zip");
 
-    let mut resp = client().get(&rel.zip_url).send().await.context("下载失败")?;
+    let mut resp = client()
+        .get(&rel.zip_url)
+        .send()
+        .await
+        .with_context(|| locale::pick("Download failed", "下载失败").to_string())?;
     if !resp.status().is_success() {
-        bail!("下载失败：{}", resp.status());
+        bail!("{}", lfmt!("Download failed: {}", "下载失败：{}", resp.status()));
     }
     let total = resp.content_length().unwrap_or(rel.size).max(1);
     let mut file = std::fs::File::create(&zip_path)?;
     let mut hasher = Sha256::new();
     let (mut got, mut last) = (0u64, 0u8);
     loop {
-        let chunk = tokio::time::timeout(Duration::from_secs(60), resp.chunk()).await.map_err(|_| anyhow!("下载卡住了，请稍后再试"))??;
+        let chunk = tokio::time::timeout(Duration::from_secs(60), resp.chunk())
+            .await
+            .map_err(|_| anyhow!("{}", locale::pick("Download stalled; please try again later", "下载卡住了，请稍后再试")))??;
         let Some(chunk) = chunk else { break };
         std::io::Write::write_all(&mut file, &chunk)?;
         hasher.update(&chunk);
@@ -155,7 +187,13 @@ pub async fn download(rel: &Release, progress: impl Fn(u8)) -> anyhow::Result<Pa
     let hash = format!("{:x}", hasher.finalize());
     if hash != rel.sha256 {
         let _ = std::fs::remove_file(&zip_path);
-        bail!("安装包校验不通过（可能下载不完整或被篡改），已删除，请稍后再试");
+        bail!(
+            "{}",
+            locale::pick(
+                "Package checksum mismatch (incomplete or tampered download). Deleted; please try again later",
+                "安装包校验不通过（可能下载不完整或被篡改），已删除，请稍后再试"
+            )
+        );
     }
 
     let new = base.join("new");
@@ -163,28 +201,39 @@ pub async fn download(rel: &Release, progress: impl Fn(u8)) -> anyhow::Result<Pa
     // Windows 10 起自带的 tar 能解 zip
     let out = tokio::process::Command::new("tar.exe").arg("-xf").arg(&zip_path).arg("-C").arg(&new).creation_flags_no_window().output().await?;
     if !out.status.success() {
-        bail!("解压失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!("{}", lfmt!("Extraction failed: {}", "解压失败：{}", String::from_utf8_lossy(&out.stderr).trim()));
     }
+    let extracted = resolve_extracted_dir(new);
     for need in ["aeri.exe", "agent-desktop.exe", "models/kws/tokens.txt"] {
-        if !new.join(need).exists() {
-            bail!("安装包不完整，缺少 {need}");
+        if !extracted.join(need).exists() {
+            bail!("{}", lfmt!("Package is incomplete; missing {need}", "安装包不完整，缺少 {need}"));
         }
     }
-    Ok(new)
+    Ok(extracted)
 }
 
-/// 用新版本里的 aeri.exe 去替换文件；调用后当前程序应尽快退出
-pub fn launch_apply(new: &Path) -> anyhow::Result<()> {
+/// 兼容带顶层 Aeri/ 目录的新压缩包与旧扁平压缩包
+fn resolve_extracted_dir(new: PathBuf) -> PathBuf {
+    if !new.join("aeri.exe").exists() && new.join("Aeri").join("aeri.exe").exists() {
+        new.join("Aeri")
+    } else {
+        new
+    }
+}
+
+/// 用新版本里的 aeri.exe 去替换文件；mode: "ui"（重启后打开主窗口）、"restart"（仅重启）、"none"（不启动 GUI）
+pub fn launch_apply(new: &Path, pid: u32, mode: &str) -> anyhow::Result<()> {
     let install = install_dir()?;
     std::process::Command::new(new.join("aeri.exe"))
         .arg("--apply-update")
         .arg(new)
         .arg(&install)
-        .arg(std::process::id().to_string())
+        .arg(pid.to_string())
+        .arg(mode)
         .current_dir(new)
         .creation_flags_no_window()
         .spawn()
-        .context("启动更新程序失败")?;
+        .with_context(|| locale::pick("Could not launch updater", "启动更新程序失败").to_string())?;
     Ok(())
 }
 
@@ -199,47 +248,93 @@ pub fn definition() -> Value {
 }
 
 pub async fn call(input: &Value) -> (String, bool) {
+    if input["action"] == "install" && crate::tasks::is_running() {
+        return (
+            locale::pick(
+                "A background task is currently running. Wait for it to finish or cancel it before updating Aeri.",
+                "当前有后台任务正在运行，请等后台任务完成或先取消任务后再更新软件。",
+            )
+            .into(),
+            true,
+        );
+    }
     let rel = match latest() {
         Some(rel) if input["action"] == "install" => rel,
         _ => match check().await {
             Ok(Some(rel)) => {
                 set_latest(Some(rel.clone()));
                 if input["action"] != "install" {
-                    let notes = notes_summary(&rel.notes).replace('\n', "；");
-                    return (format!("有新版本 v{}（当前 v{CURRENT}）。更新内容：{notes}。用户同意后用 action=install 更新", rel.version), false);
+                    let notes = notes_summary(&rel.notes).replace('\n', locale::pick("; ", "；"));
+                    return (
+                        lfmt!(
+                            "Update available: v{} (current v{CURRENT}). What's new: {notes}. Ask the user and call with action=install if confirmed",
+                            "有新版本 v{}（当前 v{CURRENT}）。更新内容：{notes}。用户同意后用 action=install 更新",
+                            rel.version
+                        ),
+                        false,
+                    );
                 }
                 rel
             }
-            Ok(None) => return (format!("已经是最新版本 v{CURRENT}"), false),
-            Err(e) => return (format!("检查更新失败：{e:#}"), true),
+            Ok(None) => return (lfmt!("Already on the latest version v{CURRENT}", "已经是最新版本 v{CURRENT}"), false),
+            Err(e) => return (lfmt!("Update check failed: {e:#}", "检查更新失败：{e:#}"), true),
         },
     };
-    match download(&rel, |_| {}).await.and_then(|dir| launch_apply(&dir)) {
+    let res = download(&rel, |_| {}).await.and_then(|dir| {
+        if crate::tasks::is_running() {
+            bail!(
+                "{}",
+                locale::pick(
+                    "A background task is running; wait for it to finish or cancel it before updating",
+                    "有后台任务正在运行，请等它完成或取消后再更新"
+                )
+            );
+        }
+        launch_apply(&dir, std::process::id(), "ui")
+    });
+    match res {
         Ok(()) => {
             // 留几秒把回复说完再退出，由新版本完成替换并重新启动
             tokio::spawn(async {
                 tokio::time::sleep(Duration::from_secs(6)).await;
+                crate::tasks::cancel_all_global();
+                crate::duck::restore_all_now();
                 let _ = slint::invoke_from_event_loop(|| {
                     let _ = slint::quit_event_loop();
                 });
             });
-            (format!("v{} 已下载并校验，几秒后 Aeri 会自动重启完成更新", rel.version), false)
+            (
+                lfmt!(
+                    "v{} downloaded and verified. Aeri will restart automatically in a few seconds to finish updating",
+                    "v{} 已下载并校验，几秒后 Aeri 会自动重启完成更新",
+                    rel.version
+                ),
+                false,
+            )
         }
-        Err(e) => (format!("更新失败：{e:#}"), true),
+        Err(e) => (lfmt!("Update failed: {e:#}", "更新失败：{e:#}"), true),
     }
 }
 
 /// `aeri.exe --update`：不开界面直接更新。结果写进 %APPDATA%\VoiceAssistant\update-cli.log
 pub fn update_from_command_line() -> anyhow::Result<()> {
+    locale::apply_preference(&config::load().language);
     let log = |s: &str| {
+        let _ = std::fs::create_dir_all(config::app_dir());
         let _ = std::fs::write(config::app_dir().join("update-cli.log"), s);
     };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let r = rt.block_on(async {
-        let Some(rel) = check().await? else { return Ok(format!("已经是最新版本 v{CURRENT}")) };
+        let install = install_dir()?;
+        let Some(rel) = check().await? else {
+            return Ok(lfmt!("Already on the latest version v{CURRENT}", "已经是最新版本 v{CURRENT}"));
+        };
         let dir = download(&rel, |_| {}).await?;
-        launch_apply(&dir)?;
-        Ok::<_, anyhow::Error>(format!("正在从 v{CURRENT} 更新到 v{}", rel.version))
+        let running = pids_for_exes(&[install.join("aeri.exe")]);
+        let pid = running.first().copied().unwrap_or(0);
+        let mode = if pid > 0 { "restart" } else { "none" };
+        launch_apply(&dir, pid, mode)?;
+        Ok::<_, anyhow::Error>(lfmt!("Updating from v{CURRENT} to v{}", "正在从 v{CURRENT} 更新到 v{}", rel.version))
     });
     match r {
         Ok(s) => {
@@ -247,7 +342,7 @@ pub fn update_from_command_line() -> anyhow::Result<()> {
             Ok(())
         }
         Err(e) => {
-            log(&format!("更新失败：{e:#}"));
+            log(&lfmt!("Update failed: {e:#}", "更新失败：{e:#}"));
             Err(e)
         }
     }
@@ -255,22 +350,32 @@ pub fn update_from_command_line() -> anyhow::Result<()> {
 
 // ---------- 第二步：在新版本里执行 ----------
 
-/// `aeri.exe --apply-update <新文件夹> <安装目录> <旧进程 pid>`
+/// `aeri.exe --apply-update <新文件夹> <安装目录> <旧进程 pid> [ui|restart|none]`
 pub fn apply(args: &[String]) -> anyhow::Result<()> {
-    let [new, install, pid] = args else { bail!("参数不对") };
+    locale::apply_preference(&config::load().language);
+    let (new, install, pid, mode) = match args {
+        [new, install, pid] => (new, install, pid, "ui"),
+        [new, install, pid, mode] => (new, install, pid, mode.as_str()),
+        _ => bail!("{}", locale::pick("Invalid arguments", "参数不对")),
+    };
     let (new, install) = (PathBuf::from(new), PathBuf::from(install));
     let pid: u32 = pid.parse().unwrap_or(0);
     let from = installed_version(&install);
     let result = (|| {
-        wait_exit(pid);
-        // agent-desktop 之类从安装目录启动的程序也要先结束，否则文件被占用
-        for p in crate::tools::process::pids_in_dir(&install) {
-            let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &p.to_string()]).creation_flags_no_window().output();
+        if pid > 0 {
+            let timeout_ms = if mode == "restart" { 1_500 } else { 20_000 };
+            wait_exit(pid, timeout_ms);
+        }
+        // 只结束安装目录里精确匹配的 aeri.exe 与 agent-desktop.exe，绝不通杀整个文件夹里的其他程序
+        let exact_targets = [install.join("aeri.exe"), install.join("agent-desktop.exe")];
+        for p in pids_for_exes(&exact_targets) {
+            terminate_pid(p);
         }
         std::thread::sleep(Duration::from_millis(500));
         replace_files(&new, &install)
     })();
     let ok = result.is_ok();
+    let _ = std::fs::create_dir_all(config::app_dir());
     let _ = std::fs::write(
         config::app_dir().join("update-result.json"),
         json!({"ok": ok, "version": CURRENT, "from": from, "error": result.as_ref().err().map(|e| format!("{e:#}"))}).to_string(),
@@ -278,21 +383,79 @@ pub fn apply(args: &[String]) -> anyhow::Result<()> {
     if ok {
         record_version(&install);
     }
-    // 成功启动新的，失败启动原来的（已经恢复）
-    let _ = std::process::Command::new(install.join("aeri.exe")).current_dir(&install).spawn();
+    // 界面/语音触发更新：无论成功或失败回滚都带 --post-update 打开主窗口展示结果；CLI 仅在原本运行时重启
+    match mode {
+        "ui" => {
+            let _ = std::process::Command::new(install.join("aeri.exe")).arg("--post-update").current_dir(&install).spawn();
+        }
+        "restart" => {
+            let _ = std::process::Command::new(install.join("aeri.exe")).current_dir(&install).spawn();
+        }
+        _ => {}
+    }
     result
 }
 
-fn wait_exit(pid: u32) {
+fn norm_path(p: &Path) -> String {
+    let s = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
+/// 精确查找可执行文件路径匹配的进程 PID（跳过当前进程自己）
+fn pids_for_exes(exes: &[PathBuf]) -> Vec<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+
+    let wanted: Vec<String> = exes.iter().map(|p| norm_path(p)).filter(|s| !s.is_empty()).collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let me = unsafe { GetCurrentProcessId() };
+    let mut out = Vec::new();
+    let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else { return out };
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut ok = unsafe { Process32FirstW(snap, &mut entry) }.is_ok();
+    while ok {
+        let pid = entry.th32ProcessID;
+        if pid > 4 && pid != me {
+            let path = crate::tools::process::image_path(pid);
+            if !path.is_empty() && wanted.contains(&norm_path(Path::new(&path))) {
+                out.push(pid);
+            }
+        }
+        ok = unsafe { Process32NextW(snap, &mut entry) }.is_ok();
+    }
+    unsafe {
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+fn wait_exit(pid: u32, wait_ms: u32) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject};
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) else { return };
-        if WaitForSingleObject(h, 20_000).0 != 0 {
+        if WaitForSingleObject(h, wait_ms).0 != 0 {
             let _ = TerminateProcess(h, 1);
             let _ = WaitForSingleObject(h, 5_000);
         }
         let _ = CloseHandle(h);
+    }
+}
+
+fn terminate_pid(pid: u32) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject};
+    unsafe {
+        if let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) {
+            let _ = TerminateProcess(h, 1);
+            let _ = WaitForSingleObject(h, 5_000);
+            let _ = CloseHandle(h);
+        }
     }
 }
 
@@ -308,11 +471,13 @@ pub fn replace_files(new: &Path, install: &Path) -> anyhow::Result<()> {
         for name in &names {
             let target = install.join(name);
             if target.exists() {
-                retry(|| std::fs::rename(&target, backup.join(name))).with_context(|| format!("{} 正在被占用", name.to_string_lossy()))?;
+                retry(|| std::fs::rename(&target, backup.join(name)))
+                    .with_context(|| lfmt!("{} is currently in use", "{} 正在被占用", name.to_string_lossy()))?;
                 moved.push(name.clone());
             }
             added.push(name.clone());
-            copy_any(&new.join(name), &target).with_context(|| format!("复制 {} 失败", name.to_string_lossy()))?;
+            copy_any(&new.join(name), &target)
+                .with_context(|| lfmt!("Failed to copy {}", "复制 {} 失败", name.to_string_lossy()))?;
         }
         Ok(())
     })();
@@ -325,7 +490,7 @@ pub fn replace_files(new: &Path, install: &Path) -> anyhow::Result<()> {
             let _ = std::fs::rename(backup.join(name), install.join(name));
         }
         let _ = std::fs::remove_dir_all(&backup);
-        return Err(e.context("更新失败，已恢复原来的版本"));
+        return Err(e.context(locale::pick("Update failed; restored previous version", "更新失败，已恢复原来的版本").to_string()));
     }
     let _ = std::fs::remove_dir_all(&backup);
     Ok(())
@@ -392,9 +557,10 @@ pub fn take_result() -> Option<String> {
         let _ = std::fs::remove_dir_all(work_dir());
     });
     Some(if v["ok"].as_bool() == Some(true) {
-        format!("已更新到 v{}。", v["version"].as_str().unwrap_or(CURRENT))
+        lfmt!("Updated to v{}.", "已更新到 v{}。", v["version"].as_str().unwrap_or(CURRENT))
     } else {
-        format!("更新没有成功：{}。仍在使用原来的版本。", v["error"].as_str().unwrap_or("未知错误"))
+        let err = v["error"].as_str().unwrap_or_else(|| locale::pick("unknown error", "未知错误"));
+        lfmt!("Update did not succeed: {err}. Still running the previous version.", "更新没有成功：{err}。仍在使用原来的版本。")
     })
 }
 
@@ -464,6 +630,21 @@ mod tests {
         drop(lock);
         assert_eq!(std::fs::read_to_string(install.join("aeri.exe")).unwrap(), "old");
         assert_eq!(std::fs::read_to_string(install.join("z-locked.dll")).unwrap(), "old");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolves_nested_and_flat_package_dir() {
+        let root = std::env::temp_dir().join(format!("aeri-pkg-test-{}", uuid::Uuid::new_v4()));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(nested.join("Aeri")).unwrap();
+        std::fs::write(nested.join("Aeri/aeri.exe"), "bin").unwrap();
+        assert_eq!(resolve_extracted_dir(nested.clone()), nested.join("Aeri"));
+
+        let flat = root.join("flat");
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(flat.join("aeri.exe"), "bin").unwrap();
+        assert_eq!(resolve_extracted_dir(flat.clone()), flat);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

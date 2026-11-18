@@ -48,8 +48,11 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "reminder_cancel",
-            "description": "Cancel a reminder by id, or omit id to cancel all reminders.",
-            "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}}}
+            "description": "Cancel reminders: provide id to cancel a specific reminder; omit id when there is only 1 reminder; set all=true to clear all reminders when multiple exist.",
+            "input_schema": {"type": "object", "properties": {
+                "id": {"type": "integer"},
+                "all": {"type": "boolean", "description": "Set to true to confirm clearing all reminders."}
+            }}
         }),
     ]
 }
@@ -68,7 +71,7 @@ impl Reminders {
         let r = match name {
             "reminder_add" => self.add(input["minutes"].as_f64(), input["at"].as_str().unwrap_or(""), input["text"].as_str().unwrap_or("")),
             "reminder_list" => Ok(self.describe()),
-            "reminder_cancel" => self.cancel(input["id"].as_u64().map(|i| i as u32)),
+            "reminder_cancel" => self.cancel(input["id"].as_u64().map(|i| i as u32), input["all"].as_bool() == Some(true)),
             _ => return None,
         };
         Some(match r {
@@ -110,7 +113,6 @@ impl Reminders {
             };
             if still {
                 me.save();
-                crate::sys::beep(988, 180);
                 let late = now_secs().saturating_sub(r.due);
                 let text = if late > 120 { crate::locale::pick(&format!("{} (originally due at {}; Aeri was not running then)", r.text, local_text(r.due)), &format!("{}（本来是 {} 提醒，当时 Aeri 没在运行）", r.text, local_text(r.due))).to_string() } else { r.text };
                 let _ = me.tx.send(TaskDone { id: r.id, ok: true, text, reminder: true, notice: false });
@@ -127,7 +129,7 @@ impl Reminders {
         list.iter().map(|r| format!("{}. {}（{}）：{}", r.id, local_text(r.due), when_text(r.due), r.text)).collect::<Vec<_>>().join("\n")
     }
 
-    fn cancel(&self, id: Option<u32>) -> Result<String, String> {
+    fn cancel(&self, id: Option<u32>, all: bool) -> Result<String, String> {
         let msg = {
             let mut list = self.list.lock().unwrap();
             match id {
@@ -140,9 +142,30 @@ impl Reminders {
                     crate::locale::pick(&format!("Cancelled reminder {id}"), &format!("已取消提醒 {id}")).to_string()
                 }
                 None => {
-                    let n = list.len();
-                    list.clear();
-                    crate::locale::pick(&format!("Cancelled all {n} reminders"), &format!("已取消全部 {n} 个提醒")).to_string()
+                    if list.is_empty() {
+                        return Ok(crate::locale::pick("There are no reminders", "现在没有提醒").into());
+                    }
+                    if all {
+                        let n = list.len();
+                        list.clear();
+                        crate::locale::pick(&format!("Cancelled all {n} reminders"), &format!("已取消全部 {n} 个提醒")).to_string()
+                    } else if list.len() == 1 {
+                        let r = list.remove(0);
+                        crate::locale::pick(
+                            &format!("Cancelled reminder {} ({})", r.id, r.text),
+                            &format!("已取消提醒 {}（{}）", r.id, r.text),
+                        )
+                        .to_string()
+                    } else {
+                        let n = list.len();
+                        drop(list); // 先释放锁再调 describe，防止死锁
+                        let desc = self.describe();
+                        return Err(crate::locale::pick(
+                            &format!("There are {n} active reminders; specify the id to cancel (or set all=true to cancel all):\n{desc}"),
+                            &format!("当前有 {n} 个提醒，请指定要取消的编号（或设置 all=true 全部取消）：\n{desc}"),
+                        )
+                        .to_string());
+                    }
                 }
             }
         };
@@ -255,9 +278,29 @@ mod tests {
         let r = Arc::new(Reminders { list: Mutex::new(Vec::new()), tx, persist: false });
         r.schedule(Reminder { id: 1, due: now_secs() + 1, text: "喝水".into() });
         r.schedule(Reminder { id: 2, due: now_secs() + 1, text: "取消的".into() });
-        r.cancel(Some(2)).unwrap();
+        r.cancel(Some(2), false).unwrap();
         let got = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
         assert!(got.reminder && got.text == "喝水");
         assert!(tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cancel_guards_against_accidental_clear_all() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = Arc::new(Reminders { list: Mutex::new(Vec::new()), tx, persist: false });
+        assert_eq!(r.cancel(None, false).unwrap(), crate::locale::pick("There are no reminders", "现在没有提醒"));
+
+        r.schedule(Reminder { id: 1, due: now_secs() + 3600, text: "单条提醒".into() });
+        assert!(r.cancel(None, false).unwrap().contains("1"));
+        assert!(r.list.lock().unwrap().is_empty());
+
+        r.schedule(Reminder { id: 2, due: now_secs() + 3600, text: "开会".into() });
+        r.schedule(Reminder { id: 3, due: now_secs() + 7200, text: "拿快递".into() });
+        let err = r.cancel(None, false).unwrap_err();
+        assert!(err.contains("2") && err.contains("开会") && err.contains("拿快递"), "{err}");
+        assert_eq!(r.list.lock().unwrap().len(), 2);
+
+        assert!(r.cancel(None, true).unwrap().contains(crate::locale::pick("Cancelled all 2 reminders", "已取消全部 2 个提醒")));
+        assert!(r.list.lock().unwrap().is_empty());
     }
 }

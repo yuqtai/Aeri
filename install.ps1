@@ -14,6 +14,27 @@ if ($sourceRoot -eq $installRoot) { throw (Get-UiText 'The source cannot be the 
 $sourceExe = Join-Path $sourceRoot 'aeri.exe'
 if (!(Test-Path -LiteralPath $sourceExe) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'agent-desktop.exe')) -or !(Test-Path -LiteralPath (Join-Path $sourceRoot 'models\kws\tokens.txt'))) { throw (Get-UiText 'Release files are incomplete. Build a release first.' '发布文件不完整，请先编译发布版。') }
 if ((Test-Path -LiteralPath $installRoot) -and !(Test-Path -LiteralPath $marker)) { throw (Get-UiText 'The destination exists and is not managed by this installer. Stopping.' '安装目录已存在但不是本程序管理的安装，停止覆盖。') }
+
+function Resolve-AppVersion([string]$repoRoot, [string]$srcRoot, [string]$exePath) {
+    $cargoToml = Join-Path $repoRoot 'Cargo.toml'
+    if (Test-Path -LiteralPath $cargoToml) {
+        $m = Select-String -Path $cargoToml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+        if ($m) { return $m.Matches[0].Groups[1].Value }
+    }
+    $androidJson = Join-Path $srcRoot 'android\Aeri.json'
+    if (Test-Path -LiteralPath $androidJson) {
+        try {
+            $ver = (Get-Content -LiteralPath $androidJson -Raw -Encoding UTF8 | ConvertFrom-Json).version_name
+            if ($ver) { return [string]$ver }
+        } catch {}
+    }
+    $vi = (Get-Item -LiteralPath $exePath).VersionInfo
+    foreach ($candidate in @($vi.ProductVersion, $vi.FileVersion)) {
+        if ($candidate -and $candidate.Trim()) { return ($candidate.Trim() -replace '\+.*$', '') }
+    }
+    return '0.0.0'
+}
+$appVersion = Resolve-AppVersion $PSScriptRoot $sourceRoot $sourceExe
 $stage = Join-Path $env:TEMP ('VoiceAssistant-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
@@ -28,22 +49,28 @@ try {
     if ((Get-FileHash -LiteralPath $sourceExe).Hash -ne (Get-FileHash -LiteralPath (Join-Path $stage 'aeri.exe')).Hash) { throw (Get-UiText 'Installation file verification failed.' '安装文件校验失败。') }
     $exe = Join-Path $installRoot 'aeri.exe'
     $portableExe = Join-Path $sourceRoot 'aeri.exe'
+    $agentExe = Join-Path $installRoot 'agent-desktop.exe'
+    $portableAgentExe = Join-Path $sourceRoot 'agent-desktop.exe'
     # 改名前的程序和快捷方式：voice-assistant.exe /“语音助手”，voa.exe /“VOA”
     $oldNames = @{ 'voice-assistant.exe' = '语音助手.lnk'; 'voa.exe' = 'VOA.lnk' }
     $oldExes = @($oldNames.Keys | ForEach-Object { Join-Path $installRoot $_ })
     $running = @(Get-Process aeri, voa, voice-assistant -ErrorAction SilentlyContinue | Where-Object { $_.Path -in (@($exe, $portableExe) + $oldExes + @($oldNames.Keys | ForEach-Object { Join-Path $sourceRoot $_ })) })
     $wasRunning = $running.Count -gt 0
+    $runningAgents = @(Get-Process agent-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -in @($agentExe, $portableAgentExe) })
     $backup = Join-Path $stage 'backup'
     if (Test-Path -LiteralPath $marker) {
         New-Item -ItemType Directory -Path $backup | Out-Null
         Get-ChildItem -LiteralPath $installRoot | Copy-Item -Destination $backup -Recurse
     }
-    foreach ($process in $running) { Stop-Process -Id $process.Id -Force; $process.WaitForExit(10000) | Out-Null }
+    foreach ($process in ($running + $runningAgents)) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        $process.WaitForExit(10000) | Out-Null
+    }
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
     try {
         Get-ChildItem -LiteralPath $stage | Where-Object Name -ne 'backup' | Copy-Item -Destination $installRoot -Recurse -Force
         $oldExes | ForEach-Object { Remove-Item -LiteralPath $_ -ErrorAction SilentlyContinue }
-        @{ installedAt = (Get-Date).ToString('o'); source = $sourceRoot; version = '0.4.8'; sha256 = (Get-FileHash -LiteralPath $exe).Hash } | ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding UTF8
+        @{ installedAt = (Get-Date).ToString('o'); source = $sourceRoot; version = $appVersion; sha256 = (Get-FileHash -LiteralPath $exe).Hash } | ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding UTF8
     } catch {
         if (Test-Path -LiteralPath $backup) { Get-ChildItem -LiteralPath $backup | Copy-Item -Destination $installRoot -Recurse -Force }
         if ($wasRunning -and (Test-Path -LiteralPath $exe)) { Start-Process -FilePath $exe -WorkingDirectory $installRoot -WindowStyle Hidden }
@@ -65,7 +92,7 @@ try {
     $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\VoiceAssistant'
     New-Item -Path $reg -Force | Out-Null
     $uninstall = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $installRoot 'uninstall.ps1') + '"'
-    $values = @{ DisplayName = 'Aeri'; DisplayVersion = '0.4.8'; Publisher = 'Aeri'; InstallLocation = $installRoot; DisplayIcon = $exe; UninstallString = $uninstall }
+    $values = @{ DisplayName = 'Aeri'; DisplayVersion = $appVersion; Publisher = 'Aeri'; InstallLocation = $installRoot; DisplayIcon = $exe; UninstallString = $uninstall }
     foreach ($name in $values.Keys) { New-ItemProperty -Path $reg -Name $name -Value $values[$name] -PropertyType String -Force | Out-Null }
     foreach ($name in @('NoModify', 'NoRepair')) { New-ItemProperty -Path $reg -Name $name -Value 1 -PropertyType DWord -Force | Out-Null }
     # Notify Explorer that the executable icon and shortcuts have changed.

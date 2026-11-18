@@ -2,7 +2,7 @@
 
 电脑端：`src/remote.rs`；手机端：`app/src/main/java/com/aeri/remote/MainViewModel.kt`、`Discovery.kt`。
 
-端口默认 47821（配置项 `remote_port`），TCP 上跑 WebSocket，UDP 上做局域网发现。电脑只接受局域网和本机地址（192.168.x、10.x、172.16–31.x、169.254.x、127.x）。
+端口默认 47821（配置项 `remote_port`），TCP 上跑 WebSocket，UDP 上做局域网发现。电脑只接受局域网和本机地址（192.168.x、10.x、172.16–31.x、100.64–127.x［RFC 6598 CGNAT / 校园网 / Tailscale］、169.254.x、127.x，以及对应的 IPv4-mapped IPv6 与本机/链路本地/唯一本地 IPv6）。
 
 ## 局域网发现（UDP）
 
@@ -27,26 +27,31 @@
 
 失败时回 `{"t":"denied","reason":...}` 并断开：
 
-- `no_pairing`：电脑上没在配对，或配对码过期（5 分钟）、输错 5 次作废
+- `no_pairing`：电脑上没在配对，或配对码过期（5 分钟）
+- `too_many_attempts`：配对码连续输错 5 次已作废，需在电脑上重新点“配对新手机”
 - `bad_code`：配对码不对
 - `unpaired`：令牌无效（电脑上取消了配对）
 - `save_failed`：电脑保存配对信息失败
 
-配对码在电脑设置页点“配对新手机”时生成；令牌用 DPAPI 加密后存在 `remote.json`。
+配对码在电脑设置页点“配对新手机”时生成；令牌用 DPAPI 加密后存在 `remote.json`（同一台手机重新配对时覆盖旧记录）。
 
 ### 电脑 → 手机
 
 ```json
-{"t": "welcome", "pc": "电脑名", "id": "...", "status": 0, "task_running": false, "partial": "", "history": [{"role": 1, "text": "..."}],
- "app": {"version_code": 304, "version_name": "0.3.4", "size": 1405324}}
+{"t": "welcome", "pc": "电脑名", "id": "...", "status": 0, "listening": true, "task_running": false, "partial": "",
+ "history": [{"role": 1, "text": "..."}], "volume": {"percent": 45, "muted": false},
+ "app": {"version_code": 409, "version_name": "0.4.9", "size": 1405324}}
 {"t": "status", "s": 2}
 {"t": "partial", "text": "正在识别的半句话"}
 {"t": "chat", "item": {"role": 2, "text": "任务 #3 · 打开浏览器", "task": 3}}
 {"t": "task_running", "on": true}
+{"t": "volume", "percent": 45, "muted": false}
 {"t": "clear"}
 ```
 
 - `status`：0 待机、1 正在听、2 思考中、3 正在操作、4 正在回答、5 语音唤醒已暂停
+- `listening`：电脑上语音唤醒开关的真实状态（即使连接时电脑正处于思考/回答等忙碌态，也能准确反映唤醒是否开启）
+- `volume`：电脑当前系统音量百分比（`percent` 0–100）和静音状态（`muted`）；在 `welcome` 快照以及音量/静音调节后广播，没有播放设备时 `welcome.volume` 为 `null`
 - `role`：0 用户、1 助手、2 工具/任务进展、3 系统提示；带 `task` 的是后台任务进展，紧挨着的同一任务进展原地替换
 - `history` 是最近 100 条；手机网络卡住、落后太多时电脑会重发一份 `welcome`
 - `app` 是电脑上带的手机 App 版本（见下面的“App 更新”）；电脑上没有安装包时为 `null`
@@ -64,10 +69,11 @@
 {"t": "ptt", "on": false, "cancel": true}
 ```
 
+- `stop`：停下当前前台听/思考/执行/播报，并同时取消正在运行的后台智能体任务
 - `talk`：让电脑用它自己的麦克风开始听
 - `get_app`：要电脑上带的手机 App 安装包（见下面的“App 更新”）
-- `media.key`：`volume_up` / `volume_down` / `mute` / `play_pause` / `next` / `previous`
-- `ptt`：按住说话。按下后发二进制声音帧，松开时先发完最后一帧再发 `on:false`。按得太短（不到 0.4 秒）时带 `cancel:true`，电脑丢掉这次的声音
+- `media.key`：`volume_up` / `volume_down` / `mute` / `play_pause` / `next` / `previous`（音量和静音键执行约 80ms 后电脑会广播最新 `volume`）
+- `ptt`：按住说话（手机端先确认本地麦克风成功打开再发 `on:true`）。按下后发二进制声音帧，松开时先发完最后一帧再发 `on:false`。按得太短（不到 0.4 秒）、手指上滑取消或被来电/系统手势打断时带 `cancel:true`，电脑丢掉这次的声音；每个连接分配独立连接编号隔离，旧半开连接断开不会掐断新连接的录音
 
 按下说话键时电脑的处理：
 
@@ -82,14 +88,14 @@
 发布版的 `build.ps1` 会一起编译手机 App，放在 exe 旁边的 `android\Aeri.apk`，版本信息写在 `android\Aeri.json`：
 
 ```json
-{"version_code": 304, "version_name": "0.3.4", "size": 1405324, "sha256": "..."}
+{"version_code": 409, "version_name": "0.4.9", "size": 1405324, "sha256": "..."}
 ```
 
 App 的版本号和电脑版一致（取 `Cargo.toml`），`version_code` = 主版本 × 10000 + 次版本 × 100 + 修订号。电脑版更新时 `android\` 跟着换新，所以手机 App 不需要连外网就能更新：
 
-1. 手机在 `welcome.app` 里看到的 `version_code` 比自己大，就提示“电脑上有新版 App”；
+1. 手机在 `welcome.app` 里看到的 `version_code` 比自己大（或 `version_code` 相等但 `version_name` 不同，如 `0.4.9-rc.1` 升 `0.4.9`），就提示“电脑上有新版 App”；
 2. 点“更新”时先确认系统允许 Aeri 安装应用，然后发 `{"t":"get_app"}`；
-3. 电脑回 `{"t":"app_begin","size":...,"sha256":"...","version_name":"..."}`，接着是若干个二进制块（每块 256 KB），最后 `{"t":"app_end"}`；电脑上没有安装包或版本信息对不上时回 `{"t":"app_error","reason":"missing"}`；
-4. 手机核对大小和 SHA-256，通过后打开系统安装界面，由用户点“更新”确认。
+3. 电脑回 `{"t":"app_begin","size":...,"sha256":"...","version_name":"..."}`，接着流式发送若干个二进制块（每块 256 KB，期间保持响应 Ping 保活帧不断连），最后 `{"t":"app_end"}`；电脑上没有安装包或版本信息对不上时回 `{"t":"app_error","reason":"missing"}`（读取异常回 `read_failed`）；
+4. 手机核对大小和 SHA-256，通过后打开系统安装界面，由用户点“更新”确认（Release 包使用持久发布证书签名，无缝覆盖安装不丢配对）。
 
 下载过程中的二进制块是电脑发给手机的，和手机发给电脑的麦克风声音方向相反，不会混在一起。

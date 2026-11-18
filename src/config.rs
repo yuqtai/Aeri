@@ -67,7 +67,7 @@ pub struct Config {
     pub agent_model: String,
 
     // 语音对话
-    /// realtime（实时语音模型，边说边回、可打断）/ classic（识别 + 大模型 + 系统播报）
+    /// realtime（实时语音模型：负责监听与合成、可打断）/ classic（识别 + 大模型 + 播报）
     pub voice_frontend: String,
     pub realtime_provider: String,
     pub realtime_openai_api_key_protected: String,

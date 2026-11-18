@@ -70,6 +70,7 @@ global Icons {
     out property <string> desktop: "M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M9 20h6 M12 16v4";
     out property <string> phone: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M11 18h2";
     out property <string> contrast: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 3v18 M12 8h4.5 M12 12h6 M12 16h4.5";
+    out property <string> copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1";
 }
 
 component Icon inherits Path {
@@ -94,10 +95,12 @@ component Btn inherits Rectangle {
     in property <string> text;
     in property <int> kind: 1;
     in property <bool> enabled: true;
+    in property <bool> alert: false;
     callback clicked;
     height: 32px;
     border-radius: 8px;
     background: !root.enabled ? Theme.inset
+        : root.alert ? (ta.has-hover ? #dc262629 : #dc26261a)
         : root.kind == 0 ? (ta.pressed ? Theme.signal-hover : ta.has-hover ? Theme.signal-hover : Theme.signal)
         : root.kind == 1 ? (ta.pressed ? Theme.inset-strong : ta.has-hover ? Theme.inset-strong : Theme.inset)
         : root.kind == 4 ? Theme.danger
@@ -112,8 +115,8 @@ component Btn inherits Rectangle {
             font-weight: 500;
             vertical-alignment: center;
             horizontal-alignment: center;
-            // 危险操作平时是灰色，悬停才变红，不抢视线
-            color: !root.enabled ? Theme.ink-4 : root.kind == 0 || root.kind == 4 ? #ffffff : root.kind == 3 ? (ta.has-hover ? Theme.danger : Theme.ink-3) : Theme.ink;
+            // 危险操作平时是灰色，悬停或待确认时变红，不抢视线
+            color: !root.enabled ? Theme.ink-4 : root.alert ? Theme.danger : root.kind == 0 || root.kind == 4 ? #ffffff : root.kind == 3 ? (ta.has-hover ? Theme.danger : Theme.ink-3) : Theme.ink;
         }
     }
     ta := TouchArea {
@@ -743,6 +746,7 @@ component ModeOption inherits Rectangle {
 component KeyBlock inherits VerticalLayout {
     in property <string> test-label: @tr("Test");
     in property <int> state;
+    in property <string> source-note;
     in property <string> detail;
     in property <string> hint;
     in property <string> placeholder;
@@ -784,6 +788,7 @@ component KeyBlock inherits VerticalLayout {
         if root.saved: Btn {
             text: root.confirm-clear ? @tr("Click again to clear") : @tr("Clear saved key");
             kind: 3;
+            alert: root.confirm-clear;
             clicked => {
                 if (root.confirm-clear) {
                     root.confirm-clear = false;
@@ -799,6 +804,12 @@ component KeyBlock inherits VerticalLayout {
         interval: 3s;
         running: root.confirm-clear;
         triggered => { root.confirm-clear = false; }
+    }
+    if root.source-note != "": Text {
+        text: root.source-note;
+        font-size: 11px;
+        color: Theme.ink-3;
+        wrap: word-wrap;
     }
     if root.detail != "": Text {
         text: root.detail;
@@ -832,18 +843,61 @@ export struct ChatItem {
     text: string,
 }
 
+component CopyBtn inherits Rectangle {
+    callback clicked;
+    property <bool> copied: false;
+    height: 22px;
+    border-radius: 6px;
+    background: ta.pressed ? Theme.inset-strong : ta.has-hover ? Theme.inset : transparent;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 7px;
+        spacing: 4px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 12px;
+                height: 12px;
+                source: root.copied ? Icons.check : Icons.copy;
+                tint: root.copied ? Theme.ok : ta.has-hover ? Theme.ink-2 : Theme.ink-4;
+                stroke-width: 1.7px;
+            }
+        }
+        Text {
+            text: root.copied ? @tr("Copied") : @tr("Copy");
+            font-size: 11px;
+            color: root.copied ? Theme.ok : ta.has-hover ? Theme.ink-2 : Theme.ink-4;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.copied = true;
+            root.clicked();
+        }
+    }
+    Timer {
+        interval: 1500ms;
+        running: root.copied;
+        triggered => { root.copied = false; }
+    }
+}
+
 component MessageRow inherits HorizontalLayout {
     in property <ChatItem> item;
     in property <length> max-bubble;
+    callback copy(string);
     property <int> role: root.item.role;
     padding-left: root.role == 0 ? 64px : 20px;
-    padding-right: root.role == 0 ? 20px : 40px;
+    padding-right: root.role == 0 ? 20px : root.role == 3 ? 20px : 40px;
     padding-top: root.role >= 2 ? 2px : 8px;
     padding-bottom: root.role >= 2 ? 2px : 8px;
     spacing: 10px;
     alignment: root.role == 0 ? end : root.role == 3 ? center : start;
 
-    // 助手的回答：不用气泡，左边一个小光点
+    // 助手的回答：不用气泡，左边一个小光点，底部带小巧复制按钮
     if root.role == 1: VerticalLayout {
         alignment: start;
         Rectangle {
@@ -864,16 +918,54 @@ component MessageRow inherits HorizontalLayout {
     // 工具调用缩进到和助手正文对齐
     if root.role == 2: Rectangle { width: 22px; }
 
-    Rectangle {
-        max-width: root.role == 1 ? root.max-bubble + 32px : root.max-bubble;
-        background: root.role == 0 ? Theme.signal-soft : root.role == 2 ? Theme.inset : transparent;
-        border-radius: root.role == 0 ? 16px : 6px;
-        border-bottom-right-radius: root.role == 0 ? 6px : 6px;
+    if root.role == 1: VerticalLayout {
+        max-width: root.max-bubble + 32px;
+        spacing: 2px;
+        Text {
+            text: root.item.text;
+            wrap: word-wrap;
+            font-size: 13px;
+            color: Theme.ink;
+            horizontal-alignment: left;
+        }
         HorizontalLayout {
-            padding-left: root.role == 0 ? 14px : root.role == 2 ? 8px : 0px;
-            padding-right: root.role == 0 ? 14px : root.role == 2 ? 10px : 0px;
-            padding-top: root.role == 0 ? 9px : root.role == 2 ? 4px : 2px;
-            padding-bottom: root.role == 0 ? 9px : root.role == 2 ? 4px : 2px;
+            alignment: start;
+            CopyBtn {
+                clicked => { root.copy(root.item.text); }
+            }
+        }
+    }
+
+    if root.role == 3: HorizontalLayout {
+        max-width: root.max-bubble + 48px;
+        spacing: 4px;
+        alignment: center;
+        Text {
+            text: root.item.text;
+            wrap: word-wrap;
+            font-size: 11px;
+            color: Theme.ink-3;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            CopyBtn {
+                clicked => { root.copy(root.item.text); }
+            }
+        }
+    }
+
+    if root.role == 0 || root.role == 2: Rectangle {
+        max-width: root.max-bubble;
+        background: root.role == 0 ? Theme.signal-soft : Theme.inset;
+        border-radius: root.role == 0 ? 16px : 6px;
+        border-bottom-right-radius: 6px;
+        HorizontalLayout {
+            padding-left: root.role == 0 ? 14px : 8px;
+            padding-right: root.role == 0 ? 14px : 10px;
+            padding-top: root.role == 0 ? 9px : 4px;
+            padding-bottom: root.role == 0 ? 9px : 4px;
             spacing: 6px;
             if root.role == 2: VerticalLayout {
                 alignment: center;
@@ -884,8 +976,8 @@ component MessageRow inherits HorizontalLayout {
                 wrap: root.role == 2 ? no-wrap : word-wrap;
                 overflow: elide;
                 font-size: root.role >= 2 ? 11px : 13px;
-                color: root.role == 0 ? Theme.signal-ink : root.role == 1 ? Theme.ink : Theme.ink-3;
-                horizontal-alignment: root.role == 3 ? center : left;
+                color: root.role == 0 ? Theme.signal-ink : Theme.ink-3;
+                horizontal-alignment: left;
             }
         }
     }
@@ -1027,9 +1119,9 @@ export component AppWindow inherits Window {
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
     preferred-width: 580px;
-    preferred-height: 760px;
+    preferred-height: 620px;
     min-width: 520px;
-    min-height: 560px;
+    min-height: 520px;
 
     in property <int> repaint-epoch;
     // 状态
@@ -1176,6 +1268,7 @@ export component AppWindow inherits Window {
     callback start-pairing();
     callback cancel-pairing();
     callback unpair-all();
+    callback copy-text(string);
 
     // 0 对话  1 设置
     in-out property <int> page: 0;
@@ -1184,9 +1277,13 @@ export component AppWindow inherits Window {
     // 当前设置页的“高级选项”展开了没有（换页时收起）
     property <bool> show-advanced: false;
     // 有未保存的更改时点了返回：底栏改成询问保存还是放弃
-    property <bool> leave-pending;
+    in-out property <bool> leave-pending: false;
+    property <bool> confirm-clear-chat: false;
+    property <bool> confirm-unpair: false;
+    property <bool> confirm-clear-tts: false;
     property <bool> show-keyboard: false;
     property <string> draft;
+    property <bool> voice-needs-key: !(root.frontend-index == 1 && root.asr-provider-index == 0) && root.asr-key-state == 0;
 
     public function scroll-to-bottom() {
         chat-list.content-y = min(0px, chat-list.visible-height - chat-list.content-height);
@@ -1194,6 +1291,7 @@ export component AppWindow inherits Window {
 
     // 打开设置（sub 见 settings-sub）
     public function open-settings(sub: int) {
+        root.confirm-clear-chat = false;
         root.page = 1;
         root.show-settings(sub);
     }
@@ -1201,6 +1299,9 @@ export component AppWindow inherits Window {
     function show-settings(sub: int) {
         root.settings-sub = sub;
         root.show-advanced = false;
+        root.leave-pending = false;
+        root.confirm-unpair = false;
+        root.confirm-clear-tts = false;
         settings-scroll.content-y = 0px;
     }
 
@@ -1241,9 +1342,9 @@ export component AppWindow inherits Window {
             vertical-stretch: 0;
             padding-left: 20px;
             padding-right: 12px;
-            padding-top: 14px;
-            padding-bottom: 10px;
-            spacing: 4px;
+            padding-top: 12px;
+            padding-bottom: 8px;
+            spacing: 8px;
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
@@ -1265,16 +1366,66 @@ export component AppWindow inherits Window {
             }
             if root.messages.length > 0: VerticalLayout {
                 alignment: center;
-                IconButton {
+                if !root.confirm-clear-chat: IconButton {
                     source: Icons.trash;
-                    clicked => { root.clear-chat(); }
+                    clicked => { root.confirm-clear-chat = true; }
                 }
+                if root.confirm-clear-chat: Btn {
+                    height: 28px;
+                    text: @tr("Confirm clear");
+                    kind: 3;
+                    alert: true;
+                    clicked => {
+                        root.confirm-clear-chat = false;
+                        root.clear-chat();
+                    }
+                }
+            }
+            Timer {
+                interval: 3s;
+                running: root.confirm-clear-chat;
+                triggered => { root.confirm-clear-chat = false; }
             }
             VerticalLayout {
                 alignment: center;
                 IconButton {
                     source: Icons.sliders;
                     clicked => { root.open-settings(0); }
+                }
+            }
+        }
+
+        // 已有历史或报错消息但还没填必要的 API Key：顶部常驻快捷引导条
+        if root.messages.length > 0 && (root.voice-needs-key || (root.frontend-index == 1 && root.llm-key-state == 0)): HorizontalLayout {
+            vertical-stretch: 0;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 6px;
+            Rectangle {
+                background: Theme.surface;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 10px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.voice-needs-key ? @tr("No voice API key configured yet") : @tr("No language model API key configured yet");
+                        font-size: 12px;
+                        color: Theme.warn;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Btn {
+                        height: 26px;
+                        text: @tr("Open settings");
+                        kind: 0;
+                        clicked => { root.open-settings(root.voice-needs-key ? 1 : 3); }
+                    }
                 }
             }
         }
@@ -1289,6 +1440,7 @@ export component AppWindow inherits Window {
                 for item in root.messages: MessageRow {
                     item: item;
                     max-bubble: chat-list.visible-width * 0.72;
+                    copy(t) => { root.copy-text(t); }
                 }
             }
             // 空状态
@@ -1296,14 +1448,14 @@ export component AppWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 alignment: center;
-                spacing: 18px;
-                padding-left: 32px;
-                padding-right: 32px;
+                spacing: 14px;
+                padding-left: 28px;
+                padding-right: 28px;
                 VerticalLayout {
-                    spacing: 6px;
+                    spacing: 5px;
                     Text {
                         text: @tr("How can I help?");
-                        font-size: 22px;
+                        font-size: 21px;
                         font-weight: 600;
                         letter-spacing: -0.3px;
                         color: Theme.ink;
@@ -1318,30 +1470,30 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                 }
-                // 还没填百炼的 key：语音对话用不了，先引导去设置
-                if root.asr-key-state == 0: HorizontalLayout {
+                // 还没填所选语音服务的 key：引导去语音对话页
+                if root.voice-needs-key: HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        max-width: 360px;
+                        max-width: 400px;
                         background: Theme.surface;
                         border-radius: 12px;
                         border-width: 1px;
                         border-color: Theme.hairline;
                         HorizontalLayout {
-                            padding: 14px;
+                            padding: 12px;
                             spacing: 12px;
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 alignment: center;
                                 spacing: 3px;
                                 Text {
-                                    text: @tr("One more step: add an API key");
+                                    text: @tr("One more step: add a voice API key");
                                     font-size: 13px;
                                     font-weight: 600;
                                     color: Theme.ink;
                                 }
                                 Text {
-                                    text: @tr("Voice needs a Bailian key. Try typing to check the time or open apps. Chat also needs a language model.");
+                                    text: @tr("Enter an API key for the selected voice service, or switch to free Local (offline) recognition in Settings.");
                                     font-size: 11px;
                                     color: Theme.ink-3;
                                     wrap: word-wrap;
@@ -1353,6 +1505,46 @@ export component AppWindow inherits Window {
                                     text: @tr("Open settings");
                                     kind: 0;
                                     clicked => { root.open-settings(1); }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 语音已就绪但还没填大模型 key：引导继续配置大模型
+                if !root.voice-needs-key && root.llm-key-state == 0: HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        max-width: 400px;
+                        background: Theme.surface;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: Theme.hairline;
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 3px;
+                                Text {
+                                    text: @tr("One more step: add a language model API key");
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: Theme.ink;
+                                }
+                                Text {
+                                    text: @tr("Speech recognition is ready. Add a language model API key (or select local Ollama) to chat and control your PC.");
+                                    font-size: 11px;
+                                    color: Theme.ink-3;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Btn {
+                                    text: @tr("Set up model");
+                                    kind: 0;
+                                    clicked => { root.open-settings(3); }
                                 }
                             }
                         }
@@ -1606,8 +1798,11 @@ export component AppWindow inherits Window {
                             title: @tr("Voice chat");
                             summary: (root.frontend-index == 0 ? @tr("Realtime voice") + @tr(" · ") + (root.realtime-provider-index == 0 ? "OpenAI" : root.realtime-provider-index == 1 ? "Azure OpenAI" : root.realtime-provider-index == 2 ? "xAI Grok" : @tr("Custom"))
                                     : @tr("Standard") + @tr(" · ") + (root.asr-provider-index == 0 ? @tr("Local recognition") : root.asr-provider-index == 1 ? "OpenAI" : root.asr-provider-index == 2 ? "Groq" : root.asr-provider-index == 3 ? "Deepgram" : root.asr-provider-index == 4 ? "ElevenLabs" : root.asr-provider-index == 5 ? "Azure" : root.asr-provider-index == 6 ? "Gemini" : @tr("Custom")))
-                                + @tr(" · ") + (root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("Ready") : root.asr-key-state == 0 ? @tr("Needs a key") : root.asr-key-state == 4 ? @tr("Key test failed") : @tr("Ready"));
-                            warn: !(root.frontend-index == 1 && root.asr-provider-index == 0) && (root.asr-key-state == 0 || root.asr-key-state == 4);
+                                + @tr(" · ") + (root.voice-test-state == 4 || (!(root.frontend-index == 1 && root.asr-provider-index == 0) && root.asr-key-state == 4) ? @tr("Key test failed")
+                                    : root.voice-needs-key ? @tr("Needs a key")
+                                    : root.voice-test-state == 3 || root.asr-key-state == 3 ? @tr("Test passed")
+                                    : @tr("Ready"));
+                            warn: root.voice-needs-key || root.voice-test-state == 4 || (!(root.frontend-index == 1 && root.asr-provider-index == 0) && root.asr-key-state == 4);
                             clicked => { root.show-settings(1); }
                         }
                         Divider { padding-left: 50px; }
@@ -1623,7 +1818,7 @@ export component AppWindow inherits Window {
                             icon: Icons.nav-model;
                             title: @tr("Language model");
                             summary: @tr("{} · {}", root.llm-model, (root.llm-key-state == 0 ? (root.frontend-index == 0 ? @tr("No key; realtime model answers directly") : @tr("No key yet"))
-                                    : root.llm-key-state == 4 ? @tr("Key test failed") : @tr("Key ready")));
+                                    : root.llm-key-state == 4 ? @tr("Key test failed") : root.llm-key-state == 3 ? @tr("Test passed") : @tr("Key ready")));
                             warn: (root.llm-key-state == 0 && root.frontend-index == 1) || root.llm-key-state == 4;
                             clicked => { root.show-settings(3); }
                         }
@@ -1771,7 +1966,14 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 10px;
                                 Text { text: root.local-model-status; color: Theme.ink-3; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap; }
+                                Btn { text: @tr("Test speech recognition"); enabled: root.voice-test-state != 2; clicked => { root.test-voice(); } }
                                 Btn { text: @tr("Delete downloaded model"); clicked => { root.delete-local-model(); } }
+                            }
+                            if root.voice-test-state != 1: Text {
+                                text: root.voice-test-status;
+                                font-size: 11px;
+                                color: root.voice-test-state == 4 ? Theme.danger : root.voice-test-state == 3 ? Theme.ok : Theme.ink-3;
+                                wrap: word-wrap;
                             }
                         }
                         if root.frontend-index == 1 && root.asr-provider-index == 7: FieldBlock {
@@ -1788,6 +1990,7 @@ export component AppWindow inherits Window {
                         if !(root.frontend-index == 1 && root.asr-provider-index == 0): Divider { }
                         if !(root.frontend-index == 1 && root.asr-provider-index == 0): KeyBlock {
                             state: root.voice-test-state == 1 ? (root.asr-key-input != "" ? 1 : root.asr-key-state == 0 ? 0 : 1) : root.voice-test-state;
+                            source-note: root.asr-key-status;
                             detail: root.voice-test-status;
                             test-label: root.frontend-index == 0 ? @tr("Test realtime voice") : @tr("Test speech recognition");
                             placeholder: root.frontend-index == 1 && root.asr-provider-index == 0 ? @tr("No key needed for local speech recognition") : @tr("Provider API key");
@@ -1834,7 +2037,27 @@ export component AppWindow inherits Window {
                             title: @tr("Speech output API key");
                             hint: @tr("Stored on this computer. Use the eye button to show it. Leave empty to use the environment variable.");
                             TextField { text <=> root.tts-key-input; placeholder: @tr("Provider API key"); password: true; }
-                            if root.tts-key-saved: Btn { text: @tr("Clear saved key"); clicked => { root.clear-tts-key(); } }
+                            if root.tts-key-saved: HorizontalLayout {
+                                alignment: start;
+                                Btn {
+                                    text: root.confirm-clear-tts ? @tr("Click again to clear") : @tr("Clear saved key");
+                                    kind: 3;
+                                    alert: root.confirm-clear-tts;
+                                    clicked => {
+                                        if (root.confirm-clear-tts) {
+                                            root.confirm-clear-tts = false;
+                                            root.clear-tts-key();
+                                        } else {
+                                            root.confirm-clear-tts = true;
+                                        }
+                                    }
+                                }
+                            }
+                            Timer {
+                                interval: 3s;
+                                running: root.confirm-clear-tts;
+                                triggered => { root.confirm-clear-tts = false; }
+                            }
                         }
                         Divider { }
                         FieldBlock {
@@ -2074,10 +2297,10 @@ export component AppWindow inherits Window {
                         }
                         Divider { }
                         KeyBlock {
-                            state: root.llm-key-state;
+                            state: root.llm-key-state == 0 && root.llm-key-input != "" ? 1 : root.llm-key-state;
                             detail: root.llm-key-status;
-                            placeholder: @tr("Paste a new key (leave blank to keep it)");
-                            hint: @tr("API keys are encrypted on this PC. Ollama needs no key.");
+                            placeholder: @tr("Provider API key");
+                            hint: @tr("Stored on this computer. Use the eye button to show it. Ollama needs no key.");
                             saved: root.llm-key-saved;
                             input <=> root.llm-key-input;
                             test => { root.test-llm(); }
@@ -2172,7 +2395,7 @@ export component AppWindow inherits Window {
                         Divider { }
                         SettingRow {
                             title: @tr("Permissions");
-                            description: root.access-index == 0 ? @tr("Can do anything without further confirmation. Misheard speech may also be executed") : root.access-index == 1 ? @tr("Only edit files in the workspace; use built-in tools for desktop actions") : @tr("View and answer only; cannot change anything");
+                            description: root.access-index == 0 ? @tr("Can do anything without further confirmation. Misheard speech may also be executed") : root.access-index == 1 ? @tr("Codex, Claude Code, and the built-in assistant can only edit files in the working directory; desktop actions use built-in tools") : @tr("Codex, Claude Code, and the built-in assistant can only view and answer; modifying tools are blocked");
                             VerticalLayout {
                                 alignment: center;
                                 Segmented {
@@ -2187,13 +2410,13 @@ export component AppWindow inherits Window {
                     if root.show-advanced: Card {
                         FieldBlock {
                             title: @tr("Working directory");
-                            hint: @tr("Leave blank to use your home folder");
+                            hint: @tr("Leave blank to use your home folder; enforced for Codex, Claude Code, and the built-in assistant");
                             TextField { text <=> root.agent-workdir; placeholder: @tr("For example, D:\\code"); }
                         }
                         Divider { }
                         FieldBlock {
                             title: @tr("Agent model");
-                            hint: @tr("Leave blank to use the agent’s default model");
+                            hint: @tr("Leave blank to use the agent’s default model (the built-in assistant uses the Language model setting)");
                             TextField { text <=> root.agent-model; }
                         }
                         Divider { }
@@ -2226,7 +2449,7 @@ export component AppWindow inherits Window {
                     alignment: start;
                     spacing: 8px;
                     PageIntro {
-                        text: @tr("Use the Android app on the same Wi-Fi to type, hold to talk, stop, and adjust volume. Local networks only. Allow Private networks when Windows Firewall asks.");
+                        text: @tr("Use the Android app on the same Wi-Fi to type, hold to talk, stop, and adjust volume. Local networks only. When Windows Firewall asks, allow both Private and Public networks (home Wi-Fi is often set to Public by default).");
                     }
                     Card {
                         SettingRow {
@@ -2293,11 +2516,24 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Btn {
-                                    text: @tr("Unpair");
+                                    text: root.confirm-unpair ? @tr("Confirm unpair") : @tr("Unpair");
                                     kind: 3;
-                                    clicked => { root.unpair-all(); }
+                                    alert: root.confirm-unpair;
+                                    clicked => {
+                                        if (root.confirm-unpair) {
+                                            root.confirm-unpair = false;
+                                            root.unpair-all();
+                                        } else {
+                                            root.confirm-unpair = true;
+                                        }
+                                    }
                                 }
                             }
+                        }
+                        Timer {
+                            interval: 3s;
+                            running: root.confirm-unpair;
+                            triggered => { root.confirm-unpair = false; }
                         }
                     }
                 }
@@ -2565,13 +2801,18 @@ export component AppWindow inherits Window {
                 text: @tr("Save & apply");
                 kind: 0;
                 clicked => {
-                    root.save-settings();
-                    // 保存失败（比如校验没通过）时留在设置页，让人看到原因
-                    if (root.leave-pending && !root.settings-dirty) {
-                        root.settings-note = "";
-                        root.page = 0;
+                    if (root.leave-pending) {
+                        root.leave-pending = false;
+                        root.save-settings();
+                        // 保存失败（比如校验没通过）时留在设置页，让人看到原因
+                        if (!root.settings-dirty) {
+                            root.settings-note = "";
+                            root.page = 0;
+                        }
+                    } else {
+                        root.save-settings();
+                        root.leave-pending = false;
                     }
-                    root.leave-pending = false;
                 }
             }
         }

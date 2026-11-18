@@ -1,16 +1,16 @@
 //! 手机控制：同一个局域网里的安卓 App（android/）连到这里，可以打字下命令、按住说话（用手机麦克风）、
 //! 停止、暂停唤醒、调音量和控制播放，并实时看到对话和状态。
 //!
-//! - 只接受局域网地址（192.168.x / 10.x / 172.16–31.x / 169.254.x 和本机），不经过任何服务器；
+//! - 只接受局域网地址（192.168.x / 10.x / 172.16–31.x / 100.64–127.x / 169.254.x 和本机），不经过任何服务器；
 //! - 第一次在电脑设置页点“配对新手机”，手机输入 6 位配对码，换到一个长令牌（DPAPI 加密存在本机），之后都用令牌；
 //! - 同一个端口的 UDP 用来让手机自动找到电脑（局域网广播），电脑 IP 变了也不用重新配对。
 //!
 //! 协议见 android/PROTOCOL.md：WebSocket 文本帧是 JSON，二进制帧是手机麦克风的 16kHz 单声道 16 位 PCM。
 
 use std::collections::VecDeque;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -87,13 +87,20 @@ struct Item {
 
 struct Mirror {
     status: i32,
+    /// 语音唤醒开关真实状态（避免电脑处于思考/播报等忙碌态时，新连上的手机把已暂停的唤醒误判为开启）
+    listening: Option<bool>,
     task_running: bool,
     partial: String,
     history: VecDeque<Item>,
 }
 
-static MIRROR: Mutex<Mirror> =
-    Mutex::new(Mirror { status: Status::Idle as i32, task_running: false, partial: String::new(), history: VecDeque::new() });
+static MIRROR: Mutex<Mirror> = Mutex::new(Mirror {
+    status: Status::Idle as i32,
+    listening: None,
+    task_running: false,
+    partial: String::new(),
+    history: VecDeque::new(),
+});
 
 impl Mirror {
     fn push(&mut self, item: Item) {
@@ -115,12 +122,27 @@ fn events() -> &'static broadcast::Sender<Arc<str>> {
     EVENTS.get_or_init(|| broadcast::channel(512).0)
 }
 
+fn schedule_volume_broadcast() {
+    let Some(rt) = RUNTIME.get() else { return };
+    rt.spawn(async {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        if let Ok(Some((percent, muted))) = tokio::task::spawn_blocking(crate::tools::system::get_volume).await {
+            let _ = events().send(json!({"t": "volume", "percent": percent, "muted": muted}).to_string().into());
+        }
+    });
+}
+
 /// 调度中心发给界面的每个事件也抄送一份（在发出事件的线程里调用，很快）
 pub fn observe(ev: &UiEvent) {
     let mut m = lock(&MIRROR);
     let msg = match ev {
         UiEvent::Status(s) => {
             m.status = *s as i32;
+            match s {
+                Status::Idle => m.listening = Some(true),
+                Status::Paused => m.listening = Some(false),
+                _ => {}
+            }
             // 手机按着说话键时助手停下来了：开始听手机
             if matches!(s, Status::Idle | Status::Paused) && audio::phone_wants_turn() {
                 send_command(Command::PhoneTalk);
@@ -135,12 +157,22 @@ pub fn observe(ev: &UiEvent) {
             json!({"t": "partial", "text": p})
         }
         UiEvent::Chat(role, text) => {
+            if matches!(role, Role::Tool | Role::Assistant) {
+                let lower = text.to_ascii_lowercase();
+                if text.contains("音量") || text.contains("静音") || lower.contains("volume") || lower.contains("mute") {
+                    schedule_volume_broadcast();
+                }
+            }
             let item = Item { role: *role as i32, text: text.clone(), task: None };
             m.push(item.clone());
             json!({"t": "chat", "item": item})
         }
         UiEvent::TaskProgress(id, text) => {
-            let item = Item { role: Role::Tool as i32, text: format!("任务 #{id} · {text}"), task: Some(*id) };
+            let item = Item {
+                role: Role::Tool as i32,
+                text: crate::locale::pick(&format!("Task #{id} · {text}"), &format!("任务 #{id} · {text}")).to_string(),
+                task: Some(*id),
+            };
             m.push(item.clone());
             json!({"t": "chat", "item": item})
         }
@@ -166,20 +198,33 @@ pub fn clear_history() {
 }
 
 /// 完整快照 + 从这一刻起的事件（同一把锁里拿，不漏不重）
-fn welcome() -> (String, broadcast::Receiver<Arc<str>>) {
+async fn welcome() -> (String, broadcast::Receiver<Arc<str>>) {
+    let volume = tokio::task::spawn_blocking(crate::tools::system::get_volume).await.ok().flatten();
+    let app = tokio::task::spawn_blocking(bundled_app).await.ok().flatten();
     let m = lock(&MIRROR);
     let rx = events().subscribe();
+    let listening = m.listening.unwrap_or_else(|| {
+        if m.status == Status::Paused as i32 {
+            false
+        } else if cfg!(test) {
+            true
+        } else {
+            config::load().listen_on_start
+        }
+    });
     let history: Vec<&Item> = m.history.iter().collect();
     let msg = json!({
         "t": "welcome",
         "pc": pc_name(),
         "id": registry(|r| r.pc_id.clone()),
         "status": m.status,
+        "listening": listening,
         "task_running": m.task_running,
         "partial": m.partial,
         "history": history,
+        "volume": volume.map(|(percent, muted)| json!({"percent": percent, "muted": muted})),
         // 电脑上带的手机 App 是第几版：手机比它旧就提示更新
-        "app": bundled_app().map(|a| json!({"version_code": a.version_code, "version_name": a.version_name, "size": a.size})),
+        "app": app.map(|a| json!({"version_code": a.version_code, "version_name": a.version_name, "size": a.size})),
     });
     (msg.to_string(), rx)
 }
@@ -222,21 +267,29 @@ fn bundled_app() -> Option<BundledApp> {
 
 type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
 
-/// 把手机 App 传给手机
-async fn send_app(sink: &mut WsSink) -> anyhow::Result<()> {
-    let Some(app) = bundled_app() else {
+struct AppTransfer {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+/// 准备传输手机 App：先发 app_begin，后续二进制块在主循环里流式发送，确保期间持续响应手机的 Ping 保活帧
+async fn start_send_app(sink: &mut WsSink) -> anyhow::Result<Option<AppTransfer>> {
+    let Some(app) = tokio::task::spawn_blocking(bundled_app).await.ok().flatten() else {
         sink.send(Message::text(json!({"t": "app_error", "reason": "missing"}).to_string())).await?;
-        return Ok(());
+        return Ok(None);
     };
     let path = app.path.clone();
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await??;
+    let Ok(Ok(bytes)) = tokio::task::spawn_blocking(move || std::fs::read(path)).await else {
+        sink.send(Message::text(json!({"t": "app_error", "reason": "read_failed"}).to_string())).await?;
+        return Ok(None);
+    };
     let begin = json!({"t": "app_begin", "size": bytes.len(), "sha256": app.sha256, "version_name": app.version_name});
     sink.send(Message::text(begin.to_string())).await?;
-    for chunk in bytes.chunks(APP_CHUNK) {
-        sink.send(Message::Binary(chunk.to_vec().into())).await?;
+    if bytes.is_empty() {
+        sink.send(Message::text(json!({"t": "app_end"}).to_string())).await?;
+        return Ok(None);
     }
-    sink.send(Message::text(json!({"t": "app_end"}).to_string())).await?;
-    Ok(())
+    Ok(Some(AppTransfer { bytes, offset: 0 }))
 }
 
 fn current_status() -> i32 {
@@ -304,6 +357,11 @@ impl Registry {
         let Some(protected) = config::protect_key_dpapi(token) else { return false };
         let paired_at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let stored = StoredDevice { name: name.to_string(), token: protected, paired_at };
+        // 同一台手机重新配对时覆盖旧记录，避免配对数虚增；总配对列表保留合理上限
+        self.devices.retain(|d| d.0 != name);
+        if self.devices.len() >= 32 {
+            self.devices.remove(0);
+        }
         self.devices.push((name.to_string(), token.to_string(), stored));
         self.save();
         true
@@ -331,7 +389,7 @@ fn new_token() -> String {
 }
 
 fn pc_name() -> String {
-    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "电脑".into())
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| crate::locale::pick("PC", "电脑").into())
 }
 
 // ---------- 配对 ----------
@@ -387,14 +445,14 @@ fn pair(code: &str, name: &str) -> Result<String, &'static str> {
             *p = None;
             drop(p);
             changed();
-            return Err("no_pairing");
+            return Err("too_many_attempts");
         }
         return Err("bad_code");
     }
     *p = None;
     drop(p);
     let name: String = name.trim().chars().take(40).collect();
-    let name = if name.is_empty() { "手机".to_string() } else { name };
+    let name = if name.is_empty() { crate::locale::pick("Phone", "手机").to_string() } else { name };
     let token = new_token();
     if !registry(|r| r.add(&name, &token)) {
         return Err("save_failed");
@@ -502,7 +560,15 @@ async fn serve(port: u16, generation: u64) -> anyhow::Result<()> {
     let (tcp, udp) = loop {
         match (TcpListener::bind(addr).await, UdpSocket::bind(addr).await) {
             (Ok(t), Ok(u)) => break (t, u),
-            (Err(e), _) | (_, Err(e)) if tries >= 10 => anyhow::bail!("端口 {port} 打不开：{e}"),
+            (Err(e), _) | (_, Err(e)) if tries >= 10 => {
+                anyhow::bail!(
+                    "{}",
+                    crate::locale::pick(
+                        &format!("Could not open port {port}: {e}"),
+                        &format!("端口 {port} 打不开：{e}"),
+                    )
+                )
+            }
             _ => {
                 tries += 1;
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -538,13 +604,23 @@ async fn serve(port: u16, generation: u64) -> anyhow::Result<()> {
     }
 }
 
-/// 只接受局域网和本机
+/// RFC 6598 CGNAT / Tailscale / 校园网常用网段 100.64.0.0/10
+fn is_cgnat_v4(v4: Ipv4Addr) -> bool {
+    let [a, b, _, _] = v4.octets();
+    a == 100 && (b & 0b1100_0000) == 64
+}
+
+fn is_lan_v4(v4: Ipv4Addr) -> bool {
+    v4.is_private() || v4.is_link_local() || v4.is_loopback() || is_cgnat_v4(v4)
+}
+
+/// 只接受局域网（含 100.64.0.0/10）和本机
 fn is_lan(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        IpAddr::V4(v4) => is_lan_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_lan(IpAddr::V4(v4));
+                return is_lan_v4(v4);
             }
             let first = v6.segments()[0];
             v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
@@ -570,15 +646,22 @@ impl Drop for ConnectedGuard {
     }
 }
 
-/// 这个连接正按着说话键；连接断开（包括被强行结束）时自动松开
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
+/// 这个连接正按着说话键；按连接唯一编号隔离，旧半开连接超时断开时不会误掐断新连接的录音
 struct PttGuard {
+    id: u64,
     held: bool,
 }
 
 impl PttGuard {
+    fn new() -> Self {
+        Self { id: NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed), held: false }
+    }
+
     fn press(&mut self) {
         self.held = true;
-        audio::phone_press();
+        audio::phone_press_conn(self.id);
         let status = current_status();
         if status == Status::Idle as i32 || status == Status::Paused as i32 {
             if audio::phone_wants_turn() {
@@ -593,14 +676,14 @@ impl PttGuard {
 
     fn release(&mut self) {
         if std::mem::take(&mut self.held) {
-            audio::phone_release();
+            audio::phone_release_conn(self.id);
         }
     }
 
-    /// 按一下就松开了：不当成说话
+    /// 按一下就松开了或上滑取消：不当成说话
     fn cancel(&mut self) {
         self.held = false;
-        if audio::phone_cancel() {
+        if audio::phone_cancel_conn(self.id) {
             assistant::interrupt();
         }
     }
@@ -653,10 +736,11 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
         _ => return Ok(()),
     }
 
-    let (snapshot, mut events) = welcome();
+    let (snapshot, mut events) = welcome().await;
     sink.send(Message::text(snapshot)).await?;
     let _connected = ConnectedGuard::new();
-    let mut ptt = PttGuard { held: false };
+    let mut ptt = PttGuard::new();
+    let mut sending_app: Option<AppTransfer> = None;
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     loop {
@@ -665,7 +749,7 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
                 Ok(msg) => sink.send(Message::text(msg.to_string())).await?,
                 // 落后太多（网络卡了）：重发一份完整快照
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let (snapshot, rx) = welcome();
+                    let (snapshot, rx) = welcome().await;
                     events = rx;
                     sink.send(Message::text(snapshot)).await?;
                 }
@@ -674,8 +758,8 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
             msg = source.next() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                        if handle_message(&v, &mut ptt) == Some(Reply::SendApp) {
-                            send_app(&mut sink).await?;
+                        if handle_message(&v, &mut ptt) == Some(Reply::SendApp) && sending_app.is_none() {
+                            sending_app = start_send_app(&mut sink).await?;
                         }
                     }
                 }
@@ -684,11 +768,28 @@ async fn connection(stream: TcpStream) -> anyhow::Result<()> {
                         audio::phone_audio(pcm16_to_f32(&pcm));
                     }
                 }
+                Some(Ok(Message::Ping(_))) => {
+                    // 及时把 tungstenite 排队的 Pong 刷回给手机，防止大体积 APK 弱网传输超过 15s 被断连
+                    sink.flush().await?;
+                }
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e.into()),
             },
             _ = ping.tick() => sink.send(Message::Ping(Vec::new().into())).await?,
+            _ = tokio::task::yield_now(), if sending_app.is_some() => {
+                if let Some(mut xfer) = sending_app.take() {
+                    let end = (xfer.offset + APP_CHUNK).min(xfer.bytes.len());
+                    let chunk = xfer.bytes[xfer.offset..end].to_vec();
+                    xfer.offset = end;
+                    sink.send(Message::Binary(chunk.into())).await?;
+                    if xfer.offset < xfer.bytes.len() {
+                        sending_app = Some(xfer);
+                    } else {
+                        sink.send(Message::text(json!({"t": "app_end"}).to_string())).await?;
+                    }
+                }
+            }
         }
     }
 }
@@ -708,7 +809,10 @@ fn handle_message(v: &Value, ptt: &mut PttGuard) -> Option<Reply> {
                 send_command(Command::Text(text.chars().take(2000).collect()));
             }
         }
-        "stop" => assistant::interrupt(),
+        "stop" => {
+            assistant::interrupt();
+            let _ = crate::tasks::cancel_running();
+        }
         // 用电脑的麦克风听
         "talk" => send_command(Command::Talk),
         "ptt" => match (v["on"].as_bool(), v["cancel"].as_bool()) {
@@ -718,6 +822,7 @@ fn handle_message(v: &Value, ptt: &mut PttGuard) -> Option<Reply> {
         },
         "listen" => {
             if let (Some(on), Some(h)) = (v["on"].as_bool(), HOOKS.get()) {
+                lock(&MIRROR).listening = Some(on);
                 (h.set_listening)(on);
             }
         }
@@ -731,8 +836,17 @@ fn handle_message(v: &Value, ptt: &mut PttGuard) -> Option<Reply> {
                 "previous" => MediaKey::Previous,
                 _ => return None,
             };
+            let is_volume = matches!(key, MediaKey::VolumeUp | MediaKey::VolumeDown | MediaKey::Mute);
             let times = v["times"].as_u64().unwrap_or(1).clamp(1, 10) as u32;
-            tokio::task::spawn_blocking(move || sys::press_media_key(key, times));
+            tokio::spawn(async move {
+                let _ = tokio::task::spawn_blocking(move || sys::press_media_key(key, times)).await;
+                if is_volume {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    if let Ok(Some((percent, muted))) = tokio::task::spawn_blocking(crate::tools::system::get_volume).await {
+                        let _ = events().send(json!({"t": "volume", "percent": percent, "muted": muted}).to_string().into());
+                    }
+                }
+            });
         }
         _ => {}
     }
@@ -757,37 +871,110 @@ pub struct Info {
 pub fn info() -> Info {
     let phase = lock(&PHASE).1.clone();
     let running = phase == Phase::Listening;
-    let error = if let Phase::Failed(e) = &phase { e.clone() } else { String::new() };
     let paired = registry(|r| r.devices.len());
     let connected = CONNECTED.load(Ordering::SeqCst);
     let port = lock(&SERVER).as_ref().map(|s| s.port);
-    let status = if !error.is_empty() {
-        format!("没能打开：{error}")
-    } else if running {
-        let address = local_ip().map(|ip| format!("电脑地址 {ip}:{}", port.unwrap_or_default())).unwrap_or_default();
-        let devices = match (paired, connected) {
-            (0, _) => "还没有配对手机".to_string(),
-            (n, 0) => format!("已配对 {n} 台手机"),
-            (n, c) => format!("已配对 {n} 台手机，{c} 台在线"),
-        };
-        [address, devices].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
-    } else if port.is_some() {
-        "正在打开…".into()
-    } else {
-        "打开开关并保存后，就可以配对手机".into()
+    let status = match &phase {
+        Phase::Failed(error) => {
+            crate::locale::pick(&format!("Could not start: {error}"), &format!("没能打开：{error}")).to_string()
+        }
+        Phase::Listening => {
+            let port_num = port.unwrap_or_default();
+            let ips = local_ips();
+            let address = if ips.is_empty() {
+                String::new()
+            } else {
+                let list = ips.into_iter().take(2).map(|ip| format!("{ip}:{port_num}")).collect::<Vec<_>>().join(" / ");
+                crate::locale::pick(&format!("Address {list}"), &format!("电脑地址 {list}")).to_string()
+            };
+            let devices = match (paired, connected) {
+                (0, _) => crate::locale::pick("No paired phones", "还没有配对手机").to_string(),
+                (n, 0) => crate::locale::pick(&format!("Paired phones: {n}"), &format!("已配对 {n} 台手机")).to_string(),
+                (n, c) => crate::locale::pick(
+                    &format!("Paired phones: {n}; online: {c}"),
+                    &format!("已配对 {n} 台手机，{c} 台在线"),
+                )
+                .to_string(),
+            };
+            [address, devices].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
+        }
+        Phase::Starting => crate::locale::pick("Starting…", "正在打开…").into(),
+        Phase::Off => crate::locale::pick(
+            "Enable phone control and save to pair a phone",
+            "打开开关并保存后，就可以配对手机",
+        )
+        .into(),
     };
     Info { running, code: lock(&PAIRING).as_ref().map(|p| p.code.clone()).unwrap_or_default(), paired, status }
 }
 
-/// 本机在局域网里的地址（只用来显示；手机靠广播自动找到电脑）
-fn local_ip() -> Option<Ipv4Addr> {
-    // UDP 的 connect 不发任何包，只是让系统选出走哪块网卡
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("192.168.0.1:9").ok()?;
-    match socket.local_addr().ok()?.ip() {
-        IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() => Some(ip),
-        _ => None,
+/// 给候选局域网 IPv4 地址打优先级（越小越优先）：
+/// 优先常见家用/办公网段（192.168.x、10.x）和 Tailscale/校园网（100.64.0.0/10），
+/// 剔除 198.18.0.0/15 等代理 TUN 假网段，并将 WSL/Hyper-V/VirtualBox 常见虚拟网关排到最后。
+fn lan_ip_rank(ip: Ipv4Addr, routed: bool) -> Option<u8> {
+    if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+        return None;
     }
+    if !(ip.is_private() || is_cgnat_v4(ip)) {
+        return None;
+    }
+    let [a, b, c, d] = ip.octets();
+    let rank = match (a, b) {
+        (192, 168) if c == 56 => 9, // VirtualBox Host-Only 默认网段
+        (192, 168) if d != 1 => if routed { 0 } else { 1 },
+        (10, _) if d != 1 => if routed { 2 } else { 3 },
+        _ if is_cgnat_v4(ip) => if routed { 4 } else { 5 },
+        (192, 168) | (10, _) => 6,
+        (172, 16..=31) if d != 1 => if routed { 5 } else { 7 },
+        (172, 16..=31) => 8, // WSL / Hyper-V / Docker / TUN 常见网关地址 172.16..31.x.1
+        _ => return None,
+    };
+    Some(rank)
+}
+
+fn rank_and_filter_ips(candidates: impl IntoIterator<Item = (Ipv4Addr, bool)>) -> Vec<Ipv4Addr> {
+    let mut best: Vec<(Ipv4Addr, u8)> = Vec::new();
+    for (ip, routed) in candidates {
+        let Some(rank) = lan_ip_rank(ip, routed) else { continue };
+        if let Some(existing) = best.iter_mut().find(|(seen, _)| *seen == ip) {
+            existing.1 = existing.1.min(rank);
+        } else {
+            best.push((ip, rank));
+        }
+    }
+    best.sort_by_key(|&(ip, rank)| (rank, ip.octets()));
+    if best.iter().any(|&(_, rank)| rank <= 7) {
+        best.retain(|&(_, rank)| rank <= 7);
+    }
+    best.into_iter().map(|(ip, _)| ip).collect()
+}
+
+/// 本机在局域网里的真实地址列表（只用来在设置页显示；手机默认靠广播自动找到电脑）。
+/// 同时结合多网段路由探测与本机主机名网卡枚举，避免开启 Clash/Sing-box TUN 或存在虚拟网卡时地址消失或指错。
+fn local_ips() -> Vec<Ipv4Addr> {
+    let mut candidates: Vec<(Ipv4Addr, bool)> = Vec::new();
+    for target in ["192.168.1.1:9", "10.0.0.1:9", "100.64.0.1:9", "172.16.0.1:9"] {
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect(target).is_ok() {
+                if let Ok(SocketAddr::V4(addr)) = socket.local_addr() {
+                    candidates.push((*addr.ip(), true));
+                }
+            }
+        }
+    }
+    if let Ok(host) = std::env::var("COMPUTERNAME") {
+        let host = host.trim();
+        if !host.is_empty() {
+            if let Ok(addrs) = (host, 0u16).to_socket_addrs() {
+                for addr in addrs {
+                    if let SocketAddr::V4(v4) = addr {
+                        candidates.push((*v4.ip(), false));
+                    }
+                }
+            }
+        }
+    }
+    rank_and_filter_ips(candidates)
 }
 
 #[cfg(test)]
@@ -796,12 +983,46 @@ mod tests {
 
     #[test]
     fn only_lan_addresses_are_accepted() {
-        for ok in ["192.168.1.5", "10.0.0.2", "172.20.1.1", "169.254.3.4", "127.0.0.1", "::1", "fe80::1", "fd00::5", "::ffff:192.168.1.9"] {
+        for ok in [
+            "192.168.1.5",
+            "10.0.0.2",
+            "172.20.1.1",
+            "100.64.0.1",
+            "100.100.88.9",
+            "100.127.255.254",
+            "169.254.3.4",
+            "127.0.0.1",
+            "::1",
+            "fe80::1",
+            "fd00::5",
+            "::ffff:192.168.1.9",
+            "::ffff:100.64.1.2",
+        ] {
             assert!(is_lan(ok.parse().unwrap()), "{ok}");
         }
-        for bad in ["8.8.8.8", "100.64.0.1", "172.32.0.1", "2001:db8::1", "::ffff:1.1.1.1"] {
+        for bad in [
+            "8.8.8.8",
+            "100.63.255.255",
+            "100.128.0.1",
+            "198.18.0.1",
+            "172.32.0.1",
+            "2001:db8::1",
+            "::ffff:1.1.1.1",
+        ] {
             assert!(!is_lan(bad.parse().unwrap()), "{bad}");
         }
+    }
+
+    #[test]
+    fn lan_ips_prefer_real_lan_over_tun_and_virtual_nics() {
+        let ips = rank_and_filter_ips([
+            ("198.18.0.1".parse().unwrap(), true),
+            ("172.24.160.1".parse().unwrap(), false),
+            ("192.168.56.1".parse().unwrap(), false),
+            ("192.168.31.88".parse().unwrap(), false),
+            ("100.90.12.34".parse().unwrap(), false),
+        ]);
+        assert_eq!(ips, vec!["192.168.31.88".parse::<Ipv4Addr>().unwrap(), "100.90.12.34".parse().unwrap()]);
     }
 
     #[test]
@@ -832,7 +1053,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Aeri.apk"), &apk).unwrap();
         let fake_sha = "ab".repeat(32);
-        let manifest = json!({"version_code": 305, "version_name": "0.3.5", "size": apk.len(), "sha256": fake_sha});
+        let manifest = json!({"version_code": 409, "version_name": "0.4.9", "size": apk.len(), "sha256": fake_sha});
         // 带 BOM 也要能读（Windows PowerShell 5 写的文件）
         std::fs::write(dir.join("Aeri.json"), format!("\u{feff}{manifest}")).unwrap();
 
@@ -851,6 +1072,13 @@ mod tests {
         let (audio_tx, mut audio_rx) = unbounded_channel();
         audio::set_phone_output(audio_tx);
         audio::set_mode(audio::Mode::Idle);
+
+        // 旧代次的服务报错不应覆盖新代次状态
+        {
+            let cur_gen = lock(&PHASE).0;
+            set_phase(cur_gen.wrapping_add(9999), Phase::Failed("stale".into()));
+            assert_ne!(lock(&PHASE).1, Phase::Failed("stale".into()));
+        }
 
         let port = {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -896,6 +1124,17 @@ mod tests {
         ws.send(send(json!({"t": "pair", "code": "000000", "name": "测试手机"}))).await.unwrap();
         assert_eq!(next_json(&mut ws).await["reason"], "no_pairing");
 
+        // 配对码连续输错 5 次：前 4 次 bad_code，第 5 次 too_many_attempts 并作废
+        let code_burn = start_pairing().unwrap();
+        let wrong_burn = if code_burn == "111111" { "222222" } else { "111111" };
+        for i in 1..=PAIRING_MAX_ATTEMPTS {
+            let (mut ws, _) = connect_async(url.as_str()).await.unwrap();
+            ws.send(send(json!({"t": "pair", "code": wrong_burn, "name": "测试手机"}))).await.unwrap();
+            let expected = if i < PAIRING_MAX_ATTEMPTS { "bad_code" } else { "too_many_attempts" };
+            assert_eq!(next_json(&mut ws).await["reason"], expected);
+        }
+        assert_eq!(info().code, "", "连续输错达上限后配对码作废");
+
         // 配对码输错：拒绝；输对：拿到令牌，紧接着是完整快照
         let code = start_pairing().unwrap();
         assert_eq!(info().code, code);
@@ -903,6 +1142,8 @@ mod tests {
         let (mut ws, _) = connect_async(url.as_str()).await.unwrap();
         ws.send(send(json!({"t": "pair", "code": wrong, "name": "测试手机"}))).await.unwrap();
         assert_eq!(next_json(&mut ws).await["reason"], "bad_code");
+        observe(&UiEvent::Status(Status::Paused));
+        observe(&UiEvent::Status(Status::Thinking));
         observe(&UiEvent::Chat(Role::User, "配对前说的话".into()));
         let (mut ws, _) = connect_async(url.as_str()).await.unwrap();
         ws.send(send(json!({"t": "pair", "code": code, "name": "测试手机"}))).await.unwrap();
@@ -913,8 +1154,19 @@ mod tests {
         assert_eq!(token.len(), 64);
         let welcome = next_json(&mut ws).await;
         assert_eq!(welcome["t"], "welcome");
+        assert_eq!(welcome["status"], 2);
+        assert_eq!(welcome["listening"], false, "忙碌态下仍应保留已暂停语音唤醒的真实状态");
         assert!(welcome["history"].as_array().unwrap().iter().any(|i| i["text"] == "配对前说的话"));
         assert_eq!(info().code, "", "配对成功后配对码作废");
+        drop(ws);
+
+        // 同一台手机重新配对：覆盖同名旧记录，配对台数不虚增
+        let code2 = start_pairing().unwrap();
+        let (mut ws, _) = connect_async(url.as_str()).await.unwrap();
+        ws.send(send(json!({"t": "pair", "code": code2, "name": "测试手机"}))).await.unwrap();
+        let token = next_json(&mut ws).await["token"].as_str().unwrap().to_string();
+        let _ = next_json(&mut ws).await;
+        assert_eq!(info().paired, 1);
         drop(ws);
 
         // 令牌不对：拒绝
@@ -927,10 +1179,11 @@ mod tests {
         ws.send(send(json!({"t": "hello", "token": token}))).await.unwrap();
         let welcome = next_json(&mut ws).await;
         assert_eq!(welcome["t"], "welcome");
-        assert_eq!(welcome["app"], json!({"version_code": 305, "version_name": "0.3.5", "size": apk.len()}));
+        assert_eq!(welcome["app"], json!({"version_code": 409, "version_name": "0.4.9", "size": apk.len()}));
 
-        // 手机要 App：开头说明大小和校验值，然后按顺序分块，最后结束
+        // 手机要 App：开头说明大小和校验值，然后按顺序流式分块，期间发 Ping 仍能正常收完，最后结束
         ws.send(send(json!({"t": "get_app"}))).await.unwrap();
+        ws.send(Message::Ping(b"keepalive".to_vec().into())).await.unwrap();
         let begin = next_json(&mut ws).await;
         assert_eq!((begin["t"].as_str(), begin["size"].as_u64()), (Some("app_begin"), Some(apk.len() as u64)));
         assert_eq!(begin["sha256"], fake_sha.as_str());
@@ -964,7 +1217,7 @@ mod tests {
         observe(&UiEvent::TaskProgress(7, "打开浏览器".into()));
         let progress = next_json(&mut ws).await;
         assert_eq!(progress["item"]["task"], 7);
-        assert_eq!(progress["item"]["text"], "任务 #7 · 打开浏览器");
+        assert_eq!(progress["item"]["text"], crate::locale::pick("Task #7 · 打开浏览器", "任务 #7 · 打开浏览器"));
 
         // 打字、暂停唤醒
         ws.send(send(json!({"t": "text", "text": "  打开计算器 "}))).await.unwrap();
@@ -1028,7 +1281,7 @@ mod tests {
 
     #[test]
     fn task_progress_replaces_in_place() {
-        let mut m = Mirror { status: 0, task_running: false, partial: String::new(), history: VecDeque::new() };
+        let mut m = Mirror { status: 0, listening: Some(true), task_running: false, partial: String::new(), history: VecDeque::new() };
         m.push(Item { role: 2, text: "任务 #1 · a".into(), task: Some(1) });
         m.push(Item { role: 2, text: "任务 #1 · b".into(), task: Some(1) });
         m.push(Item { role: 1, text: "好".into(), task: None });

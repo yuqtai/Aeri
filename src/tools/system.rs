@@ -15,19 +15,21 @@ use windows::Win32::Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator, eCon
 use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetLogicalDrives};
 use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_D, VK_LWIN,
 };
+use windows::Win32::UI::Shell::FOLDERID_Pictures;
 use windows::Win32::UI::WindowsAndMessaging::{
     IsZoomed, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow,
 };
-use windows::core::{BOOL, HSTRING};
+use windows::core::{BOOL, HSTRING, w};
 
 use super::ps;
 use crate::screen;
@@ -62,10 +64,12 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "power",
-            "description": "Power actions: lock, sleep, shutdown, restart, cancel (cancel shutdown/restart). Shutdown and restart close all programs: first ask the user to confirm, then call with confirmed=true only after confirmation. There are 30 seconds to cancel after scheduling.",
+            "description": "Power actions: lock, sleep, shutdown, restart, cancel (cancel shutdown/restart). Supports minutes or seconds to schedule a timed shutdown or restart (defaults to a 30-second buffer if omitted). Shutdown and restart close all programs: first ask the user to confirm, then call with confirmed=true only after confirmation. Can be cancelled anytime with cancel or by saying \"cancel shutdown\".",
             "input_schema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["lock", "sleep", "shutdown", "restart", "cancel"]},
-                "confirmed": {"type": "boolean"}
+                "confirmed": {"type": "boolean"},
+                "minutes": {"type": "number", "description": "Minutes until shutdown or restart (for example, 30 for \"shut down in 30 minutes\"); defaults to 0.5 (30-second buffer) if omitted."},
+                "seconds": {"type": "integer", "description": "Seconds until shutdown or restart (takes precedence over minutes)."}
             }, "required": ["action"]}
         }),
         json!({
@@ -103,7 +107,13 @@ pub async fn call(name: &str, input: &Value) -> Option<(String, bool)> {
         }
         "system_setting" => setting(&s("setting"), input["on"].as_bool(), input["value"].as_u64()).await,
         "screenshot" => screenshot(s("target") == "window").await,
-        "power" => power(&s("action"), input["confirmed"].as_bool() == Some(true)).await,
+        "power" => power(
+            &s("action"),
+            input["confirmed"].as_bool() == Some(true),
+            input["minutes"].as_f64(),
+            input["seconds"].as_u64(),
+        )
+        .await,
         "window_arrange" => {
             let (a, w) = (s("action"), s("window"));
             blocking(move || arrange(&a, &w)).await
@@ -124,6 +134,19 @@ async fn blocking(f: impl FnOnce() -> Result<String, String> + Send + 'static) -
 }
 
 // ---------- 音量 ----------
+
+/// 读取默认播放设备当前的 (音量百分比 0..=100, 是否静音)
+pub fn get_volume() -> Option<(u32, bool)> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let e: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let device = e.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+        let vol: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
+        let pct = (vol.GetMasterVolumeLevelScalar().ok()? * 100.0).round().clamp(0.0, 100.0) as u32;
+        let muted = vol.GetMute().ok()?.as_bool();
+        Some((pct, muted))
+    }
+}
 
 pub fn set_volume(percent: Option<u32>, mute: Option<bool>) -> Result<String, String> {
     if percent.is_none() && mute.is_none() {
@@ -228,7 +251,7 @@ async fn screenshot(window: bool) -> Result<String, String> {
         (x, y, w, h) = (r.left, r.top, r.right - r.left, r.bottom - r.top);
         title = t;
     }
-    let dir = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default().join("Pictures").join("Screenshots");
+    let dir = super::files::known_folder_path(&FOLDERID_Pictures, "Pictures").join("Screenshots");
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     let file = dir.join(format!("Aeri-{}{:02}{:02}-{:02}{:02}{:02}.png", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond));
     let env = [
@@ -256,15 +279,59 @@ fn window_rect(hwnd: HWND) -> RECT {
 
 // ---------- 电源 ----------
 
-async fn power(action: &str, confirmed: bool) -> Result<String, String> {
+pub fn cancel_power() -> Result<String, String> {
+    use crate::config::NoWindow;
+    let ok = std::process::Command::new("shutdown.exe")
+        .arg("/a")
+        .creation_flags_no_window()
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok {
+        Ok(crate::locale::pick("Cancelled scheduled shutdown or restart.", "已取消关机或重启。").into())
+    } else {
+        Err(crate::locale::pick("There is no scheduled shutdown or restart", "现在没有要关机或重启的计划").into())
+    }
+}
+
+fn power_delay_secs(minutes: Option<f64>, seconds: Option<u64>) -> u64 {
+    seconds
+        .or_else(|| minutes.filter(|m| *m > 0.0).map(|m| (m * 60.0).round() as u64))
+        .unwrap_or(30)
+        .clamp(5, 315_360_000)
+}
+
+fn format_power_delay(delay: u64) -> String {
+    if delay < 60 {
+        crate::locale::pick(&format!("{delay} seconds"), &format!("{delay} 秒")).to_string()
+    } else if delay % 60 == 0 && delay <= 5400 {
+        crate::locale::pick(&format!("{} minutes", delay / 60), &format!("{} 分钟", delay / 60)).to_string()
+    } else if delay % 3600 == 0 {
+        crate::locale::pick(&format!("{} hours", delay / 3600), &format!("{} 小时", delay / 3600)).to_string()
+    } else if delay >= 3600 && delay % 60 == 0 {
+        crate::locale::pick(
+            &format!("{} hours {} minutes", delay / 3600, (delay % 3600) / 60),
+            &format!("{} 小时 {} 分钟", delay / 3600, (delay % 3600) / 60),
+        )
+        .to_string()
+    } else {
+        crate::locale::pick(
+            &format!("{} minutes {} seconds", delay / 60, delay % 60),
+            &format!("{} 分 {} 秒", delay / 60, delay % 60),
+        )
+        .to_string()
+    }
+}
+
+async fn power(action: &str, confirmed: bool, minutes: Option<f64>, seconds: Option<u64>) -> Result<String, String> {
     let shutdown = |args: &[&str]| {
         use crate::config::NoWindow;
-        std::process::Command::new("shutdown.exe").args(args).creation_flags_no_window().status().map(|s| s.success()).unwrap_or(false)
+        std::process::Command::new("shutdown.exe").args(args).creation_flags_no_window().output().map(|o| o.status.success()).unwrap_or(false)
     };
     match action {
         "lock" => {
-            unsafe { LockWorkStation() }.map_err(|e| format!("锁屏失败：{e}"))?;
-            Ok("已锁屏".into())
+            unsafe { LockWorkStation() }.map_err(|e| crate::locale::pick(&format!("Could not lock screen: {e}"), &format!("锁屏失败：{e}")).to_string())?;
+            Ok(crate::locale::pick("Screen locked", "已锁屏").into())
         }
         "sleep" => {
             let script = "Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Application]::SetSuspendState('Suspend',$false,$false)|Out-Null";
@@ -273,23 +340,41 @@ async fn power(action: &str, confirmed: bool) -> Result<String, String> {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let _ = ps::run(script, &[], Duration::from_secs(10)).await;
             });
-            Ok("电脑马上进入睡眠".into())
+            Ok(crate::locale::pick("Going to sleep now", "电脑马上进入睡眠").into())
         }
         "shutdown" | "restart" => {
-            let label = if action == "shutdown" { "关机" } else { "重启" };
+            let (en_label, zh_label) = if action == "shutdown" { ("Shut down", "关机") } else { ("Restart", "重启") };
             if !confirmed {
-                return Err(format!("{label}会关掉所有程序，先问用户确认，用户同意后再带上 confirmed=true 调用"));
+                return Err(crate::locale::pick(
+                    &format!("{en_label} closes all programs; ask the user to confirm first, then call again with confirmed=true"),
+                    &format!("{zh_label}会关掉所有程序，先问用户确认，用户同意后再带上 confirmed=true 调用"),
+                )
+                .to_string());
             }
+            let delay = power_delay_secs(minutes, seconds);
+            let delay_s = delay.to_string();
             let flag = if action == "shutdown" { "/s" } else { "/r" };
-            if !shutdown(&[flag, "/t", "30"]) {
-                return Err(format!("{label}失败，可能已经有一个关机计划，可以先 cancel"));
+            if !shutdown(&[flag, "/t", &delay_s]) {
+                // 已有旧定时关机计划（错误 1190）时先取消再设新的
+                let _ = shutdown(&["/a"]);
+                if !shutdown(&[flag, "/t", &delay_s]) {
+                    return Err(crate::locale::pick(
+                        &format!("{en_label} failed; please try again later"),
+                        &format!("{zh_label}失败，请稍后再试"),
+                    )
+                    .to_string());
+                }
             }
-            Ok(format!("30 秒后{label}，要取消就说“取消关机”"))
+            let when = format_power_delay(delay);
+            let en_verb = if action == "shutdown" { "Shutting down" } else { "Restarting" };
+            Ok(crate::locale::pick(
+                &format!("{en_verb} in {when}. Say \"cancel shutdown\" anytime to abort"),
+                &format!("{when}后{zh_label}，要取消随时说“取消关机”"),
+            )
+            .to_string())
         }
-        "cancel" => {
-            if shutdown(&["/a"]) { Ok("已取消关机或重启".into()) } else { Err("现在没有要关机或重启的计划".into()) }
-        }
-        other => Err(format!("未知操作：{other}")),
+        "cancel" => cancel_power(),
+        other => Err(crate::locale::pick(&format!("Unknown action: {other}"), &format!("未知操作：{other}")).to_string()),
     }
 }
 
@@ -613,10 +698,39 @@ pub fn start_clipboard_watch() {
     });
 }
 
+/// 明显的 API Key（如单行无空白且以 sk- 开头长度 >= 20），不记入剪贴板历史
+fn is_sensitive_clipboard_text(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && !t.chars().any(char::is_whitespace) && t.starts_with("sk-") && t.len() >= 20
+}
+
 fn read_clipboard() -> Option<String> {
     unsafe {
+        let fmt_exclude = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+        if fmt_exclude != 0 && IsClipboardFormatAvailable(fmt_exclude).is_ok() {
+            return None;
+        }
+        let fmt_history = RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"));
         OpenClipboard(None).ok()?;
         let text = (|| {
+            if fmt_exclude != 0 && IsClipboardFormatAvailable(fmt_exclude).is_ok() {
+                return None;
+            }
+            if fmt_history != 0 && IsClipboardFormatAvailable(fmt_history).is_ok() {
+                if let Ok(h) = GetClipboardData(fmt_history) {
+                    let g = HGLOBAL(h.0);
+                    if GlobalSize(g) >= std::mem::size_of::<u32>() {
+                        let p = GlobalLock(g) as *const u32;
+                        if !p.is_null() {
+                            let allow = p.read_unaligned();
+                            let _ = GlobalUnlock(g);
+                            if allow == 0 {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
             let h = GetClipboardData(CF_UNICODETEXT).ok()?;
             let g = HGLOBAL(h.0);
             let p = GlobalLock(g) as *const u16;
@@ -632,7 +746,7 @@ fn read_clipboard() -> Option<String> {
             Some(s)
         })();
         let _ = CloseClipboard();
-        text.filter(|t| !t.trim().is_empty())
+        text.filter(|t| !t.trim().is_empty() && !is_sensitive_clipboard_text(t))
     }
 }
 
@@ -697,6 +811,23 @@ mod tests {
     fn overview_has_memory_and_disk() {
         let o = overview();
         assert!(o.contains("内存") && o.contains("盘剩余"), "{o}");
+    }
+
+    #[test]
+    fn power_delay_and_clipboard_privacy() {
+        assert_eq!(power_delay_secs(None, None), 30);
+        assert_eq!(power_delay_secs(Some(30.0), None), 1800);
+        assert_eq!(power_delay_secs(Some(30.0), Some(120)), 120);
+        assert_eq!(power_delay_secs(Some(0.01), None), 5);
+        assert_eq!(format_power_delay(30), crate::locale::pick("30 seconds", "30 秒"));
+        assert_eq!(format_power_delay(1800), crate::locale::pick("30 minutes", "30 分钟"));
+        assert_eq!(format_power_delay(7200), crate::locale::pick("2 hours", "2 小时"));
+
+        assert!(is_sensitive_clipboard_text("sk-1234567890abcdefghij"));
+        assert!(is_sensitive_clipboard_text("  sk-ant-api03-1234567890abcdef  "));
+        assert!(!is_sensitive_clipboard_text("sk-short"));
+        assert!(!is_sensitive_clipboard_text("配置示例 sk-1234567890abcdefghij"));
+        assert!(!is_sensitive_clipboard_text("普通复制的文字"));
     }
 
     /// 手动测试：先开一个标题含 Downloads 的资源管理器窗口

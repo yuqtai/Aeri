@@ -53,8 +53,18 @@ fun PairScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     LaunchedEffect(pair.found) {
         if (selectedHost == null && pair.found.size == 1) selectedHost = pair.found[0].host
     }
-    val target: FoundPc? = vm.manualTarget(manual) ?: pair.found.firstOrNull { it.host == selectedHost }
-    val submit = { target?.let { vm.pairWith(it, code) } }
+    val hasManual = manual.isNotBlank()
+    val manualPc: FoundPc? = if (hasManual) vm.manualTarget(manual) else null
+    val manualInvalid = hasManual && manualPc == null
+    // 只要手动输入框有内容，就严格使用手动地址，绝不悄悄回退选中列表里的旧电脑
+    val target: FoundPc? = if (hasManual) manualPc else pair.found.firstOrNull { it.host == selectedHost }
+    val submit = {
+        if (manualInvalid) {
+            vm.reportInvalidAddress()
+        } else {
+            target?.let { vm.pairWith(it, code) }
+        }
+    }
 
     Column(
         modifier
@@ -93,12 +103,13 @@ fun PairScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
         Card {
             when {
                 pair.found.isEmpty() && (pair.searching || !pair.searched) -> Hint("正在局域网里查找…")
-                pair.found.isEmpty() -> Hint("没找到电脑。确认电脑上打开了手机控制、两边连的是同一个 Wi-Fi；也可以在下面直接填电脑地址。")
+                pair.found.isEmpty() -> Hint("没找到电脑。请确认电脑开启了手机控制、连在同一 Wi-Fi，且 Windows 防火墙已允许 Aeri 通过“公用网络/专用网络”；也可以在下面直接填电脑地址。")
                 else -> pair.found.forEachIndexed { i, pc ->
                     if (i > 0) Divider()
-                    PcRow(pc, selected = manual.isBlank() && pc.host == selectedHost) {
+                    PcRow(pc, selected = !hasManual && pc.host == selectedHost) {
                         selectedHost = pc.host
                         manual = ""
+                        vm.clearPairError()
                     }
                 }
             }
@@ -107,11 +118,23 @@ fun PairScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
         SectionLabel("或者手动填地址", Modifier.padding(top = 8.dp))
         Field(
             manual,
-            { manual = it.filter { c -> c.isDigit() || c == '.' || c == ':' } },
-            "电脑设置页显示的地址，例如 192.168.1.8",
+            {
+                manual = it.filter { c -> c.isLetterOrDigit() || c == '.' || c == '-' || c == ':' }
+                vm.clearPairError()
+            },
+            "电脑设置页显示的地址，例如 192.168.1.8 或 192.168.1.8:47821",
             Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
         )
+        if (manualInvalid && pair.error == null) {
+            Text(
+                MainViewModel.INVALID_ADDR_MSG,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                color = pal.danger,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
 
         SectionLabel("配对码", Modifier.padding(top = 8.dp))
         Field(

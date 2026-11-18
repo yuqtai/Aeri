@@ -86,18 +86,28 @@ impl Llm {
         self.send(&body).await
     }
 
-    /// 测试 key、地址和模型名：发一条极短的请求
+    /// 测试 key、地址、模型名及思考配置：发一条极短的请求，与正式对话保持同样的 thinking 参数结构
     pub async fn ping(&self) -> anyhow::Result<()> {
         if self.style == ApiStyle::OpenAi {
             return self.create("", &[], &[json!({"role": "user", "content": "Reply OK."})]).await.map(|_| ());
         }
-        let body = json!({
-            "model": self.model,
-            "max_tokens": 16,
-            "thinking": {"type": "disabled"},
-            "messages": [{"role": "user", "content": "你好"}],
-        });
+        let body = self.ping_body();
         self.send(&body).await.map(|_| ())
+    }
+
+    fn ping_body(&self) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "max_tokens": if self.thinking { 1024 } else { 16 },
+            "messages": [{"role": "user", "content": crate::locale::pick("Reply OK.", "你好")}],
+        });
+        if self.thinking {
+            body["thinking"] = if self.deepseek { json!({"type": "enabled"}) } else { json!({"type": "adaptive"}) };
+            body["output_config"] = json!({"effort": if !self.deepseek && self.effort == "max" { "high" } else { &self.effort }});
+        } else {
+            body["thinking"] = json!({"type": "disabled"});
+        }
+        body
     }
 
     async fn send(&self, body: &Value) -> anyhow::Result<Value> {
@@ -110,17 +120,44 @@ impl Llm {
             .json(body)
             .send()
             .await
-            .context("请求大模型失败（检查网络）")?;
+            .context(crate::locale::pick("Language model request failed (check your network)", "请求大模型失败（检查网络）"))?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
             let detail: String = text.chars().take(300).collect();
             match status.as_u16() {
-                401 | 403 => bail!("大模型的 API Key 无效或已过期，请在“设置”里更新（{status}）"),
-                402 => bail!("大模型账户余额不足，请充值后再试（{status}）"),
-                429 => bail!("大模型请求太频繁或额度用完了，请稍后再试（{status}）"),
-                500..=599 => bail!("大模型服务暂时不可用，请稍后再试（{status}）"),
-                _ => bail!("大模型返回 {status}：{detail}"),
+                401 | 403 => bail!(
+                    "{}",
+                    crate::locale::pick(
+                        &format!("Invalid or expired LLM API key. Update it in Settings ({status})"),
+                        &format!("大模型的 API Key 无效或已过期，请在“设置”里更新（{status}）")
+                    )
+                ),
+                402 => bail!(
+                    "{}",
+                    crate::locale::pick(
+                        &format!("Insufficient LLM account balance ({status})"),
+                        &format!("大模型账户余额不足，请充值后再试（{status}）")
+                    )
+                ),
+                429 => bail!(
+                    "{}",
+                    crate::locale::pick(
+                        &format!("LLM rate limit or quota exceeded; please try again shortly ({status})"),
+                        &format!("大模型请求太频繁或额度用完了，请稍后再试（{status}）")
+                    )
+                ),
+                500..=599 => bail!(
+                    "{}",
+                    crate::locale::pick(
+                        &format!("LLM service is temporarily unavailable; please try again shortly ({status})"),
+                        &format!("大模型服务暂时不可用，请稍后再试（{status}）")
+                    )
+                ),
+                _ => bail!(
+                    "{}",
+                    crate::locale::pick(&format!("LLM returned {status}: {detail}"), &format!("大模型返回 {status}：{detail}"))
+                ),
             }
         }
         Ok(serde_json::from_str(&text)?)
@@ -244,5 +281,26 @@ mod tests {
         }
         assert!(chat_response(&json!({"choices":[]})).is_err());
         assert!(chat_response(&json!({"choices":[{"message":{"tool_calls":[{"function":{"arguments":"broken"}}]}}]})).is_err());
+    }
+
+    #[test]
+    fn ping_body_matches_thinking_configuration() {
+        let off = Llm::new("deepseek", "https://example.com", "k".into(), "m", false, "low").unwrap();
+        let b_off = off.ping_body();
+        assert_eq!(b_off["max_tokens"], 16);
+        assert_eq!(b_off["thinking"]["type"], "disabled");
+        assert!(b_off.get("output_config").is_none());
+
+        let ds_on = Llm::new("deepseek", "https://example.com/", "k".into(), "m", true, "max").unwrap();
+        let b_ds = ds_on.ping_body();
+        assert_eq!(b_ds["max_tokens"], 1024);
+        assert_eq!(b_ds["thinking"]["type"], "enabled");
+        assert_eq!(b_ds["output_config"]["effort"], "max");
+
+        let claude_on = Llm::new("anthropic", "https://api.anthropic.com", "k".into(), "m", true, "max").unwrap();
+        let b_claude = claude_on.ping_body();
+        assert_eq!(b_claude["max_tokens"], 1024);
+        assert_eq!(b_claude["thinking"]["type"], "adaptive");
+        assert_eq!(b_claude["output_config"]["effort"], "high");
     }
 }

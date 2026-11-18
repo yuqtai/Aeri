@@ -98,13 +98,13 @@ impl State {
         let body = doc.unwrap_or_else(|| win.clone());
         let mut out = vec![format!("窗口：{title}")];
 
-        if let Some(tp) = &text {
-            let selected: Vec<String> =
-                tp.get_selection().unwrap_or_default().iter().filter_map(|r| r.get_text(-1).ok()).collect();
-            let selected = tidy(&selected.join("\n"));
-            if !selected.is_empty() {
-                out.push(format!("用户选中的文字：\n{}", clip(&selected, MAX_BLOCK_TEXT)));
-            }
+        let selected = text
+            .as_ref()
+            .and_then(selection_text)
+            .or_else(|| self.focused_selection(&walker, hwnd, window.is_empty()))
+            .or_else(|| self.edit_selection(&win));
+        if let Some(selected) = selected {
+            out.push(format!("用户选中的文字：\n{}", clip(&selected, MAX_BLOCK_TEXT)));
         }
         if let Some((role, block)) = self.block_under_cursor(&walker, &win, text.as_ref()) {
             let role = if role.is_empty() { String::new() } else { format!("（{role}）") };
@@ -132,6 +132,44 @@ impl State {
             .into_iter()
             .filter(|d| !d.is_offscreen().unwrap_or(true))
             .max_by_key(|d| d.get_bounding_rectangle().map(|r| r.get_width() as i64 * r.get_height() as i64).unwrap_or(0))
+    }
+
+    /// 记事本（Edit）、VS Code、聊天输入框等非 Document 控件里的选中文字：检查当前焦点控件
+    fn focused_selection(&self, walker: &UITreeWalker, target_hwnd: HWND, default_ok: bool) -> Option<String> {
+        let focused = self.automation.get_focused_element().ok()?;
+        if !Self::belongs_to_window(walker, &focused, target_hwnd, default_ok) {
+            return None;
+        }
+        let tp = focused.get_pattern::<UITextPattern>().ok()?;
+        selection_text(&tp)
+    }
+
+    /// 焦点不在目标窗口（例如用户在 Aeri 输入框打字提问）时，兜底检查目标窗口内的 Edit 控件选区
+    fn edit_selection(&self, win: &UIElement) -> Option<String> {
+        let cond = self
+            .automation
+            .create_property_condition(UIProperty::ControlType, (ControlType::Edit as i32).into(), None)
+            .ok()?;
+        win.find_all(TreeScope::Descendants, &cond)
+            .ok()?
+            .into_iter()
+            .filter(|e| !e.is_offscreen().unwrap_or(true))
+            .find_map(|e| e.get_pattern::<UITextPattern>().ok().and_then(|tp| selection_text(&tp)))
+    }
+
+    fn belongs_to_window(walker: &UITreeWalker, el: &UIElement, target_hwnd: HWND, default_ok: bool) -> bool {
+        let mut cur = el.clone();
+        for _ in 0..40 {
+            if let Ok(h) = cur.get_native_window_handle() {
+                let raw: HWND = h.into();
+                if !raw.is_invalid() {
+                    return unsafe { GetAncestor(raw, GA_ROOT) == target_hwnd };
+                }
+            }
+            let Ok(parent) = walker.get_parent(&cur) else { break };
+            cur = parent;
+        }
+        default_ok
     }
 
     /// 鼠标所指的那一块内容：从鼠标下的控件往上找，遇到帖子、列表项这类语义区块就停；
@@ -210,6 +248,13 @@ impl State {
         }
         lines.join("\n")
     }
+}
+
+fn selection_text(tp: &UITextPattern) -> Option<String> {
+    let selected: Vec<String> =
+        tp.get_selection().ok()?.into_iter().filter_map(|r| r.get_text(-1).ok()).collect();
+    let selected = tidy(&selected.join("\n"));
+    (!selected.is_empty()).then_some(selected)
 }
 
 /// 正文区域里屏幕上能看到的文字：取左上角到右下角这一段，一次读出来

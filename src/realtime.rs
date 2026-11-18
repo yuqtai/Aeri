@@ -281,7 +281,18 @@ impl Session {
                 Event::FunctionCall { call_id: s("call_id"), name: s("name"), arguments: s("arguments") }
             }
             "response.created" => Event::ResponseCreated,
-            "response.done" => Event::ResponseDone(v["response"]["status"].as_str().unwrap_or("completed").to_string()),
+            "response.done" => {
+                let raw = v["response"]["status"].as_str().unwrap_or("completed");
+                let detail = v["response"]["status_details"]["type"].as_str().unwrap_or("");
+                let status = if matches!(raw, "cancelled" | "canceled")
+                    || (raw == "incomplete" && matches!(detail, "cancelled" | "canceled"))
+                {
+                    "cancelled"
+                } else {
+                    raw
+                };
+                Event::ResponseDone(status.to_string())
+            }
             "error" => {
                 let err = &v["error"];
                 let message = err["message"].as_str().unwrap_or("未知错误");
@@ -626,6 +637,21 @@ mod tests {
         assert!(matches!(session.next_event().await.unwrap(), Event::SpeechStarted));
         assert!(matches!(session.next_event().await.unwrap(), Event::SpeechInvalid));
         assert!(matches!(session.next_event().await.unwrap(), Event::SpeechStopped));
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_incomplete_cancelled_responses_normalize_to_cancelled() {
+        let url = fake_server(vec![
+            json!({"type": "session.updated"}),
+            json!({"type": "response.done", "response": {"status": "canceled"}}),
+            json!({"type": "response.done", "response": {"status": "incomplete", "status_details": {"type": "cancelled"}}}),
+            json!({"type": "response.done", "response": {"status": "incomplete", "status_details": {"type": "max_output_tokens"}}}),
+        ])
+        .await;
+        let mut session = Session::connect_within(&settings(url), Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(s) if s == "cancelled"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(s) if s == "cancelled"));
+        assert!(matches!(session.next_event().await.unwrap(), Event::ResponseDone(s) if s == "incomplete"));
     }
 
     #[test]

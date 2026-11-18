@@ -123,6 +123,9 @@ fn main() -> anyhow::Result<()> {
     let first_run = config::first_run();
     let cfg = config::load();
     locale::apply_preference(&cfg.language);
+    let post_update = args.iter().any(|a| a == "--post-update");
+    let missing_key = (cfg.voice_frontend == "realtime" && config::realtime_key(&cfg).is_none())
+        || (cfg.voice_frontend != "realtime" && (config::asr_key(&cfg).is_none() || config::llm_key(&cfg).is_none()));
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
@@ -136,6 +139,17 @@ fn main() -> anyhow::Result<()> {
     history::set_enabled(cfg.save_history);
     history::prune();
     restore_history(&window);
+
+    // 二次双击 aeri.exe 或快捷方式时，唤醒并置顶已有实例的主窗口
+    let weak = window.as_weak();
+    sys::wait_activate_signal(move || {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                show_window(&w);
+            }
+        });
+    });
 
     // 后台事件 -> 界面（必须回到界面线程更新）
     let weak = window.as_weak();
@@ -169,10 +183,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
     wire_chat(&window, &cmd_tx);
-    wire_settings(&window, &cmd_tx, devices, runtime.handle().clone());
+    wire_settings(&window, &cmd_tx, devices.clone(), runtime.handle().clone());
     wire_update(&window, runtime.handle().clone(), cfg.auto_update);
     wire_history(&window);
-    wire_language(&window);
+    wire_language(&window, devices);
     wire_plugins(&window, runtime.handle().clone());
     mark_settings_clean(&window);
     let _tray = create_tray(&window, cmd_tx.clone(), icon)?;
@@ -192,14 +206,32 @@ fn main() -> anyhow::Result<()> {
         eprintln!("{}", ui_format!("Could not create floating orb: {e}", "悬浮球创建失败：{e}"));
     }
     sync_listening_menus(cfg.listen_on_start);
+    sync_ball_menu(cfg.float_ball);
     apply_hotkey(&window, cfg.hotkey);
     let weak = window.as_weak();
     window.window().on_close_requested(move || {
-        // 下次打开回到对话页；设置改了没保存时留在原处，不丢改动
+        // 关闭窗口时还原尚未保存的主题（避免未保存外观抢先全局生效）；其余未保存改动留在设置页并明确提示
         if let Some(w) = weak.upgrade() {
+            if w.get_settings_dirty() {
+                let saved = config::load();
+                let saved_scheme = THEMES.iter().position(|t| *t == saved.theme).unwrap_or(0) as i32;
+                if w.global::<Theme>().get_scheme() != saved_scheme {
+                    w.global::<Theme>().set_scheme(saved_scheme);
+                    sync_title_bar(&w);
+                }
+                update_settings_dirty(&w);
+            }
             if w.get_page() == 1 && !w.get_settings_dirty() {
                 w.set_page(0);
+                w.set_leave_pending(false);
                 w.set_settings_note("".into());
+            } else if w.get_settings_dirty() {
+                w.set_leave_pending(false);
+                set_note(
+                    &w,
+                    NOTE_INFO,
+                    locale::pick("You have unsaved changes. Click Save & apply to apply them", "还有未保存的更改，点“保存并应用”后生效"),
+                );
             }
         }
         ball::show_if_enabled();
@@ -238,15 +270,16 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 开机自启时只在后台运行（悬浮球 / 托盘），不弹主界面
+    // 开机自启时只在后台运行（悬浮球 / 托盘），不弹主界面；首次运行、缺少必要 Key 或更新后重启自动打开主窗口引导
     let launched_at_login = args.iter().any(|a| a == "--autostart");
-    // First run: always open the main window so the user can enter a key and try a command
-    if (cfg.show_window_on_start || first_run) && !launched_at_login {
+    if !launched_at_login && (cfg.show_window_on_start || first_run || missing_key || post_update) {
         show_window(&window);
     } else {
         ball::show_if_enabled();
     }
     slint::run_event_loop_until_quit()?;
+    tasks::cancel_all_global();
+    duck::restore_all_now();
     drop(window);
     runtime.shutdown_timeout(Duration::from_millis(500));
     Ok(())
@@ -391,6 +424,48 @@ fn wire_chat(window: &AppWindow, cmd_tx: &UnboundedSender<Command>) {
         remote::clear_history();
         let _ = tx.send(Command::ClearHistory);
     });
+    let weak = window.as_weak();
+    window.on_copy_text(move |t| {
+        if !copy_to_clipboard(t.as_str()) {
+            if let Some(w) = weak.upgrade() {
+                push_chat(
+                    &w,
+                    assistant::Role::System as i32,
+                    locale::pick("Could not copy: clipboard is busy. Try again.", "复制失败，剪贴板暂时被占用，请重试。").into(),
+                    None,
+                );
+            }
+        }
+    });
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return false;
+        }
+        let ok = (|| {
+            EmptyClipboard().ok()?;
+            let g = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2).ok()?;
+            let p = GlobalLock(g) as *mut u16;
+            if p.is_null() {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+            let _ = GlobalUnlock(g);
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(g.0))).ok()?;
+            Some(())
+        })()
+        .is_some();
+        let _ = CloseClipboard();
+        ok
+    }
 }
 
 // ---------- 设置页 ----------
@@ -404,11 +479,37 @@ fn threshold_to_sensitivity(t: f32) -> f32 {
 }
 
 fn set_devices(w: &AppWindow, devices: &[String], selected: &str) {
+    let matched = (!selected.is_empty()).then(|| devices.iter().position(|d| d.contains(selected))).flatten();
     let mut items: Vec<slint::SharedString> = vec![locale::pick("System default", "系统默认").into()];
-    items.extend(devices.iter().map(|d| d.as_str().into()));
-    w.set_devices(ModelRc::from(Rc::new(VecModel::from(items))));
-    let idx = devices.iter().position(|d| !selected.is_empty() && d.contains(selected)).map_or(0, |i| i + 1);
-    w.set_device_index(idx as i32);
+    if !selected.is_empty() && matched.is_none() {
+        // 外接麦克风暂时没插时保留在下拉列表里，避免保存其他设置时把原麦克风偏好覆盖清空
+        items.push(ui_format!("{selected} (disconnected)", "{selected}（未连接）").into());
+        items.extend(devices.iter().map(|d| d.as_str().into()));
+        UNPLUGGED_DEVICE.set(Some(selected.to_string()));
+        w.set_devices(ModelRc::from(Rc::new(VecModel::from(items))));
+        w.set_device_index(1);
+    } else {
+        items.extend(devices.iter().map(|d| d.as_str().into()));
+        UNPLUGGED_DEVICE.set(None);
+        w.set_devices(ModelRc::from(Rc::new(VecModel::from(items))));
+        w.set_device_index(matched.map_or(0, |i| i + 1) as i32);
+    }
+}
+
+fn selected_device_name(w: &AppWindow, devices: &[String]) -> String {
+    let idx = w.get_device_index();
+    if idx <= 0 {
+        return String::new();
+    }
+    if let Some(saved_unplugged) = UNPLUGGED_DEVICE.with_borrow(Clone::clone) {
+        if idx == 1 {
+            saved_unplugged
+        } else {
+            devices.get(idx as usize - 2).cloned().unwrap_or_default()
+        }
+    } else {
+        devices.get(idx as usize - 1).cloned().unwrap_or_default()
+    }
 }
 
 /// key 状态徽标：0 未设置  1 已就绪  2 测试中  3 测试通过  4 测试失败
@@ -421,6 +522,7 @@ const THEMES: [&str; 3] = ["auto", "light", "dark"];
 
 fn refresh_key_status(w: &AppWindow, c: &Config) {
     VOICE_SAVED_KEY.set(if c.voice_frontend == "realtime" { config::realtime_key(c) } else { config::asr_key(c) });
+    LLM_SAVED_KEY.set(config::llm_key(c));
     w.set_llm_key_status(ui_key_status(config::llm_protected(c), &c.llm_key_env).into());
     let voice_ready = if c.voice_frontend == "realtime" { config::realtime_key(c).is_some() } else { config::asr_key(c).is_some() };
     w.set_asr_key_status(if voice_ready {
@@ -518,6 +620,9 @@ fn apply_config(w: &AppWindow, c: &Config, devices: &[String]) {
     w.set_language_index(locale::PREFERENCES.iter().position(|l| *l == c.language).unwrap_or(0) as i32);
     w.global::<Theme>().set_scheme(THEMES.iter().position(|t| *t == c.theme).unwrap_or(0) as i32);
     refresh_key_status(w, c);
+    LLM_TEST_INPUT.set(None);
+    ASR_TEST_INPUT.set(None);
+    TTS_TEST_INPUT.set(None);
     invalidate_voice_test(w);
 }
 
@@ -530,6 +635,9 @@ fn refresh_local_model_status(w: &AppWindow) {
 /// 界面 -> 配置（以已保存的配置为底，保留 key 和界面上没有的项）
 fn read_settings(w: &AppWindow, devices: &[String]) -> Config {
     let mut c = config::load();
+    if RESET_PENDING.get() {
+        c.remote_port = Config::default().remote_port;
+    }
     fill_settings(w, devices, &mut c);
     c
 }
@@ -559,8 +667,7 @@ fn fill_settings(w: &AppWindow, devices: &[String], c: &mut Config) {
     c.auto_update = w.get_auto_update();
     c.save_history = w.get_save_history();
     c.listen_on_start = w.get_listen_on_start();
-    let idx = w.get_device_index();
-    c.input_device = if idx <= 0 { String::new() } else { devices.get(idx as usize - 1).cloned().unwrap_or_default() };
+    c.input_device = selected_device_name(w, devices);
     c.desktop_control = w.get_desktop_control();
     c.browser_control = w.get_browser_control();
     c.browser_idle_minutes = w.get_browser_idle_minutes().clamp(1, 120) as u64;
@@ -596,6 +703,14 @@ thread_local! {
     static SETTINGS_BASELINE: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
     static VOICE_TEST_INPUT: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
     static VOICE_SAVED_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+    static ASR_TEST_INPUT: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+    static LLM_TEST_INPUT: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+    static TTS_TEST_INPUT: RefCell<Option<serde_json::Value>> = const { RefCell::new(None) };
+    static LLM_SAVED_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+    static LLM_TEST_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ASR_TEST_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static UNPLUGGED_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // 只在内存比较，绝不记录凭证。更改当前链路后不沿用旧测试结果。
@@ -604,13 +719,51 @@ fn voice_test_snapshot(w: &AppWindow) -> serde_json::Value {
     let key = effective_voice_key(input.as_str(), VOICE_SAVED_KEY.with_borrow(Clone::clone));
     serde_json::json!({
         "mode": w.get_frontend_index(), "provider": w.get_realtime_provider_index(), "asr_provider": w.get_asr_provider_index(),
-        "llm_provider": w.get_llm_provider_index(), "llm_key": w.get_llm_key_input().as_str(),
-        "url": w.get_realtime_url().as_str(), "model": w.get_realtime_model().as_str(),
-        "voice": w.get_realtime_voice().as_str(), "rate": w.get_tts_rate(),
-        "asr_url": w.get_asr_url().as_str(), "asr_model": w.get_asr_model().as_str(),
-        "local_model": w.get_local_model_index(), "region": w.get_azure_region().as_str(),
+        "llm_provider": w.get_llm_provider_index(), "llm_key": w.get_llm_key_input().trim(),
+        "url": w.get_realtime_url().trim(), "model": w.get_realtime_model().trim(),
+        "voice": w.get_realtime_voice().trim(), "rate": w.get_tts_rate().round() as i32,
+        "asr_url": w.get_asr_url().trim(), "asr_model": w.get_asr_model().trim(),
+        "local_model": w.get_local_model_index(), "region": w.get_azure_region().trim(),
         "silence": w.get_asr_silence_ms(), "wait": w.get_asr_timeout_secs(),
         "key": key,
+    })
+}
+
+fn asr_test_snapshot(w: &AppWindow) -> serde_json::Value {
+    let input = w.get_asr_key_input();
+    let key = effective_voice_key(input.as_str(), VOICE_SAVED_KEY.with_borrow(Clone::clone));
+    serde_json::json!({
+        "asr_provider": w.get_asr_provider_index(),
+        "asr_url": w.get_asr_url().trim(),
+        "asr_model": w.get_asr_model().trim(),
+        "local_model": w.get_local_model_index(),
+        "region": w.get_azure_region().trim(),
+        "silence": w.get_asr_silence_ms(),
+        "wait": w.get_asr_timeout_secs(),
+        "key": key,
+    })
+}
+
+fn llm_test_snapshot(w: &AppWindow) -> serde_json::Value {
+    let input = w.get_llm_key_input();
+    let key = effective_voice_key(input.as_str(), LLM_SAVED_KEY.with_borrow(Clone::clone));
+    serde_json::json!({
+        "provider": w.get_llm_provider_index(),
+        "base_url": w.get_llm_base_url().trim(),
+        "model": w.get_llm_model().trim(),
+        "key": key,
+    })
+}
+
+fn tts_test_snapshot(w: &AppWindow) -> serde_json::Value {
+    serde_json::json!({
+        "provider": w.get_tts_provider_index(),
+        "url": w.get_tts_url().trim(),
+        "model": w.get_tts_model().trim(),
+        "voice": w.get_tts_voice().trim(),
+        "region": w.get_azure_region().trim(),
+        "rate": w.get_tts_rate().round() as i32,
+        "key": w.get_tts_key_input().trim(),
     })
 }
 
@@ -634,11 +787,20 @@ mod voice_settings_tests {
     #[test]
     fn unused_realtime_fields_do_not_block_classic_mode_save() {
         let mut c = Config::default();
-        c.voice_frontend = "asr".into();
+        c.voice_frontend = "classic".into();
         c.realtime_url.clear();
         c.realtime_model.clear();
         assert_eq!(validate(&c), None);
         c.voice_frontend = "realtime".into();
+        assert!(validate(&c).is_some());
+    }
+
+    #[test]
+    fn invalid_wake_words_block_save() {
+        let mut c = Config::default();
+        c.wake_words = vec!["Hey 123".into()];
+        assert!(validate(&c).is_some());
+        c.wake_words = vec!["bcdfg".into()];
         assert!(validate(&c).is_some());
     }
 }
@@ -648,6 +810,42 @@ fn invalidate_voice_test(w: &AppWindow) {
     w.set_voice_test_state(KEY_READY);
     w.set_voice_test_status(locale::pick("Current voice mode has not been tested. Connection tests do not record or play audio.", "尚未测试当前语音模式；连接测试不包含实际录音和出声。").into());
     VOICE_TEST_INPUT.set(None);
+    if ASR_TEST_INPUT.with_borrow(|b| b.is_none()) {
+        let c = read_settings(w, &[]);
+        let voice_ready = if c.voice_frontend == "realtime" { config::realtime_key(&c).is_some() } else { config::asr_key(&c).is_some() };
+        VOICE_SAVED_KEY.set(if c.voice_frontend == "realtime" { config::realtime_key(&c) } else { config::asr_key(&c) });
+        w.set_asr_key_state(if voice_ready { KEY_READY } else { KEY_MISSING });
+    }
+}
+
+fn invalidate_asr_test(w: &AppWindow) {
+    ASR_TEST_EPOCH.set(ASR_TEST_EPOCH.get().wrapping_add(1));
+    ASR_TEST_INPUT.set(None);
+    let c = read_settings(w, &[]);
+    let voice_ready = if c.voice_frontend == "realtime" { config::realtime_key(&c).is_some() } else { config::asr_key(&c).is_some() };
+    VOICE_SAVED_KEY.set(if c.voice_frontend == "realtime" { config::realtime_key(&c) } else { config::asr_key(&c) });
+    w.set_asr_key_status(if voice_ready {
+        locale::pick("Ready (local, saved key, shared OpenAI key or environment variable)", "已就绪（本地识别、已保存的 key、共用的 OpenAI key 或环境变量）").into()
+    } else {
+        locale::pick("No API key for the selected speech provider", "所选语音服务还没有 API Key").into()
+    });
+    w.set_asr_key_saved(config::has_saved_key(config::voice_protected(&c)));
+    let voice_state = w.get_voice_test_state();
+    if voice_state == KEY_OK || voice_state == KEY_FAILED {
+        w.set_asr_key_state(voice_state);
+    } else {
+        w.set_asr_key_state(if voice_ready { KEY_READY } else { KEY_MISSING });
+    }
+}
+
+fn invalidate_llm_test(w: &AppWindow) {
+    LLM_TEST_EPOCH.set(LLM_TEST_EPOCH.get().wrapping_add(1));
+    LLM_TEST_INPUT.set(None);
+    let c = read_settings(w, &[]);
+    LLM_SAVED_KEY.set(config::llm_key(&c));
+    w.set_llm_key_status(ui_key_status(config::llm_protected(&c), &c.llm_key_env).into());
+    w.set_llm_key_state(if config::llm_key(&c).is_some() { KEY_READY } else { KEY_MISSING });
+    w.set_llm_key_saved(config::has_saved_key(config::llm_protected(&c)));
 }
 
 /// 设置页上所有可编辑内容的快照（不含悬浮球位置等界面外的项）
@@ -661,20 +859,40 @@ fn settings_snapshot(w: &AppWindow) -> serde_json::Value {
         "device": w.get_device_index(),
         "autostart": w.get_launch_at_login(),
         "keys": [w.get_llm_key_input().trim(), w.get_asr_key_input().trim(), w.get_tts_key_input().trim()],
+        "reset_port": RESET_PENDING.get(),
     })
 }
 
 /// 当前界面上的设置就是已保存的状态
 fn mark_settings_clean(w: &AppWindow) {
+    RESET_PENDING.set(false);
     SETTINGS_BASELINE.set(Some(settings_snapshot(w)));
     w.set_settings_dirty(false);
+    w.set_leave_pending(false);
 }
 
 /// 设置页打开时定时比较，有改动就提示“未保存”
 fn update_settings_dirty(w: &AppWindow) {
-    let stale = VOICE_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != voice_test_snapshot(w)));
-    if stale { invalidate_voice_test(w); }
+    if VOICE_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != voice_test_snapshot(w))) {
+        invalidate_voice_test(w);
+    }
+    if ASR_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != asr_test_snapshot(w))) {
+        invalidate_asr_test(w);
+    }
+    if LLM_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != llm_test_snapshot(w))) {
+        invalidate_llm_test(w);
+    }
+    if TTS_TEST_INPUT.with_borrow(|b| b.as_ref().is_some_and(|v| *v != tts_test_snapshot(w))) {
+        TTS_TEST_INPUT.set(None);
+        if w.get_tts_test_state() != KEY_TESTING {
+            w.set_tts_test_state(KEY_READY);
+            w.set_tts_test_status("".into());
+        }
+    }
     let dirty = SETTINGS_BASELINE.with_borrow(|b| b.as_ref().is_some_and(|b| *b != settings_snapshot(w)));
+    if !dirty && w.get_leave_pending() {
+        w.set_leave_pending(false);
+    }
     if dirty != w.get_settings_dirty() {
         w.set_settings_dirty(dirty);
         if dirty {
@@ -698,13 +916,19 @@ fn executor_status() -> String {
     let found = |names: &[&str]| tasks::find_program(names).is_some();
     let codex = if found(&["codex.exe", "codex.cmd"]) { locale::pick("Installed", "已安装") } else { locale::pick("Not installed (npm install -g @openai/codex)", "未安装（npm install -g @openai/codex）") };
     let claude = if found(&["claude.exe", "claude.cmd"]) { locale::pick("Installed. Run claude in a terminal to sign in before first use", "已安装，第一次用前要在终端运行 claude 登录") } else { locale::pick("Not installed", "未安装") };
-    ui_format!("Longer tasks run in the background and report back when done. Codex: {codex}; Claude Code: {claude}.", "复杂任务交给它在后台做，做完会主动告诉你。Codex：{codex}；Claude Code：{claude}。")
+    ui_format!(
+        "Longer tasks run in the background and report back when done (all agents enforce the permissions and working directory below). Codex: {codex}; Claude Code: {claude}.",
+        "复杂任务交给它在后台做，做完会主动告诉你（内置助手同样遵守下方权限与工作目录）。Codex：{codex}；Claude Code：{claude}。"
+    )
 }
 
 /// 检查必填项，返回问题说明
 fn validate(c: &Config) -> Option<String> {
     if c.wake_words.is_empty() {
         return Some(locale::pick("Enter at least one wake word", "请至少填一个唤醒词").into());
+    }
+    if let Err(msg) = kws::validate_words(&config::models_dir().join("kws"), &c.wake_words) {
+        return Some(msg);
     }
     if !c.llm_base_url.starts_with("http") {
         return Some(locale::pick("Language model API URL must start with http", "大模型接口地址应以 http 开头").into());
@@ -754,7 +978,7 @@ async fn run_check(weak: slint::Weak<AppWindow>, manual: bool) {
     match update::check().await {
         Ok(Some(rel)) => {
             set_update(&weak, UPDATE_INSTALL, found_text(&rel));
-            let text = ui_format!("Aeri v{} is available. Open Software updates in Settings, or say “update Aeri”.", "发现新版本 v{}，可以在设置页底部点“更新”，或者直接对我说“更新软件”。", rel.version);
+            let text = ui_format!("Aeri v{} is available. Open Settings → Software updates to install, or say “update Aeri”.", "发现新版本 v{}，可以在“设置 → 软件更新”里点更新，或者直接对我说“更新软件”。", rel.version);
             update::set_latest(Some(rel));
             let weak2 = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -918,6 +1142,16 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
                 rt.spawn(run_check(weak, true));
             }
             UPDATE_INSTALL => {
+                if tasks::is_running() {
+                    w.set_update_status(
+                        locale::pick(
+                            "A background task is running. Wait for it to finish or cancel it before updating.",
+                            "有后台任务正在运行，请等它完成或先取消任务后再更新。",
+                        )
+                        .into(),
+                    );
+                    return;
+                }
                 let Some(rel) = update::latest() else { return };
                 w.set_update_action(UPDATE_BUSY);
                 w.set_update_status(locale::pick("Downloading…", "正在下载…").into());
@@ -925,10 +1159,24 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
                     let progress_weak = weak.clone();
                     let version = rel.version.clone();
                     let r = update::download(&rel, move |p| set_update(&progress_weak, UPDATE_BUSY, ui_format!("Downloading v{version}: {p}%", "正在下载 v{version}：{p}%"))).await;
-                    match r.and_then(|dir| update::launch_apply(&dir)) {
+                    let apply_res = r.and_then(|dir| {
+                        if tasks::is_running() {
+                            anyhow::bail!(
+                                "{}",
+                                locale::pick(
+                                    "A background task is running; wait for it to finish or cancel it before updating",
+                                    "有后台任务正在运行，请等它完成或先取消任务后再更新"
+                                )
+                            );
+                        }
+                        update::launch_apply(&dir, std::process::id(), "ui")
+                    });
+                    match apply_res {
                         Ok(()) => {
                             set_update(&weak, UPDATE_BUSY, locale::pick("Download complete. Restarting to finish the update…", "下载完成，正在重启以完成更新…").into());
                             tokio::time::sleep(Duration::from_millis(800)).await;
+                            tasks::cancel_all_global();
+                            duck::restore_all_now();
                             let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); });
                         }
                         Err(e) => set_update(&weak, UPDATE_INSTALL, ui_format!("Update failed: {e:#}", "更新失败：{e:#}")),
@@ -951,10 +1199,12 @@ fn wire_update(window: &AppWindow, rt: Handle, auto: bool) {
 /// Language takes effect right away and is saved immediately (it is not part of “Save and apply”):
 /// the UI switches its bundled translation, and texts set from Rust are refreshed.
 /// The tray and floating-orb menus are built at startup, so they follow after a restart.
-fn wire_language(window: &AppWindow) {
+fn wire_language(window: &AppWindow, devices: Rc<RefCell<Vec<String>>>) {
     let weak = window.as_weak();
     window.on_language_changed(move |index| {
         let Some(w) = weak.upgrade() else { return };
+        let was_dirty = w.get_settings_dirty();
+        let cur_dev = selected_device_name(&w, &devices.borrow());
         let pref = locale::PREFERENCES[index.clamp(0, 2) as usize];
         let mut saved = config::load();
         saved.language = pref.into();
@@ -964,11 +1214,29 @@ fn wire_language(window: &AppWindow) {
         }
         locale::apply_preference(pref);
         let _ = slint::select_bundled_translation(locale::slint_bundle());
-        refresh_key_status(&w, &saved);
+        set_devices(&w, &devices.borrow(), &cur_dev);
+        w.set_executor_status(executor_status().into());
+        refresh_local_model_status(&w);
+        apply_hotkey(&w, w.get_hotkey());
+        sync_listening_menus(w.get_listening_enabled());
+        sync_ball_menu(ball::is_enabled());
+        let (llm_in, asr_in, tts_in) = (w.get_llm_key_input(), w.get_asr_key_input(), w.get_tts_key_input());
+        refresh_key_status(&w, &read_settings(&w, &devices.borrow()));
+        w.set_llm_key_input(llm_in);
+        w.set_asr_key_input(asr_in);
+        w.set_tts_key_input(tts_in);
+        if VOICE_TEST_INPUT.with_borrow(|b| b.is_none()) {
+            invalidate_voice_test(&w);
+        }
         refresh_remote(&w);
         w.set_history_status("".into());
         w.set_plugins_status("".into());
-        w.set_language_note(locale::pick("The tray menu switches language after Aeri restarts.", "托盘菜单会在 Aeri 重启后切换语言。").into());
+        w.set_language_note(locale::pick("Open/Quit tray items switch language after Aeri restarts.", "托盘菜单部分项目会在 Aeri 重启后切换语言。").into());
+        if !was_dirty {
+            mark_settings_clean(&w);
+        } else {
+            update_settings_dirty(&w);
+        }
     });
 }
 
@@ -982,6 +1250,8 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         w.set_llm_thinking(p.id == "deepseek");
         w.set_llm_key_input("".into());
         refresh_key_status(&w, &read_settings(&w, &[]));
+        invalidate_llm_test(&w);
+        invalidate_voice_test(&w);
     });
     let weak = window.as_weak();
     window.on_realtime_provider_changed(move |index| {
@@ -1072,14 +1342,22 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         }
         w.set_tts_test_state(KEY_TESTING);
         w.set_tts_test_status(locale::pick("Playing a short sample…", "正在播放简短示例…").into());
+        let snapshot = tts_test_snapshot(&w);
+        TTS_TEST_INPUT.set(Some(snapshot.clone()));
         let (weak, tts) = (weak.clone(),test_tts.clone());
         preview_rt.spawn(async move {
             let mut fallback = String::new();
             tts.speak_configured(&c,locale::pick("Hello, I'm Aeri. This is your selected voice.", "你好，我是 Aeri，这是您选择的音色。"),|note| fallback = note.to_string()).await;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.set_tts_test_state(if fallback.is_empty() { KEY_OK } else { KEY_FAILED });
-                    w.set_tts_test_status(if fallback.is_empty() { locale::pick("Voice preview finished or stopped.", "音色试听已结束或停止。").into() } else { fallback.into() });
+                    if tts_test_snapshot(&w) == snapshot {
+                        w.set_tts_test_state(if fallback.is_empty() { KEY_OK } else { KEY_FAILED });
+                        w.set_tts_test_status(if fallback.is_empty() { locale::pick("Voice preview finished or stopped.", "音色试听已结束或停止。").into() } else { fallback.into() });
+                    } else {
+                        TTS_TEST_INPUT.set(None);
+                        w.set_tts_test_state(KEY_READY);
+                        w.set_tts_test_status("".into());
+                    }
                 }
             });
         });
@@ -1090,7 +1368,26 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let mut c = config::load();
         let slot = if w.get_tts_provider_index() == 4 { config::TTS_CUSTOM_SLOT } else { TTS_PROVIDERS[w.get_tts_provider_index().clamp(0,4) as usize] };
         c.stt_api_keys_protected.remove(slot);
-        if config::save(&c).is_ok() { refresh_key_status(&w,&c); let _ = tx.send(Command::Reload(c)); }
+        if config::save(&c).is_ok() {
+            w.set_tts_key_input("".into());
+            w.set_tts_key_saved(false);
+            TTS_TEST_INPUT.set(None);
+            w.set_tts_test_state(KEY_READY);
+            w.set_tts_test_status("".into());
+            SETTINGS_BASELINE.with_borrow_mut(|b| {
+                if let Some(base) = b {
+                    base["keys"][2] = serde_json::json!("");
+                }
+            });
+            update_settings_dirty(&w);
+            let note = if w.get_settings_dirty() {
+                locale::pick("Saved key cleared; click Save & apply for remaining unsaved changes", "已清除保存的 key；其余未保存的更改仍需点“保存并应用”")
+            } else {
+                locale::pick("Saved key cleared", "已清除保存的 key")
+            };
+            set_note(&w, NOTE_OK, note);
+            let _ = tx.send(Command::Reload(c));
+        }
     });
     // 保存并应用
     let (tx, weak, devs) = (cmd_tx.clone(), window.as_weak(), devices.clone());
@@ -1119,11 +1416,32 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         }
         match config::save(&c) {
             Ok(()) => {
+                let prev_llm = (w.get_llm_key_state(), w.get_llm_key_status());
+                let prev_voice_state = w.get_voice_test_state();
+                w.set_wake_words(c.wake_words.join(locale::pick(", ", "，")).into());
+                if let Some(first) = c.wake_words.first() {
+                    w.set_first_wake_word(first.as_str().into());
+                }
                 w.set_llm_key_input("".into());
                 w.set_asr_key_input("".into());
                 w.set_tts_key_input("".into());
                 refresh_key_status(&w, &c);
+                if (prev_llm.0 == KEY_OK || prev_llm.0 == KEY_FAILED)
+                    && LLM_TEST_INPUT.with_borrow(|b| b.as_ref() == Some(&llm_test_snapshot(&w)))
+                {
+                    w.set_llm_key_state(prev_llm.0);
+                    w.set_llm_key_status(prev_llm.1);
+                }
+                if (prev_voice_state == KEY_OK || prev_voice_state == KEY_FAILED)
+                    && VOICE_TEST_INPUT.with_borrow(|b| b.as_ref() == Some(&voice_test_snapshot(&w)))
+                {
+                    w.set_asr_key_state(prev_voice_state);
+                }
                 ball::set_enabled(c.float_ball);
+                if c.float_ball && !w.window().is_visible() {
+                    ball::set_visible(true);
+                }
+                sync_ball_menu(c.float_ball);
                 apply_hotkey(&w, c.hotkey);
                 let (kind, note) = match sys::set_autostart(w.get_launch_at_login()) {
                     Ok(()) => (NOTE_OK, locale::pick("Saved and applied", "已保存并生效").to_string()),
@@ -1152,18 +1470,29 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             asr_api_key_protected: saved.asr_api_key_protected,
             realtime_openai_api_key_protected: saved.realtime_openai_api_key_protected,
             stt_api_keys_protected: saved.stt_api_keys_protected,
+            language: saved.language,
+            remote_port: Config::default().remote_port,
             ..Config::default()
         };
         apply_config(&w, &defaults, &devs.borrow());
+        w.set_launch_at_login(false);
+        sync_title_bar(&w);
+        RESET_PENDING.set(saved.remote_port != Config::default().remote_port);
         update_settings_dirty(&w);
-        set_note(&w, NOTE_INFO, locale::pick("Defaults restored (API keys kept). Click Save & apply to use them", "已恢复默认值（API key 保留），点“保存并应用”生效"));
+        if w.get_settings_dirty() {
+            set_note(&w, NOTE_INFO, locale::pick("Defaults restored (API keys kept). Click Save & apply to use them", "已恢复默认值（API key 保留），点“保存并应用”生效"));
+        } else {
+            set_note(&w, NOTE_INFO, locale::pick("Settings are already at their defaults", "当前已经是默认设置"));
+        }
     });
 
     // 放弃未保存的更改：界面回到已保存的配置
     let (weak, devs) = (window.as_weak(), devices.clone());
     window.on_discard_settings(move || {
         let Some(w) = weak.upgrade() else { return };
+        RESET_PENDING.set(false);
         apply_config(&w, &config::load(), &devs.borrow());
+        sync_title_bar(&w);
         mark_settings_clean(&w);
         set_note(&w, NOTE_INFO, "");
     });
@@ -1172,10 +1501,15 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let (weak, devs) = (window.as_weak(), devices);
     window.on_refresh_devices(move || {
         let Some(w) = weak.upgrade() else { return };
-        let idx = w.get_device_index();
-        let current = if idx > 0 { devs.borrow().get(idx as usize - 1).cloned().unwrap_or_default() } else { String::new() };
+        let was_dirty = w.get_settings_dirty();
+        let current = selected_device_name(&w, &devs.borrow());
         *devs.borrow_mut() = audio::input_device_names();
         set_devices(&w, &devs.borrow(), &current);
+        if !was_dirty {
+            mark_settings_clean(&w);
+        } else {
+            update_settings_dirty(&w);
+        }
         set_note(&w, NOTE_INFO, ui_format!("Found {} microphones", "找到 {} 个麦克风", devs.borrow().len()));
     });
 
@@ -1197,14 +1531,39 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                     if id == "dashscope" { c.asr_api_key_protected.clear(); }
                     else { c.stt_api_keys_protected.remove(id); }
                 }
+                w.set_asr_key_input("".into());
             } else {
                 let id = llm::PRESETS[w.get_llm_provider_index().clamp(0, 7) as usize].id;
                 if c.llm_key_provider == id { c.llm_api_key_protected.clear(); }
                 else { c.llm_api_keys_protected.remove(id); }
+                w.set_llm_key_input("".into());
             }
             if config::save(&c).is_ok() {
-                refresh_key_status(&w, &c);
-                set_note(&w, NOTE_OK, locale::pick("Saved key cleared", "已清除保存的 key"));
+                let current_view = read_settings(&w, &[]);
+                if asr {
+                    w.set_asr_key_saved(false);
+                    invalidate_voice_test(&w);
+                    invalidate_asr_test(&w);
+                } else {
+                    w.set_llm_key_saved(false);
+                    invalidate_llm_test(&w);
+                    if current_view.llm_provider == "openai" || current_view.llm_provider == "gemini" {
+                        invalidate_voice_test(&w);
+                    }
+                }
+                SETTINGS_BASELINE.with_borrow_mut(|b| {
+                    if let Some(base) = b {
+                        let idx = usize::from(asr);
+                        base["keys"][idx] = serde_json::json!("");
+                    }
+                });
+                update_settings_dirty(&w);
+                let note = if w.get_settings_dirty() {
+                    locale::pick("Saved key cleared; click Save & apply for remaining unsaved changes", "已清除保存的 key；其余未保存的更改仍需点“保存并应用”")
+                } else {
+                    locale::pick("Saved key cleared", "已清除保存的 key")
+                };
+                set_note(&w, NOTE_OK, note);
                 let _ = tx.send(Command::Reload(c));
             }
         };
@@ -1215,6 +1574,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let (weak, rt2) = (window.as_weak(), rt.clone());
     window.on_test_llm(move || {
         let Some(w) = weak.upgrade() else { return };
+        if w.get_llm_key_state() == KEY_TESTING { return; }
         let c = read_settings(&w, &[]);
         let input = w.get_llm_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { config::llm_key(&c) } else { Some(input) }) else {
@@ -1222,6 +1582,10 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             w.set_llm_key_status(locale::pick("Paste a key above first", "请先在上面粘贴 key").into());
             return;
         };
+        let snapshot = llm_test_snapshot(&w);
+        LLM_TEST_INPUT.set(Some(snapshot.clone()));
+        let epoch = LLM_TEST_EPOCH.get().wrapping_add(1);
+        LLM_TEST_EPOCH.set(epoch);
         w.set_llm_key_state(KEY_TESTING);
         w.set_llm_key_status(locale::pick("Connecting…", "正在连接…").into());
         let weak = weak.clone();
@@ -1236,8 +1600,14 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.set_llm_key_state(state);
-                    w.set_llm_key_status(msg.into());
+                    if LLM_TEST_EPOCH.get() == epoch {
+                        if llm_test_snapshot(&w) == snapshot {
+                            w.set_llm_key_state(state);
+                            w.set_llm_key_status(msg.into());
+                        } else {
+                            invalidate_llm_test(&w);
+                        }
+                    }
                 }
             });
         });
@@ -1255,6 +1625,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
         let input = w.get_asr_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { if c.voice_frontend == "realtime" { config::realtime_key(&c) } else { config::asr_key(&c) } } else { Some(input) }) else {
             w.set_voice_test_state(KEY_MISSING);
+            w.set_asr_key_state(KEY_MISSING);
             w.set_voice_test_status(locale::pick("Enter a key for the selected voice provider (OpenAI can share the LLM key).", "请先填写所选语音服务的 key（OpenAI 可以和大模型共用一个 key）。").into());
             return;
         };
@@ -1298,8 +1669,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             }).await;
             let (state, msg) = match result {
                 Ok(Ok(answer)) => (KEY_OK, if answer.is_empty() { ui_format!("{label} connection test passed. Microphone and playback were not tested. Save & apply your changes.", "{label}连接测试通过；未测试麦克风拾音和声音播放。修改后请保存并应用。") } else { ui_format!("Server answered: {answer}", "服务器返回：{answer}") }),
-                Ok(Err(e)) if c.asr_provider == "custom" && !realtime_mode => (KEY_FAILED,format!("{e:#}")),
-                Ok(Err(_)) => (KEY_FAILED, ui_format!("{label} connection failed. Check credentials, model/voice access, and service URL, then retry.", "{label}连接失败，请检查凭证、模型/音色是否开通及服务地址，然后重试。")),
+                Ok(Err(e)) => (KEY_FAILED, ui_format!("{label} connection failed: {e:#}", "{label}连接失败：{e:#}")),
                 Err(_) => (KEY_FAILED, ui_format!("{label} connection timed out. Check your network and service URL, then retry.", "{label}连接测试超时，请检查网络与服务地址后重试。")),
             };
             let _ = slint::invoke_from_event_loop(move || {
@@ -1309,6 +1679,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                             refresh_local_model_status(&w);
                             w.set_voice_test_state(state);
                             w.set_voice_test_status(msg.into());
+                            w.set_asr_key_state(state);
                         } else { invalidate_voice_test(&w); }
                     }
                 }
@@ -1320,6 +1691,7 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
     let weak = window.as_weak();
     window.on_test_asr(move || {
         let Some(w) = weak.upgrade() else { return };
+        if w.get_asr_key_state() == KEY_TESTING { return; }
         let c = read_settings(&w, &[]);
         let input = w.get_asr_key_input().trim().to_string();
         let Some(key) = (if input.is_empty() { config::asr_key(&c) } else { Some(input) }) else {
@@ -1327,14 +1699,18 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
             w.set_asr_key_status(locale::pick("Paste a key above first", "请先在上面粘贴 key").into());
             return;
         };
+        let snapshot = asr_test_snapshot(&w);
+        ASR_TEST_INPUT.set(Some(snapshot.clone()));
+        let epoch = ASR_TEST_EPOCH.get().wrapping_add(1);
+        ASR_TEST_EPOCH.set(epoch);
         w.set_asr_key_state(KEY_TESTING);
         w.set_asr_key_status(locale::pick("Connecting…", "正在连接…").into());
         let weak = weak.clone();
         rt.spawn(async move {
             let settings = asr::AsrSettings {
                 provider: asr::Provider::from_id(&c.asr_provider),
-                        region: config::azure_region(&c),
-                        local_model: c.local_asr_model.clone(),
+                region: config::azure_region(&c),
+                local_model: c.local_asr_model.clone(),
                 url: c.asr_url.clone(),
                 model: c.asr_model.clone(),
                 api_key: key,
@@ -1342,13 +1718,19 @@ fn wire_settings(window: &AppWindow, cmd_tx: &UnboundedSender<Command>, devices:
                 speech_timeout: Duration::from_secs(c.asr_speech_timeout_secs),
             };
             let (state, msg) = match asr::check(&settings).await {
-                Ok(()) => (KEY_OK, ui_format!("Test passed: {} connected", "测试通过：{} 可以正常连接", c.asr_model)),
+                Ok(()) => (KEY_OK, ui_format!("Test passed: {} connected", "测试通过：{} 可以正常连接", if c.asr_provider == "local" { &c.local_asr_model } else { &c.asr_model })),
                 Err(e) => (KEY_FAILED, ui_format!("Test failed: {e:#}", "测试失败：{e:#}")),
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.set_asr_key_state(state);
-                    w.set_asr_key_status(msg.into());
+                    if ASR_TEST_EPOCH.get() == epoch {
+                        if asr_test_snapshot(&w) == snapshot {
+                            w.set_asr_key_state(state);
+                            w.set_asr_key_status(msg.into());
+                        } else {
+                            invalidate_asr_test(&w);
+                        }
+                    }
                 }
             });
         });
@@ -1461,13 +1843,75 @@ unsafe extern "system" fn repaint_on_invalidate(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
+fn window_work_area(w: &AppWindow) -> windows::Win32::Foundation::RECT {
+    use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+
+    let hwnd = w
+        .window()
+        .with_winit_window(|win| match win.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => Some(HWND(h.hwnd.get() as *mut _)),
+            _ => None,
+        })
+        .flatten();
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return info.rcWork;
+            }
+        }
+    }
+    ball::work_area()
+}
+
+/// 将窗口物理高度限制在显示器工作区内（不超过 work.bottom - work.top - 16），返回总物理宽高（含标题栏）
+fn clamp_window_size(w: &AppWindow, work: windows::Win32::Foundation::RECT, fallback_scale: f32) -> (i32, i32, f32) {
+    let size = w.window().size();
+    let scale = if size.width > 0 && w.window().scale_factor() > 0.5 { w.window().scale_factor() } else { fallback_scale };
+    let title_h = (32.0 * scale).round() as i32;
+    let max_frame_h = (work.bottom - work.top - 16).max(360);
+    let max_client_h = (max_frame_h - title_h).max(320);
+    let (ww, mut client_h) = if size.width > 0 && size.height > 0 {
+        (size.width as i32, size.height as i32)
+    } else {
+        ((580.0 * scale).round() as i32, (620.0 * scale).round() as i32)
+    };
+    if client_h > max_client_h {
+        client_h = max_client_h;
+        w.window().set_size(slint::PhysicalSize::new(ww.max(300) as u32, client_h as u32));
+    }
+    (ww, client_h + title_h, scale)
+}
+
 /// 显示主界面（悬浮球随之隐藏）
 fn show_window(w: &AppWindow) {
     use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+
     let _ = w.show();
     w.window().set_minimized(false);
-    // 悬浮球点击不抢焦点，展开时要主动把主界面切到最前面，否则会压在当前窗口后面
-    w.window().with_winit_window(|win| win.focus_window());
+    // 悬浮球点击或二次双击唤起时不抢焦点，要主动把主界面切到最前面
+    w.window().with_winit_window(|win| {
+        win.focus_window();
+        if let Ok(RawWindowHandle::Win32(h)) = win.window_handle().map(|h| h.as_raw()) {
+            unsafe {
+                let _ = SetForegroundWindow(HWND(h.hwnd.get() as *mut _));
+            }
+        }
+    });
+    let work = window_work_area(w);
+    let (_, wh, _) = clamp_window_size(w, work, ball::scale());
+    let pos = w.window().position();
+    if w.window().size().width > 0 && (pos.y < work.top || pos.y + wh > work.bottom) {
+        let ny = pos.y.clamp(work.top + 8, (work.bottom - wh - 8).max(work.top));
+        w.window().set_position(slint::PhysicalPosition::new(pos.x, ny));
+    }
     ball::set_visible(false);
     sync_title_bar(w);
     hook_native_window(w);
@@ -1476,30 +1920,46 @@ fn show_window(w: &AppWindow) {
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
             hook_native_window(&w);
+            let work = window_work_area(&w);
+            let (_, wh, _) = clamp_window_size(&w, work, ball::scale());
+            let pos = w.window().position();
+            if w.window().size().width > 0 && (pos.y < work.top || pos.y + wh > work.bottom) {
+                let ny = pos.y.clamp(work.top + 8, (work.bottom - wh - 8).max(work.top));
+                w.window().set_position(slint::PhysicalPosition::new(pos.x, ny));
+            }
         }
     });
 }
 
 /// 从悬浮球展开：主界面出现在悬浮球旁边（球在屏幕右半边就放左侧，反之放右侧），底边对齐
 fn open_from_ball(w: &AppWindow) {
-    if let Some(r) = ball::rect() {
-        let scale = w.window().scale_factor();
-        let size = w.window().size();
-        let (ww, wh) = if size.width > 0 {
-            (size.width as i32, size.height as i32 + (32.0 * scale) as i32) // 加上标题栏
-        } else {
-            ((460.0 * scale) as i32, (792.0 * scale) as i32)
-        };
-        let work = ball::work_area();
-        let gap = (8.0 * scale) as i32;
+    let ball_info = ball::rect().map(|r| (r, ball::work_area(), ball::scale()));
+    let place = |w: &AppWindow, r: windows::Win32::Foundation::RECT, work: windows::Win32::Foundation::RECT, b_scale: f32| {
+        let (ww, wh, scale) = clamp_window_size(w, work, b_scale);
+        let gap = (8.0 * scale).round() as i32;
         let on_right = (r.left + r.right) / 2 > (work.left + work.right) / 2;
         let x = if on_right { r.left - gap - ww } else { r.right + gap };
         let y = r.bottom - wh;
-        let x = x.clamp(work.left, (work.right - ww).max(work.left));
-        let y = y.clamp(work.top, (work.bottom - wh).max(work.top));
+        let x = x.clamp(work.left + 4, (work.right - ww - 4).max(work.left));
+        let y = y.clamp(work.top + 8, (work.bottom - wh - 8).max(work.top));
         w.window().set_position(slint::PhysicalPosition::new(x, y));
+    };
+    let first_create = w.window().size().width == 0;
+    if let Some((r, work, b_scale)) = ball_info {
+        place(w, r, work, b_scale);
     }
     show_window(w);
+    if let Some((r, work, b_scale)) = ball_info {
+        place(w, r, work, b_scale);
+        if first_create {
+            let weak = w.as_weak();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    place(&w, r, work, b_scale);
+                }
+            });
+        }
+    }
 }
 
 /// 光球 / 悬浮球“开始说话”：空闲时开始听；正在听、思考、执行或回答时停下
@@ -1591,6 +2051,7 @@ fn refresh_remote(w: &AppWindow) {
 
 thread_local! {
     static TRAY_TOGGLE: RefCell<Option<tray_icon::menu::MenuItem>> = const { RefCell::new(None) };
+    static TRAY_BALL: RefCell<Option<tray_icon::menu::MenuItem>> = const { RefCell::new(None) };
 }
 
 /// 悬浮球和托盘菜单里的“暂停 / 恢复语音唤醒”跟着当前状态走
@@ -1603,16 +2064,28 @@ fn sync_listening_menus(on: bool) {
     });
 }
 
+/// 托盘菜单里的“隐藏 / 显示悬浮球”跟着启用状态走
+fn sync_ball_menu(on: bool) {
+    TRAY_BALL.with_borrow(|item| {
+        if let Some(item) = item {
+            item.set_text(if on { locale::pick("Hide floating orb", "隐藏悬浮球") } else { locale::pick("Show floating orb", "显示悬浮球") });
+        }
+    });
+}
+
 fn set_float_ball(w: &AppWindow, on: bool) {
     let mut c = config::load();
     c.float_ball = on;
     let _ = config::save(&c);
-    let dirty = w.get_settings_dirty();
     w.set_float_ball(on);
-    if !dirty {
-        mark_settings_clean(w);
-    }
+    SETTINGS_BASELINE.with_borrow_mut(|b| {
+        if let Some(base) = b {
+            base["config"]["float_ball"] = serde_json::json!(on);
+        }
+    });
+    update_settings_dirty(w);
     ball::set_enabled(on);
+    sync_ball_menu(on);
     if on && !w.window().is_visible() {
         ball::set_visible(true);
     }
@@ -1624,8 +2097,26 @@ fn on_ball_event(w: &AppWindow, tx: &UnboundedSender<Command>, event: ball::Ball
         BallEvent::Open => open_from_ball(w),
         BallEvent::Talk => talk_or_stop(w, tx),
         BallEvent::ToggleListening => toggle_listening(w, tx),
-        BallEvent::Hide => set_float_ball(w, false),
+        BallEvent::Hide => {
+            let was_visible = w.window().is_visible();
+            set_float_ball(w, false);
+            if !was_visible {
+                push_chat(
+                    w,
+                    assistant::Role::System as i32,
+                    locale::pick(
+                        "Floating orb hidden. You can show it again anytime from the system tray menu or Settings → Appearance & startup.",
+                        "悬浮球已隐藏；可随时从右下角系统托盘菜单或“设置 → 外观与启动”重新显示。",
+                    )
+                    .into(),
+                    None,
+                );
+                show_window(w);
+            }
+        }
         BallEvent::Quit => {
+            tasks::cancel_all_global();
+            duck::restore_all_now();
             let _ = slint::quit_event_loop();
         }
         BallEvent::Moved(x, y) => {
@@ -1645,11 +2136,20 @@ fn create_tray(window: &AppWindow, cmd_tx: UnboundedSender<Command>, icon: Vec<u
     let menu = Menu::new();
     let open = MenuItem::new(locale::pick("Open Aeri", "打开主界面"), true, None);
     let toggle = MenuItem::new(locale::pick("Pause voice wake", "暂停语音唤醒"), true, None);
-    let show_ball = MenuItem::new(locale::pick("Show floating orb", "显示悬浮球"), true, None);
+    let show_ball = MenuItem::new(
+        if window.get_float_ball() {
+            locale::pick("Hide floating orb", "隐藏悬浮球")
+        } else {
+            locale::pick("Show floating orb", "显示悬浮球")
+        },
+        true,
+        None,
+    );
     let quit = MenuItem::new(locale::pick("Quit", "退出"), true, None);
     menu.append_items(&[&open, &toggle, &show_ball, &PredefinedMenuItem::separator(), &quit])?;
     let ids = (open.id().clone(), toggle.id().clone(), show_ball.id().clone(), quit.id().clone());
     TRAY_TOGGLE.set(Some(toggle.clone()));
+    TRAY_BALL.set(Some(show_ball.clone()));
 
     let weak = window.as_weak();
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
@@ -1662,8 +2162,10 @@ fn create_tray(window: &AppWindow, cmd_tx: UnboundedSender<Command>, icon: Vec<u
             } else if e.id == toggle_id {
                 toggle_listening(&w, &tx);
             } else if e.id == ball_id {
-                set_float_ball(&w, true);
+                set_float_ball(&w, !ball::is_enabled());
             } else if e.id == quit_id {
+                tasks::cancel_all_global();
+                duck::restore_all_now();
                 let _ = slint::quit_event_loop();
             }
         });

@@ -140,6 +140,8 @@ enum PhoneTurn {
 struct PhoneMic {
     /// 手机正按着说话键
     held: bool,
+    /// 当前持有这次按压的手机连接编号（0 表示未区分连接的兼容调用）
+    owner_conn: u64,
     turn: PhoneTurn,
     /// 还没开始收音时收到的声音
     pending: PreRoll,
@@ -148,6 +150,7 @@ struct PhoneMic {
 
 static PHONE: Mutex<PhoneMic> = Mutex::new(PhoneMic {
     held: false,
+    owner_conn: 0,
     turn: PhoneTurn::None,
     pending: PreRoll::new(PREROLL_MAX_SAMPLES),
     out: None,
@@ -169,14 +172,28 @@ pub fn set_phone_output(tx: UnboundedSender<Vec<f32>>) {
 /// 这一轮用的是手机麦克风：电脑麦克风的声音不送去识别
 pub fn phone_active() -> bool {
     let p = phone();
-    p.held || matches!(p.turn, PhoneTurn::Requested | PhoneTurn::Running)
+    p.held
+        || matches!(p.turn, PhoneTurn::Requested | PhoneTurn::Running)
+        || (p.turn == PhoneTurn::None && p.pending.samples() > 0)
 }
 
-/// 手机按下说话键
+/// 当前手机是否正按着说话键
+pub fn phone_is_held() -> bool {
+    phone().held
+}
+
+/// 手机按下说话键（测试用无连接编号入口）
+#[cfg(test)]
 pub fn phone_press() {
+    phone_press_conn(0);
+}
+
+/// 指定手机连接按下说话键
+pub fn phone_press_conn(conn_id: u64) {
     let mut p = phone();
     p.held = true;
-    if p.turn == PhoneTurn::Served {
+    p.owner_conn = conn_id;
+    if p.turn != PhoneTurn::Running {
         p.turn = PhoneTurn::None;
     }
     p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
@@ -192,31 +209,51 @@ pub fn phone_audio(samples: Vec<f32>) {
 }
 
 /// 手机松开说话键：补一段静音让服务端断句
+#[cfg(test)]
 pub fn phone_release() {
+    phone_release_conn(0);
+}
+
+/// 指定手机连接松开说话键（仅当前持有按压的连接或兼容 0 号连接生效）
+pub fn phone_release_conn(conn_id: u64) {
     let mut p = phone();
-    if !p.held {
+    if !p.held || (conn_id != 0 && p.owner_conn != conn_id) {
         return;
     }
-    p.feed(vec![0.0; PHONE_RELEASE_SILENCE]);
+    if p.turn != PhoneTurn::Served && (mode() == Mode::Capture || p.pending.samples() > 0) {
+        p.feed(vec![0.0; PHONE_RELEASE_SILENCE]);
+    } else if p.turn == PhoneTurn::Requested {
+        p.turn = PhoneTurn::None;
+    }
     p.held = false;
 }
 
 /// 手机按了一下就松开（没打算说话）：丢掉存着的声音。返回“听手机”的这一轮是否已经开始（需要停下）
+#[cfg(test)]
 pub fn phone_cancel() -> bool {
+    phone_cancel_conn(0)
+}
+
+/// 指定手机连接短按取消（仅当前持有按压的连接或兼容 0 号连接生效）
+pub fn phone_cancel_conn(conn_id: u64) -> bool {
     let mut p = phone();
+    if conn_id != 0 && p.owner_conn != conn_id {
+        return false;
+    }
+    let was_running = p.turn == PhoneTurn::Running;
     p.held = false;
-    if p.turn == PhoneTurn::Requested {
+    if !was_running {
         p.turn = PhoneTurn::None;
     }
     p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
-    p.turn == PhoneTurn::Running
+    was_running
 }
 
-/// 手机正按着说话键、还没请调度中心开始听：记下“已请求”并返回 true（调用方去发命令）。
-/// 同一次按下只会返回一次 true
+/// 手机正按着说话键（或打断旧轮次期间已录下整句待处理语音）、还没请调度中心开始听：
+/// 记下“已请求”并返回 true（调用方去发命令）。同一次按下只会返回一次 true
 pub fn phone_wants_turn() -> bool {
     let mut p = phone();
-    if p.held && p.turn == PhoneTurn::None {
+    if (p.held || p.pending.samples() > 0) && p.turn == PhoneTurn::None {
         p.turn = PhoneTurn::Requested;
         true
     } else {
@@ -243,14 +280,14 @@ pub fn phone_begin_turn() -> bool {
     true
 }
 
-/// 回到待机：这一轮结束。手机还按着时保留状态（马上会开始下一轮）
+/// 回到待机：这一轮结束。手机还按着，或打断旧轮次期间已录完但尚未被服务过的语音保留给下一轮
 pub fn phone_end_turn() {
     let mut p = phone();
     if p.held {
         if p.turn == PhoneTurn::Running {
             p.turn = PhoneTurn::Served;
         }
-    } else {
+    } else if matches!(p.turn, PhoneTurn::Running | PhoneTurn::Served) || p.pending.samples() == 0 {
         p.turn = PhoneTurn::None;
         p.pending = PreRoll::new(PREROLL_MAX_SAMPLES);
     }
@@ -494,15 +531,7 @@ pub fn start_ear(
     let thread = std::thread::Builder::new()
         .name("ear".into())
         .spawn(move || {
-            // 模型和麦克风都在本线程里创建（cpal 的流不能跨线程）
-            let detector = WakeDetector::new(&settings.model_dir, &settings.wake_words, settings.threshold, settings.score);
-            let (mut detector, problems) = match detector {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                    return;
-                }
-            };
+            // 硬件麦克风与本地唤醒词检测器解耦：先打开麦克风，即使唤醒词配置/模型异常也不影响手动点击或快捷键说话
             let (raw_tx, raw_rx) = mpsc::channel();
             let (_stream, rate, name) = match open_mic(&settings.device, raw_tx) {
                 Ok(v) => v,
@@ -511,6 +540,18 @@ pub fn start_ear(
                     return;
                 }
             };
+            let (mut detector, problems) =
+                match WakeDetector::new(&settings.model_dir, &settings.wake_words, settings.threshold, settings.score) {
+                    Ok((d, problems)) => (Some(d), problems),
+                    Err(e) => (
+                        None,
+                        vec![crate::locale::pick(
+                            &format!("{e:#} (you can still click the orb or use the shortcut to talk)"),
+                            &format!("{e:#}（手动点击光球或按快捷键说话仍可正常使用）"),
+                        )
+                        .to_string()],
+                    ),
+                };
             let _ = ready_tx.send(Ok((name.clone(), problems)));
 
             let mut resampler = Resampler::new(rate);
@@ -540,7 +581,9 @@ pub fn start_ear(
                 let current = mode();
                 if current == Mode::Idle || current == Mode::Barge {
                     if last_mode != Some(current) {
-                        detector.reset();
+                        if let Some(d) = detector.as_mut() {
+                            d.reset();
+                        }
                         gate = EnergyGate::new();
                         talk = TalkDetector::new();
                     }
@@ -553,17 +596,19 @@ pub fn start_ear(
                             continue;
                         }
                     }
-                    // 安静时不跑唤醒词模型；有声音时连同之前 0.5 秒一起送进去
-                    for piece in gate.process(&samples, &mut detector) {
-                        if let Some(word) = detector.accept(&piece) {
-                            // 立刻切到录音，唤醒词之后的话一个字都不丢
-                            set_mode(Mode::Capture);
-                            if current == Mode::Barge {
-                                barge2.notify_one();
-                            } else {
-                                let _ = events.send(Command::Wake(word));
+                    if let Some(detector) = detector.as_mut() {
+                        // 安静时不跑唤醒词模型；有声音时连同之前 0.5 秒一起送进去
+                        for piece in gate.process(&samples, detector) {
+                            if let Some(word) = detector.accept(&piece) {
+                                // 立刻切到录音，唤醒词之后的话一个字都不丢
+                                set_mode(Mode::Capture);
+                                if current == Mode::Barge {
+                                    barge2.notify_one();
+                                } else {
+                                    let _ = events.send(Command::Wake(word));
+                                }
+                                break;
                             }
-                            break;
                         }
                     }
                 } else if current == Mode::Capture && !samples.is_empty() && !phone_active() {
@@ -577,7 +622,7 @@ pub fn start_ear(
     match ready_rx.recv_timeout(Duration::from_secs(15)) {
         Ok(Ok((name, problems))) => Ok((Ear { barge, stop, thread: Some(thread) }, name, problems)),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(anyhow!("启动麦克风超时").context(MicUnavailable)),
+        Err(_) => Err(anyhow!(crate::locale::pick("Timed out starting the microphone", "启动麦克风超时")).context(MicUnavailable)),
     }
 }
 
@@ -649,5 +694,66 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(chunks.iter().all(|c| c.len() == 100));
         assert_eq!((chunks[0][0], chunks[1][0]), (8.0, 9.0));
+    }
+
+    #[test]
+    fn phone_conn_isolation_ignores_stale_disconnect_and_short_cancel_resets_active() {
+        let _serial = PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_mode(Mode::Idle);
+
+        // 短按取消（尚未进入 turn）：必须同时恢复 active = false，避免电脑麦克风变聋
+        phone_press_conn(1);
+        assert!(phone_is_held() && phone_active());
+        assert!(!phone_cancel_conn(1));
+        assert!(!phone_is_held() && !phone_active());
+
+        // 旧连接 1 按下后弱网重连为新连接 2 并再次按下，随后旧连接 1 Drop 触发 release/cancel，不得掐断连接 2
+        phone_press_conn(1);
+        phone_press_conn(2);
+        phone_audio(vec![0.25; 320]);
+        phone_release_conn(1);
+        assert!(phone_is_held(), "旧连接松开不应影响当前持有按压的新连接");
+        assert!(!phone_cancel_conn(1), "旧连接取消不应清空新连接缓存");
+        assert!(phone_wants_turn());
+        assert!(phone_begin_turn());
+
+        phone_release_conn(2);
+        assert!(!phone_is_held());
+        set_mode(Mode::Paused);
+        phone_end_turn();
+        assert!(!phone_active());
+    }
+
+    #[test]
+    fn phone_quick_speech_during_interrupt_survives_old_turn_end() {
+        let _serial = PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        set_phone_output(tx);
+
+        // 电脑上一轮正在播报（Mode::Muted），用户在手机按住打断、快速说完并松手，此时旧轮次才退出调用 phone_end_turn
+        set_mode(Mode::Muted);
+        phone_press_conn(9);
+        phone_audio(vec![0.5; 480]);
+        phone_release_conn(9);
+        assert!(!phone_is_held());
+
+        // 旧轮次的 go_idle 调用 phone_end_turn：因为这次手机语音尚未被服务，绝不能清空 pending 或 active
+        phone_end_turn();
+        assert!(phone_active(), "尚未被服务的手机语音在旧轮次退出时应保留 active");
+        assert!(phone_wants_turn(), "已松手但有未服务的录音时仍应触发新一轮 PhoneTalk");
+        assert!(!phone_wants_turn(), "同一句只请求一次");
+
+        // 新一轮 PhoneTalk 开始：完整补发刚才录下的语音和断句静音
+        assert!(phone_begin_turn());
+        let first = rx.try_recv().expect("应补发打断期间录下的语音");
+        assert_eq!(first.len(), 480);
+        let silence = rx.try_recv().expect("应补发松手断句静音");
+        assert_eq!(silence.len(), PHONE_RELEASE_SILENCE);
+
+        // 新一轮真正服务完后再调用 phone_end_turn：此时才彻底清理
+        set_mode(Mode::Paused);
+        phone_end_turn();
+        assert!(!phone_active());
+        assert!(!phone_wants_turn());
     }
 }

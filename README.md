@@ -90,16 +90,18 @@ One Rust process, no browser engine, no GPU use. The wake word runs locally; aud
 
 ## Quick start
 
-1. Download `Aeri-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/yuqtai/Aeri/releases/latest) and unzip it.
-2. Run `aeri.exe`.
-3. Open **Settings → Language model**, paste an **OpenAI API key**, and click **Save**. That is the only key you need: speech recognition runs locally on your PC (the model downloads once, the first time), and replies are spoken with Windows voices.
+1. Download `Aeri-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/yuqtai/Aeri/releases/latest) and extract the `Aeri` folder.
+2. Run `aeri.exe` inside it (first run opens the main window automatically; launching `aeri.exe` again while running brings the window to the front).
+3. Open **Settings → Language model**, paste an **OpenAI API key**, and click **Save & apply**. That is the only key you need: speech recognition runs locally on your PC (the model downloads once, the first time), and replies are spoken with Windows voices.
 4. Say **"Hey Aeri"**.
 
 Prefer another provider? Aeri also works with Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, a local Ollama model, or any OpenAI-compatible endpoint. Pick it in **Settings → Language model**.
 
-Voice is just as open. Speech recognition: built-in offline models (Moonshine, Whisper, SenseVoice, Parakeet), any local server with the OpenAI transcription API (Qwen3-ASR, faster-whisper…), or OpenAI, Groq, Deepgram, ElevenLabs, Azure, Gemini. Speech output: Windows voices, or OpenAI, ElevenLabs, Azure. Optional realtime voice: OpenAI, Azure OpenAI, xAI Grok, Alibaba DashScope, or any server with the OpenAI Realtime API.
+Voice is just as open. Speech recognition: built-in offline models (Zipformer, Moonshine, Whisper, SenseVoice, Parakeet), any local server with the OpenAI transcription API (Qwen3-ASR, faster-whisper…), or OpenAI, Groq, Deepgram, ElevenLabs, Azure, Gemini, Alibaba DashScope. Speech output: Windows voices, or OpenAI, ElevenLabs, Azure, Custom (OpenAI speech / Alibaba CosyVoice). Optional realtime voice: OpenAI, Azure OpenAI, xAI Grok, Alibaba DashScope, or any server with the OpenAI Realtime API.
 
-New versions install from inside the app (Settings → Updates).
+Optional Android phone control on the same Wi-Fi: enable **Settings → Phone control** (when Windows Firewall prompts, allow both **Private and Public networks**, since home Wi-Fi is often marked Public by default), install `android\Aeri.apk` beside `aeri.exe` (or `Aeri-vX.Y.Z-android.apk` from Releases), and pair with the 6-digit code.
+
+New versions install from inside the app (**Settings → Software updates**).
 
 ## Build your own
 

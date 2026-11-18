@@ -1,6 +1,6 @@
 # State machines
 
-This inventory reflects Aeri 0.4.0. [简体中文](zh-CN/state-machines.md)
+This inventory reflects Aeri 0.4.9. [简体中文](zh-CN/state-machines.md)
 
 Use an `enum` when a feature has several dependent phases rather than unrelated booleans that allow impossible combinations. Document transitions beside the type and keep state-changing operations together. Independent two-state flags and simple caches do not need a larger state machine.
 
@@ -14,7 +14,7 @@ Use an `enum` when a feature has several dependent phases rather than unrelated 
 | Orb pointer | `ball::Pointer` | `Up → Pressed → Dragging → Up`; release while only pressed is a click |
 | Phone server | `remote::Phase` | `Off → Starting → Listening` or `Failed(reason)`; generation guards reject late events from replaced servers |
 | Background task | `tasks::State` | `Running → Done / Failed / Cancelled`; completed results can be persisted to history |
-| History deletion | `history-confirm` in Slint | Normal → confirmation pending → normal; timeout after three seconds |
+| History / chat / unpair confirmations | `history-confirm`, `confirm-clear-chat`, `confirm-unpair` in Slint | Normal → confirmation pending → normal; timeout after three seconds |
 
 `audio::Mode` describes where microphone samples go, not what the UI displays. `Muted` drops samples; `Barge` runs wake-word detection while speaking. The separate phone `held` flag allows a short press to finish a buffered turn even if release occurred before recognition started.
 
@@ -24,7 +24,7 @@ Use an `enum` when a feature has several dependent phases rather than unrelated 
 |---|---|---|
 | Update action | `UPDATE_CHECK / INSTALL / BUSY` in `main.rs` | Three integer values shared with Slint, centralized in `wire_update` |
 | Unsaved settings | `settings-dirty`, `leave-pending`, `settings-note` in Slint | Different facts: pending edits, attempted navigation, result message |
-| Orb visibility | `enabled`, `visible`, `shown` in `ball.rs` | `shown` caches the result of requested visibility and foreground full-screen state in `apply_visibility` |
+| Orb visibility | `enabled`, `visible`, `shown` in `ball.rs` | `shown` caches the result of requested visibility and same-monitor foreground full-screen state (`screen::fullscreen_on_monitor_of`) in `apply_visibility` |
 | Browser session | `Option<Session>` in `tools/browser.rs` | Present or absent |
 | Desktop snapshot | `Option<String>` in `tools/desktop.rs` | Cache, not a multiphase operation |
 

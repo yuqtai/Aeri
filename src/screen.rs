@@ -8,8 +8,9 @@ use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
+    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    WS_EX_TOOLWINDOW,
 };
 use windows::core::BOOL;
 
@@ -120,6 +121,44 @@ fn label(w: &Window) -> String {
 /// 用户正在看的窗口（句柄和标题），给读屏工具用
 pub fn front_window() -> Option<(HWND, String)> {
     visible_windows(1).into_iter().next().map(|w| (w.hwnd, w.title))
+}
+
+/// 最前面的可见窗口是否全屏
+pub fn front_is_fullscreen() -> bool {
+    visible_windows(1).first().is_some_and(|w| w.fullscreen)
+}
+
+/// target_hwnd 所在的那块屏幕上，最前面的可见窗口是否全屏（副屏全屏看视频/放映时不误隐藏主屏悬浮球）
+pub fn fullscreen_on_monitor_of(target_hwnd: windows::Win32::Foundation::HWND) -> bool {
+    let target_mon = unsafe { MonitorFromWindow(target_hwnd, MONITOR_DEFAULTTONEAREST) };
+    if target_mon.is_invalid() {
+        return false;
+    }
+    visible_windows(usize::MAX)
+        .into_iter()
+        .find(|w| unsafe { MonitorFromWindow(w.hwnd, MONITOR_DEFAULTTONEAREST) == target_mon })
+        .is_some_and(|w| w.fullscreen)
+}
+
+/// 当前前台焦点窗口是否是桌面（Progman / WorkerW）
+pub fn desktop_is_front() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_invalid() {
+            return false;
+        }
+        let shell = GetShellWindow();
+        if !shell.is_invalid() && fg == shell {
+            return true;
+        }
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(fg, &mut buf);
+        if n <= 0 {
+            return false;
+        }
+        let cls = String::from_utf16_lossy(&buf[..n as usize]);
+        matches!(cls.as_str(), "Progman" | "WorkerW")
+    }
 }
 
 /// 用户能看到的顶层窗口句柄，按从上到下的顺序（跳过助手自己的窗口）

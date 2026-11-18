@@ -145,6 +145,9 @@ pub async fn recognize(
     let mut heard = false;
     let mut finished_at: Option<Instant> = None;
     let mut text = String::new();
+    let mut latest_partial = String::new();
+    let mut saw_phone_held = crate::audio::phone_is_held();
+    let mut released_at: Option<Instant> = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
 
     loop {
@@ -168,25 +171,56 @@ pub async fn recognize(
                             continue;
                         }
                         let partial = sentence["text"].as_str().unwrap_or("");
-                        if !partial.is_empty() {
-                            heard = true;
-                            on_partial(partial);
-                        }
                         if sentence["sentence_end"].as_bool() == Some(true) {
-                            text.push_str(partial);
-                            if finished_at.is_none() {
+                            latest_partial.clear();
+                            if !partial.is_empty() {
+                                heard = true;
+                                text.push_str(partial);
+                                on_partial(&text);
+                            }
+                            let held = crate::audio::phone_is_held();
+                            if held {
+                                saw_phone_held = true;
+                                released_at = None;
+                            } else if finished_at.is_none() {
+                                if !pcm.is_empty() {
+                                    tx.send(Message::binary(std::mem::take(&mut pcm))).await?;
+                                }
                                 tx.send(finish_task.clone()).await?;
                                 finished_at = Some(Instant::now());
+                            }
+                        } else if !partial.is_empty() {
+                            heard = true;
+                            latest_partial.clear();
+                            latest_partial.push_str(partial);
+                            if text.is_empty() {
+                                on_partial(partial);
+                            } else {
+                                on_partial(&format!("{text}{partial}"));
                             }
                         }
                     }
                     Some("task-finished") => break,
-                    Some("task-failed") => bail!("语音识别失败：{}", event["header"]["error_message"].as_str().unwrap_or("未知错误")),
+                    Some("task-failed") => bail!(
+                        "{}{}",
+                        crate::locale::pick("Speech recognition failed: ", "语音识别失败："),
+                        event["header"]["error_message"].as_str().unwrap_or(crate::locale::pick("unknown error", "未知错误"))
+                    ),
                     _ => {}
                 }
             }
             _ = ticker.tick() => {
-                let timed_out = (!heard && started.elapsed() > s.speech_timeout) || started.elapsed() > MAX_SESSION;
+                let held = crate::audio::phone_is_held();
+                if held {
+                    saw_phone_held = true;
+                    released_at = None;
+                } else if saw_phone_held && released_at.is_none() {
+                    released_at = Some(Instant::now());
+                }
+                let release_done = released_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(2));
+                let timed_out = (!held && !heard && started.elapsed() > s.speech_timeout)
+                    || release_done
+                    || started.elapsed() > MAX_SESSION;
                 if finished_at.is_none() && timed_out {
                     if !pcm.is_empty() {
                         tx.send(Message::binary(std::mem::take(&mut pcm))).await?;
@@ -201,6 +235,9 @@ pub async fn recognize(
         }
     }
     let _ = tx.close().await;
+    if !latest_partial.is_empty() {
+        text.push_str(&latest_partial);
+    }
     let text = text.trim().to_string();
     Ok((!text.is_empty()).then_some(text))
 }
@@ -335,19 +372,29 @@ async fn recognize_local(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<f32>
     let deadline = tokio::time::sleep(MAX_SESSION);
     tokio::pin!(deadline);
     let mut text = String::new();
+    let mut saw_phone_held = crate::audio::phone_is_held();
     loop {
+        let held_now = crate::audio::phone_is_held();
+        if held_now {
+            saw_phone_held = true;
+        }
         let chunk = tokio::select! {
             chunk = audio.recv() => match chunk { Some(c) => c, None => break },
             _ = &mut deadline => break,
-            _ = tokio::time::sleep(s.speech_timeout), if text.is_empty() => break,
+            _ = tokio::time::sleep(Duration::from_millis(300)), if saw_phone_held && !held_now => break,
+            _ = tokio::time::sleep(s.speech_timeout), if text.is_empty() && !held_now => break,
         };
+        let held = crate::audio::phone_is_held();
+        if held {
+            saw_phone_held = true;
+        }
         stream.accept_waveform(16000, &chunk);
         while recognizer.is_ready(&stream) { recognizer.decode(&stream); }
         if let Some(result) = recognizer.get_result(&stream) {
             if result.text != text { text = result.text; partial(&text); }
         }
-        if recognizer.is_endpoint(&stream) && !text.is_empty() { break; }
-        if text.is_empty() && started.elapsed() > s.speech_timeout { break; }
+        if !held && recognizer.is_endpoint(&stream) && !text.is_empty() { break; }
+        if text.is_empty() && !held && started.elapsed() > s.speech_timeout { break; }
     }
     stream.accept_waveform(16000, &vec![0.0; 4800]);
     stream.input_finished();
@@ -364,16 +411,45 @@ async fn collect_utterance(s: &AsrSettings, audio: &mut UnboundedReceiver<Vec<f3
     let mut samples = Vec::new();
     let mut heard = false;
     let mut silent_samples = 0usize;
+    let mut saw_phone_held = crate::audio::phone_is_held();
     loop {
         let chunk = match tokio::time::timeout(Duration::from_millis(250), audio.recv()).await {
             Ok(Some(c)) => c,
             Ok(None) => break,
-            Err(_) => { if started.elapsed() > s.speech_timeout && !heard || started.elapsed() > MAX_SESSION { break; } continue; }
+            Err(_) => {
+                let held = crate::audio::phone_is_held();
+                if held {
+                    saw_phone_held = true;
+                }
+                if (saw_phone_held && !held)
+                    || (!held && !heard && started.elapsed() > s.speech_timeout)
+                    || started.elapsed() > MAX_SESSION
+                {
+                    break;
+                }
+                continue;
+            }
         };
-        let energy = chunk.iter().map(|s| s*s).sum::<f32>() / chunk.len().max(1) as f32;
-        if energy > 0.0001 { heard = true; silent_samples = 0; } else if heard { silent_samples += chunk.len(); }
+        let held = crate::audio::phone_is_held();
+        if held {
+            saw_phone_held = true;
+        }
+        let energy = chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len().max(1) as f32;
+        if energy > 0.0001 {
+            heard = true;
+            silent_samples = 0;
+        } else if heard && !held {
+            silent_samples += chunk.len();
+        } else if held {
+            silent_samples = 0;
+        }
         samples.extend(chunk);
-        if silent_samples >= s.sentence_silence_ms as usize * 16 || started.elapsed() > MAX_SESSION || (!heard && started.elapsed() > s.speech_timeout) { break; }
+        if (!held && silent_samples >= s.sentence_silence_ms as usize * 16)
+            || started.elapsed() > MAX_SESSION
+            || (!held && !heard && started.elapsed() > s.speech_timeout)
+        {
+            break;
+        }
     }
     if heard { samples } else { Vec::new() }
 }
@@ -486,5 +562,122 @@ mod tests {
         assert_eq!(bytes.len(), 50);
         assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 16000);
         assert_eq!(&bytes[44..], &[0, 0, 255, 127, 1, 128]);
+    }
+
+    #[tokio::test]
+    async fn phone_hold_keeps_recognizing_across_sentence_end_pauses() {
+        use tokio::net::TcpListener;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let _serial = crate::audio::PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::set_mode(crate::audio::Mode::Capture);
+        crate::audio::phone_press_conn(77);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = ws.next().await.unwrap().unwrap();
+            let Message::Text(first_text) = first else { panic!("expected run-task text") };
+            let run_req: Value = serde_json::from_str(first_text.as_str()).unwrap();
+            let task_id = run_req["header"]["task_id"].as_str().unwrap().to_string();
+
+            ws.send(Message::text(json!({"header": {"event": "task-started", "task_id": task_id}}).to_string()))
+                .await
+                .unwrap();
+            // 第一分句结束时手指仍按着说话键：客户端不能提前发 finish-task
+            ws.send(Message::text(
+                json!({
+                    "header": {"event": "result-generated", "task_id": task_id},
+                    "payload": {"output": {"sentence": {"text": "帮我打开", "sentence_end": true}}}
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert!(crate::audio::phone_is_held());
+            // 用户说完后半句并松手
+            crate::audio::phone_release_conn(77);
+            ws.send(Message::text(
+                json!({
+                    "header": {"event": "result-generated", "task_id": task_id},
+                    "payload": {"output": {"sentence": {"text": "计算器", "sentence_end": true}}}
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+
+            while let Some(Ok(msg)) = ws.next().await {
+                if let Message::Text(t) = msg {
+                    let v: Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                    if v["header"]["action"] == "finish-task" {
+                        ws.send(Message::text(json!({"header": {"event": "task-finished", "task_id": task_id}}).to_string()))
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                }
+            }
+        });
+
+        let settings = AsrSettings {
+            provider: Provider::DashScope,
+            region: String::new(),
+            local_model: "zipformer".into(),
+            url: format!("ws://{addr}/asr"),
+            model: "fun-asr-realtime".into(),
+            api_key: "test".into(),
+            sentence_silence_ms: 800,
+            speech_timeout: Duration::from_millis(80), // 故意设极短，验证按住期间不会因 speech_timeout 提前放弃
+        };
+        let (_audio_tx, mut audio_rx) = unbounded_channel();
+        let mut partials = Vec::new();
+        let got = recognize(&settings, &mut audio_rx, |p| partials.push(p.to_string())).await.unwrap();
+
+        crate::audio::set_mode(crate::audio::Mode::Paused);
+        crate::audio::phone_end_turn();
+
+        assert_eq!(got.as_deref(), Some("帮我打开计算器"));
+        assert_eq!(partials.last().map(String::as_str), Some("帮我打开计算器"));
+    }
+
+    #[tokio::test]
+    async fn collect_utterance_waits_across_silence_while_phone_is_held() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let _serial = crate::audio::PHONE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::set_mode(crate::audio::Mode::Capture);
+        crate::audio::phone_press_conn(88);
+
+        let (tx, mut rx) = unbounded_channel();
+        tokio::spawn(async move {
+            let _ = tx.send(vec![0.2; 1600]); // 第一段语音
+            let _ = tx.send(vec![0.0; 16000]); // 1s 静音停顿（超过 sentence_silence_ms=200ms），但手指仍按着
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            let _ = tx.send(vec![0.25; 1600]); // 第二段语音
+            crate::audio::phone_release_conn(88);
+            let _ = tx.send(vec![0.0; 4800]); // 松手后静音断句
+        });
+
+        let settings = AsrSettings {
+            provider: Provider::OpenAi,
+            region: String::new(),
+            local_model: "zipformer".into(),
+            url: String::new(),
+            model: "gpt-transcribe".into(),
+            api_key: String::new(),
+            sentence_silence_ms: 200,
+            speech_timeout: Duration::from_millis(80),
+        };
+        let collected = collect_utterance(&settings, &mut rx).await;
+
+        crate::audio::set_mode(crate::audio::Mode::Paused);
+        crate::audio::phone_end_turn();
+
+        assert_eq!(collected.len(), 1600 + 16000 + 1600 + 4800);
     }
 }
